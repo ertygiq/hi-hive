@@ -2,15 +2,23 @@
 .DS_Store
 Thumbs.db
 desktop.ini
-.bundle/
 .claude/
 
-# Bundler-installed gems
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Leftovers from the Ruby version (config and state now live in ~/.hihive)
+config.json
+.bundle/
 vendor/
 
-# User config (defaults in config.json.example)
-config.json
+# Opt-in live smoke scratch space (including temporary credentials)
+.live-smoke/
+.test-tmp/
 
 # App runtime state
 data/
 *.log
+MARKETING_STRATEGY.md

@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>hi-hive</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+</head>
+<body>
+
+<header>
+  <div class="header-summary">
+    <div class="brand">
+      <img src="/favicon.svg" alt="" class="brand-logo" width="24" height="24">
+      <h1>hi-hive</h1>
+    </div>
+    <button class="to-review" id="to-review-btn" onclick="showToReview()" style="display:none"
+            title="Show only results not marked done"></button>
+  </div>
+  <div class="header-controls">
+    <button class="primary" onclick="openBatchAdd()">▶ Run template</button>
+    <button onclick="openAddTask()">+ Add Task</button>
+    <button onclick="openSettings()">⚙ Settings</button>
+  </div>
+</header>
+
+<div class="paused-banner" id="paused-banner">
+  Pipeline paused — no new tasks will be started
+  <button class="small" onclick="togglePause()">▶ Resume</button>
+</div>
+
+<div class="workspace">
+<main>
+  <div class="side-column">
+    <!-- Queue -->
+    <section class="panel" id="queue-panel">
+      <div class="panel-header">
+        <h2>Queue <span class="count" id="queue-count">0</span></h2>
+      </div>
+      <div class="task-list" id="queue-list"></div>
+    </section>
+
+    <!-- Workers -->
+    <section class="panel" id="workers-panel">
+      <div class="panel-header">
+        <h2>Workers <span class="count" id="worker-count">0 / 4</span></h2>
+        <div class="panel-actions">
+          <button class="small" id="pause-btn" onclick="togglePause()">⏸ Pause</button>
+          <button class="small" id="cancel-all-btn" onclick="cancelAllTasks()" style="display:none">Cancel all</button>
+        </div>
+      </div>
+      <div class="task-list" id="workers-list"></div>
+    </section>
+  </div>
+
+  <!-- Results -->
+  <section class="panel results-panel">
+    <div class="panel-header results-header">
+      <div class="results-header-top">
+        <h2>Results <span class="count" id="results-count">0</span></h2>
+        <div class="results-controls">
+          <button id="results-hide-done" class="filter-toggle" onclick="onHideDoneToggle()"
+                  aria-pressed="false" title="Show only tasks not marked as done">Hide done</button>
+          <select id="results-sort" class="results-sort" onchange="onResultsSortChange()" title="Sort order" aria-label="Sort order">
+            <option value="completed">Completion date</option>
+            <option value="updated">Last update</option>
+          </select>
+        </div>
+      </div>
+      <div class="results-search-row">
+        <input type="text" id="results-search" class="results-search" placeholder="Search prompts & labels…"
+               aria-label="Search results" oninput="onResultsSearchInput()">
+        <button id="results-deep-search" class="filter-toggle" onclick="onDeepSearchToggle()"
+                aria-pressed="false" title="Also search model responses and user follow-ups">Full text</button>
+      </div>
+    </div>
+    <div class="task-list" id="results-list"></div>
+  </section>
+</main>
+
+<!-- Detail Panel -->
+<div class="resize-handle" id="resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize detail panel"></div>
+<aside class="detail-panel hidden" id="detail-panel" aria-label="Task detail">
+  <div class="detail-header">
+    <div class="detail-title-row">
+      <h3 id="detail-title">—</h3>
+      <div class="menu-wrap">
+        <button class="small" id="detail-menu-btn" onclick="toggleDetailMenu()" aria-haspopup="menu"
+                aria-expanded="false" aria-controls="detail-menu" title="More actions" aria-label="More actions">⋯</button>
+        <div class="menu hidden" id="detail-menu" role="menu">
+          <button role="menuitem" id="detail-done-btn" onclick="closeDetailMenu();toggleDone(selectedTaskId)">Mark done</button>
+          <button role="menuitem" id="detail-fork-btn" onclick="closeDetailMenu();openForkTask(selectedTaskId)">Fork…</button>
+          <button role="menuitem" id="copy-task-id-btn" onclick="copyTaskId()">Copy task ID</button>
+        </div>
+      </div>
+      <button class="icon-btn" onclick="closeDetail()" title="Close (Esc)" aria-label="Close task detail">✕</button>
+    </div>
+    <div class="detail-toolbar">
+      <div class="detail-tabs" id="detail-tabs" role="tablist">
+        <button class="detail-tab active" role="tab" onclick="switchDetailTab('output')">Output</button>
+        <button class="detail-tab" role="tab" onclick="switchDetailTab('prompt')">Prompt</button>
+      </div>
+      <button class="small" id="detail-session-btn" onclick="openSession()">Session</button>
+      <button class="small" id="copy-session-id-btn" onclick="copySessionId()">Copy session ID</button>
+      <div class="detail-meta">
+        <span id="detail-harness" style="display:none"></span>
+        <span id="detail-cost" style="display:none"></span>
+        <span class="detail-template-badge" id="detail-template" style="display:none"></span>
+        <span class="status-badge status-pill" id="detail-status"></span>
+        <span class="done-tag" id="detail-done-tag" style="display:none" title="Marked as done">✓ done</span>
+        <span id="detail-background-activity" style="display:none" aria-live="polite"></span>
+      </div>
+      <button class="small" id="detail-continue-btn" onclick="continueTask(selectedTaskId)" style="display:none">▶ Continue</button>
+      <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
+    </div>
+  </div>
+  <div class="detail-body" id="detail-body"></div>
+  <div class="chat-typing" id="chat-typing" role="status" style="display:none">
+    <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+    Agent is replying
+  </div>
+  <div class="chat-input-area" id="chat-area" style="display:none">
+    <textarea id="chat-input" placeholder="Send a message to this session..." rows="1" aria-label="Message to this session"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+    <button class="primary" onclick="sendChat()">Send</button>
+  </div>
+</aside>
+</div>
+
+<!-- Add Task Modal -->
+<div class="modal-overlay hidden" id="add-task-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Task</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('add-task-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Label (optional)</label>
+          <input type="text" id="add-label" placeholder="Short identifier">
+        </div>
+        <div class="form-group">
+          <label>Harness</label>
+          <select id="add-harness"></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Prompt</label>
+        <textarea class="code" id="add-prompt" rows="8" placeholder="Enter the full prompt..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('add-task-modal')">Cancel</button>
+      <button class="primary" onclick="submitAddTask()">Add Task</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fork Task Modal -->
+<div class="modal-overlay hidden" id="fork-task-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Fork Task</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('fork-task-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Forking from</label>
+        <div id="fork-parent-label" class="fork-parent-label"></div>
+      </div>
+      <div class="form-group">
+        <label>Label (optional)</label>
+        <input type="text" id="fork-label" placeholder="Short identifier">
+      </div>
+      <div class="form-group">
+        <label>New prompt (continues from parent's session)</label>
+        <textarea class="code" id="fork-prompt" rows="8" placeholder="Enter the new direction for this fork..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('fork-task-modal')">Cancel</button>
+      <button class="primary" onclick="submitForkTask()">Fork</button>
+    </div>
+  </div>
+</div>
+
+<!-- Run Template Modal: one task per input line, or one task without input -->
+<div class="modal-overlay hidden" id="batch-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Run template</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('batch-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Template</label>
+          <select id="batch-template" onchange="updateBatchModal()"></select>
+        </div>
+        <div class="form-group">
+          <label>Harness</label>
+          <select id="batch-harness"></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Template text</label>
+        <pre class="template-preview" id="batch-template-preview"></pre>
+      </div>
+      <div class="form-group" id="batch-inputs-group">
+        <label for="batch-inputs">Inputs (one task per line)</label>
+        <textarea class="code" id="batch-inputs" rows="8" oninput="updateBatchSubmitLabel()"
+                  placeholder="One input per line, for example:&#10;Caching strategies&#10;CAP theorem"></textarea>
+      </div>
+      <div class="form-group" id="batch-no-input-info" style="display:none">
+        <div class="empty">This template has no %{input}, so it runs as one task.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('batch-modal')">Cancel</button>
+      <button class="primary" id="batch-submit-btn" onclick="submitBatch()">Run 1 task</button>
+    </div>
+  </div>
+</div>
+
+<!-- Retry Task Modal -->
+<div class="modal-overlay hidden" id="retry-modal">
+  <div class="modal" style="width:400px">
+    <div class="modal-header">
+      <h3>Retry Task</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('retry-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:14px;line-height:1.5;margin-bottom:14px">Re-run this task from scratch with a fresh session.</p>
+      <div class="form-group">
+        <label>Harness</label>
+        <select id="retry-harness"></select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('retry-modal')">Cancel</button>
+      <button class="primary" onclick="submitRetry()">Retry</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay hidden" id="settings-modal">
+  <div class="modal" style="width:640px">
+    <div class="modal-header">
+      <h3>Settings</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('settings-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Max Parallel Workers</label>
+          <input type="number" id="cfg-max-parallel" min="1" max="50" value="4">
+        </div>
+        <div class="form-group">
+          <label>Working Directory</label>
+          <input type="text" id="cfg-work-dir">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Session Viewer URL</label>
+        <input type="text" id="cfg-session-viewer-url" placeholder="Optional, e.g. http://localhost:3000 for claude-code-lens">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+        <input type="checkbox" id="cfg-prevent-sleep">
+        <span>Prevent system sleep while agents are running</span>
+      </label>
+      <div class="muted" style="font-size:12px;margin-top:4px">macOS only; requires <code>caffeinate</code>. Keeps awake for 5 minutes after activity stops.</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+        <input type="checkbox" id="cfg-show-task-cost">
+        <span>Show task cost</span>
+      </label>
+      <div class="muted" style="font-size:12px;margin-top:4px">Read from the harness's session transcript. Currently only Pi reports cost; other tasks show nothing.</div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+      <h4 style="margin-bottom:12px">Harnesses</h4>
+      <div class="form-group">
+        <label>Default harness</label>
+        <div id="harness-default-picker" class="harness-picker"></div>
+      </div>
+      <div id="harnesses-list"></div>
+      <button class="small" onclick="addHarnessForm()" style="margin-top:8px">+ Add Harness</button>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+      <h4 id="templates-heading" style="margin-bottom:12px">Templates</h4>
+      <div id="templates-list"></div>
+      <button class="small" onclick="addTemplateForm()" style="margin-top:8px">+ Add Template</button>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+      <h4 style="margin-bottom:12px">Review Sections</h4>
+      <div id="review-sections-list"></div>
+      <button class="small" onclick="addReviewSectionForm()" style="margin-top:8px">+ Add Review Section</button>
+    </div>
+    <div class="modal-footer">
+      <button class="danger" onclick="restartServer()" title="Restart the server process">↻ Restart server</button>
+      <div style="flex:1"></div>
+      <button onclick="requestCloseModal('settings-modal')">Cancel</button>
+      <button class="primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Template Form Modal -->
+<div class="modal-overlay hidden" id="template-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="template-modal-title">Add Template</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('template-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Template Name</label>
+        <input type="text" id="tmpl-name" placeholder="e.g., explain-concept">
+      </div>
+      <div class="form-group">
+        <label>Template (use %{input} for the variable)</label>
+        <textarea class="code" id="tmpl-body" rows="8" placeholder="Explain %{input} in simple terms.&#10;&#10;Include:&#10;- What it is&#10;- Why it matters&#10;- A practical example"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Working Directory (optional, overrides global)</label>
+        <input type="text" id="tmpl-work-dir" placeholder="Leave empty to use global setting">
+      </div>
+      <div class="form-group">
+        <label>Extra Agent Args (optional, appended to global args)</label>
+        <input type="text" id="tmpl-agent-args" placeholder="e.g., --foo bar --baz">
+      </div>
+      <div class="form-group">
+        <label>Harness (optional, overrides default)</label>
+        <select id="tmpl-harness"></select>
+      </div>
+      <div class="form-group">
+        <label>Color</label>
+        <div id="tmpl-color-picker" class="color-picker"></div>
+      </div>
+      <div class="form-group">
+        <label>Attached Review Sections</label>
+        <div id="tmpl-review-sections"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('template-modal')">Cancel</button>
+      <button class="primary" onclick="saveTemplate()">Save Template</button>
+    </div>
+  </div>
+</div>
+
+<!-- Review Section Form Modal -->
+<div class="modal-overlay hidden" id="review-section-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="review-section-modal-title">Add Review Section</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('review-section-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="review-section-name">Name</label>
+        <input type="text" id="review-section-name" placeholder="e.g., check-sources">
+      </div>
+      <div class="form-group">
+        <label for="review-section-prompt">Review prompt</label>
+        <textarea class="code" id="review-section-prompt" rows="8" placeholder="Ask the agent to check its own work, e.g.&#10;Re-check each claim against its source."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('review-section-modal')">Cancel</button>
+      <button class="primary" onclick="saveReviewSection()">Save Review Section</button>
+    </div>
+  </div>
+</div>
+
+<!-- Harness Form Modal -->
+<div class="modal-overlay hidden" id="harness-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="harness-modal-title">Add Harness</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('harness-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group" style="flex:0 0 80px">
+          <label>Icon</label>
+          <input type="text" id="harness-icon" maxlength="2" placeholder="◆" style="text-align:center">
+        </div>
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="harness-name" placeholder="e.g., Claude Code">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Type</label>
+        <select id="harness-type"></select>
+      </div>
+      <div class="form-group">
+        <label>Command</label>
+        <input type="text" id="harness-command" placeholder="claude">
+      </div>
+      <div class="form-group">
+        <label>Default Args (space-separated)</label>
+        <input type="text" id="harness-args" placeholder="e.g., --max-thinking-tokens 31999">
+      </div>
+      <div class="form-group" id="harness-sessions-dir-group">
+        <label>Sessions Directory (optional)</label>
+        <input type="text" id="harness-sessions-dir" placeholder="~/.pi/agent/sessions">
+        <div class="muted" style="font-size:12px;margin-top:4px">Where this Pi writes its session transcripts, used for task cost. Set it when Pi runs with a different home, e.g. inside a container.</div>
+      </div>
+      <div class="form-group">
+        <label>Color</label>
+        <div id="harness-color-picker" class="color-picker"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('harness-modal')">Cancel</button>
+      <button class="primary" onclick="saveHarness()">Save Harness</button>
+    </div>
+  </div>
+</div>
+
+<!-- Session Fullscreen Overlay -->
+<div class="session-overlay hidden" id="session-overlay">
+  <button class="session-close-btn" onclick="closeSession()">✕</button>
+  <div id="session-frame-host" class="session-frame-host"></div>
+</div>
+
+<!-- Message Modal -->
+<div class="modal-overlay hidden" id="message-modal">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      <h3 id="message-title">Notice</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('message-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="message-text" style="font-size:14px;line-height:1.5"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="primary" onclick="requestCloseModal('message-modal')">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay hidden" id="confirm-modal">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      <h3 id="confirm-title">Confirm</h3>
+      <button class="icon-btn" aria-label="Close" onclick="resolveConfirm(false)">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirm-message" style="font-size:14px;line-height:1.5"></p>
+    </div>
+    <div class="modal-footer">
+      <button onclick="resolveConfirm(false)">No</button>
+      <button class="primary danger" onclick="resolveConfirm(true)">Yes</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

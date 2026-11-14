@@ -1,0 +1,31 @@
+[project]
+name = "hi-hive"
+version = "0.2.0"
+description = "Web UI and CLI for running Claude Code and Pi agents in parallel"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "starlette>=0.47",
+    "uvicorn>=0.35",
+]
+
+[project.scripts]
+hihive = "hihive.cli:main"
+hih = "hihive.cli:main"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.0",
+    "pytest>=8.4",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hihive"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

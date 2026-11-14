@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="honey" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0b429"/>
+      <stop offset="1" stop-color="#d29922"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#161b22"/>
+  <!-- honeycomb cluster of 3 hexagons -->
+  <g fill="none" stroke="url(#honey)" stroke-width="4" stroke-linejoin="round">
+    <polygon points="32,11 42,17 42,29 32,35 22,29 22,17"/>
+    <polygon points="20,33 30,39 30,51 20,57 10,51 10,39"/>
+    <polygon points="44,33 54,39 54,51 44,57 34,51 34,39"/>
+  </g>
+  <!-- center cell filled to read as a hive core -->
+  <polygon points="32,16 39,20 39,28 32,32 25,28 25,20" fill="url(#honey)"/>
+</svg>
