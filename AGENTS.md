@@ -6,6 +6,9 @@ Always read [KNOWN_PITFALLS.md](KNOWN_PITFALLS.md) before working on this projec
 After completing a task or batch of tasks, suggest additions to that file if you discovered a non-obvious pitfall worth preserving.
 Ask the user before adding them.
 
+Before writing or editing user-facing documentation, read [DOCUMENTATION_GUIDELINES.md](DOCUMENTATION_GUIDELINES.md).
+Update that file when the project's documentation audience, structure, or level-of-detail decisions change.
+
 ## Testing
 
 Run `./tests/run` for the deterministic Python and UI tests.

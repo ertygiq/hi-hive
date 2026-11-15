@@ -179,7 +179,7 @@ def _systemd_working_directory(value):
 
 def _require_systemctl():
     if not shutil.which("systemctl"):
-        raise SystemExit("systemctl is required for the experimental Linux user service; run `hihive serve` instead.")
+        raise SystemExit("systemctl is required for the Linux user service; run `hihive serve` instead.")
 
 
 def _systemd_unit(port):
@@ -224,7 +224,7 @@ def _install_systemd(port):
     # Restart also starts an inactive unit and always applies a rewritten unit.
     subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
     print(f"Wrote {path}")
-    print(f"Started {UNIT_NAME} on port {port} (experimental systemd user service)")
+    print(f"Started {UNIT_NAME} on port {port} (systemd user service)")
     print(f"Logs: journalctl --user -u {UNIT_NAME} -f")
 
 

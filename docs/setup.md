@@ -9,6 +9,7 @@ uv tool install git+https://github.com/ertygiq/hi-hive
 ```
 
 This installs the `hihive` command and `hih`, the same command with a shorter name.
+Use Claude Code 2.1.283 or newer, or Pi 0.87.1 or newer.
 
 ## Background service
 
@@ -23,7 +24,9 @@ hihive service uninstall
 On macOS, these commands manage a launchd user service.
 Logs are in `~/.hihive/logs/`.
 
-On Linux, these commands provide experimental support for a systemd user service.
+On Linux systems with systemd, these commands manage a user service.
+This setup has been tested on Ubuntu 24.04.
+Other modern Linux distributions may also work, but have not been tested yet.
 The unit is installed under `~/.config/systemd/user/`, starts with the user session, restarts after failure, and keeps the server and all child processes in one control group.
 Read its logs with `journalctl --user -u com.hihive.service -f`.
 Users who need the service before login can configure systemd user lingering separately with their system administrator.
@@ -51,12 +54,12 @@ The Settings restart button is hidden in foreground mode because no service mana
 In a headless or SSH session it prints a loopback-only SSH tunnel example and the login URL.
 That URL grants full hi-hive access.
 Keep it private and do not paste it into logs, issues, or chat messages.
-The server still binds only to `127.0.0.1`; experimental Linux support does not expose hi-hive publicly.
+The server still binds only to `127.0.0.1`; Linux support does not expose hi-hive publicly.
 
 ## Sleep prevention
 
 On macOS, sleep prevention uses `caffeinate`.
-On Linux, experimental sleep prevention uses `systemd-inhibit` and requires an active `systemd-logind` session.
+On Linux, sleep prevention uses `systemd-inhibit` and requires an active `systemd-logind` session.
 The existing five-minute grace period applies on both platforms.
 
 ## Logging in

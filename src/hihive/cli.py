@@ -68,7 +68,7 @@ Server commands:
   serve [--port N] [--shell-env]
                               Run the server in the foreground (default port: $PORT or 4567).
                               --shell-env loads your login shell's environment first (used by the service)
-  service install [--port N]  Install the login service (launchd or experimental systemd)
+  service install [--port N]  Install the login service (launchd on macOS, systemd on Linux)
   service uninstall           Stop and remove the login service
   service status              Show service status
   service restart             Restart the installed service

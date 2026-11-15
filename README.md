@@ -12,11 +12,9 @@ And here's the part that really excites me: there's a CLI tool. Which means your
 
 ## Supported platforms
 
-- macOS: supported with a launchd user service.
-- Linux: experimental on systemd-based distributions, with foreground and systemd user-service modes.
-  Linux CI is non-blocking while support is validated across distributions.
+- macOS: supported.
+- Linux: available and tested on Ubuntu 24.04.
 - Windows: not supported.
-- Harnesses: Claude Code 2.1.283 or newer, Pi 0.87.1 or newer.
 
 ## How It Works
 
@@ -48,7 +46,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), [Claude Code](https://claude.ai
 
 ```bash
 uv tool install git+https://github.com/ertygiq/hi-hive
-hihive service install   # launchd on macOS; experimental systemd user service on Linux
+hihive service install
 hihive open
 ```
 
