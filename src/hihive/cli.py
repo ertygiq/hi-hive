@@ -412,6 +412,7 @@ class HiHiveCLI:
             puts(f"  ssh -N -L {port}:127.0.0.1:{port} <user>@<hi-hive-host>")
             puts("Then open this login URL on your computer:")
             puts(url)
+            puts("This URL grants full hi-hive access. Keep it private and do not paste it into logs or issues.")
 
     # --- HTTP ---
 

@@ -1,3 +1,4 @@
+import os
 import plistlib
 import shutil
 import subprocess
@@ -31,11 +32,16 @@ def test_linux_install_writes_private_direct_systemd_user_service(service_home, 
     monkeypatch.setattr(service.subprocess, "run",
                         lambda args, **kwargs: calls.append((args, kwargs)) or Result())
 
-    service.install(4789)
+    previous_umask = os.umask(0o022)
+    try:
+        service.install(4789)
+    finally:
+        os.umask(previous_umask)
 
     path = service.systemd_path()
     text = path.read_text()
     assert path.stat().st_mode & 0o777 == 0o600
+    assert hive.stat().st_mode & 0o777 == 0o700
     assert 'ExecStart=/opt/hi\\x20hive/bin/hihive serve --shell-env' in text
     assert f"WorkingDirectory={service._systemd_path(hive)}" in text
     assert 'Environment="PORT=4789"' in text
@@ -50,8 +56,40 @@ def test_linux_install_writes_private_direct_systemd_user_service(service_home, 
     assert "/bin/sh" not in text
     assert [call[0] for call in calls] == [
         ["systemctl", "--user", "daemon-reload"],
-        ["systemctl", "--user", "enable", "--now", service.UNIT_NAME],
+        ["systemctl", "--user", "enable", service.UNIT_NAME],
+        ["systemctl", "--user", "restart", service.UNIT_NAME],
     ]
+
+
+def test_linux_reinstall_applies_changed_port_and_preserves_existing_home_mode(service_home, monkeypatch):
+    _home, hive = service_home
+    hive.mkdir(parents=True)
+    hive.chmod(0o755)
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(service.subprocess, "run",
+                        lambda args, **kwargs: calls.append(args) or Result())
+
+    service.install(4567)
+    service.install(4789)
+
+    text = service.systemd_path().read_text()
+    assert 'Environment="PORT=4789"' in text
+    assert hive.stat().st_mode & 0o777 == 0o755
+    assert calls.count(["systemctl", "--user", "restart", service.UNIT_NAME]) == 2
+
+
+def test_linux_install_rejects_hive_home_that_is_a_file(service_home, monkeypatch):
+    _home, hive = service_home
+    hive.parent.mkdir(parents=True)
+    hive.write_text("not a directory")
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("must fail before systemctl"))
+
+    with pytest.raises(FileExistsError):
+        service.install(4567)
 
 
 @pytest.mark.skipif(not shutil.which("systemd-analyze"), reason="systemd-analyze is not installed")

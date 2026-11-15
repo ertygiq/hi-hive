@@ -49,6 +49,8 @@ The Settings restart button is hidden in foreground mode because no service mana
 
 `hihive open` uses the desktop browser when one is available.
 In a headless or SSH session it prints a loopback-only SSH tunnel example and the login URL.
+That URL grants full hi-hive access.
+Keep it private and do not paste it into logs, issues, or chat messages.
 The server still binds only to `127.0.0.1`; experimental Linux support does not expose hi-hive publicly.
 
 ## Sleep prevention

@@ -193,15 +193,22 @@ def _systemd_unit(port):
     return "\n".join(lines)
 
 
+def _ensure_private_hive_home():
+    # exist_ok preserves an existing directory's mode but still rejects a file.
+    paths.hive_home().mkdir(parents=True, mode=0o700, exist_ok=True)
+
+
 def _install_systemd(port):
     _require_systemctl()
-    paths.hive_home().mkdir(parents=True, exist_ok=True)
+    _ensure_private_hive_home()
     path = systemd_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_systemd_unit(port), encoding="utf-8")
     os.chmod(path, 0o600)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "--now", UNIT_NAME], check=True)
+    subprocess.run(["systemctl", "--user", "enable", UNIT_NAME], check=True)
+    # Restart also starts an inactive unit and always applies a rewritten unit.
+    subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
     print(f"Wrote {path}")
     print(f"Started {UNIT_NAME} on port {port} (experimental systemd user service)")
     print(f"Logs: journalctl --user -u {UNIT_NAME} -f")

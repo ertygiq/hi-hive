@@ -139,6 +139,8 @@ def test_open_prints_ssh_tunnel_and_login_url_in_headless_linux(tmp_path, monkey
     output = capsys.readouterr().out
     assert "ssh -N -L 4789:127.0.0.1:4789 <user>@<hi-hive-host>" in output
     assert "http://localhost:4789/login#token=" in output
+    assert "grants full hi-hive access" in output
+    assert "do not paste it into logs or issues" in output
 
 
 def test_show_prints_only_roles_and_content_not_delivery_or_kind(capsys):
