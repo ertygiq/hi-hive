@@ -84,6 +84,7 @@ hihive retry <id>                  # retry a task
 
 Task IDs can be shortened to a unique prefix (e.g. `4f63e134` instead of the full UUID).
 With more than one project, commands that list or start tasks need `--project NAME` or `HIVE_PROJECT`.
+Commands that take a task ID find it in any project, unless you name a project: then the task must belong to it.
 Agents that Hive starts work in their own task's project automatically.
 
 The CLI connects to the server that uses `~/.hihive` (or `HIVE_HOME`), on whatever port it runs.

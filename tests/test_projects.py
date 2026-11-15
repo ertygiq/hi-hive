@@ -297,3 +297,49 @@ def test_cli_start_sends_the_project_and_finds_harnesses_only_in_it(monkeypatch,
     with pytest.raises(Exit):
         ProjectsCLI(PROJECTS).cmd_start(["-p", "hello", "--harness", "host"])
     assert "No harness named 'host' in this project" in capsys.readouterr().err
+
+
+class TaskCLI(ProjectsCLI):
+    """Main has task aaaa-1 and bbbb-main; Sandbox has bbbb-sandbox."""
+
+    def get(self, path):
+        if path == "/api/state":
+            return {"queue": [], "workers": [], "results": [
+                {"id": "aaaa-1", "project_id": "aaaa1111"},
+                {"id": "bbbb-main", "project_id": "aaaa1111"},
+                {"id": "bbbb-sandbox", "project_id": "bbbb2222"}]}
+        return super().get(path)
+
+
+def test_task_ids_work_in_any_project_when_none_is_named(monkeypatch):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+    assert TaskCLI(PROJECTS).resolve_task_id("aaaa") == "aaaa-1"
+    with pytest.raises(Exit):
+        TaskCLI(PROJECTS).resolve_task_id("bbbb")
+
+
+@pytest.mark.parametrize("named_by", ["option", "variable"])
+def test_a_named_project_rejects_task_ids_from_other_projects(monkeypatch, capsys, named_by):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+
+    def cli():
+        c = TaskCLI(PROJECTS)
+        if named_by == "option":
+            c.project_arg = "Sandbox"
+        else:
+            monkeypatch.setenv("HIVE_PROJECT", "Sandbox")
+        return c
+
+    with pytest.raises(Exit):
+        cli().resolve_task_id("aaaa")
+    assert "Task 'aaaa' is in project 'Main', not 'Sandbox'" in capsys.readouterr().err
+    # The named project also settles an ID prefix shared with another project.
+    assert cli().resolve_task_id("bbbb") == "bbbb-sandbox"
+
+
+def test_cancel_with_a_named_project_does_not_touch_another_projects_task(monkeypatch):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+    c = TaskCLI(PROJECTS)
+    with pytest.raises(Exit):
+        c.run(["--project", "Sandbox", "cancel", "aaaa"])
+    assert c.posts == []

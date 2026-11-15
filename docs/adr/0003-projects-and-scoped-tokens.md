@@ -81,6 +81,8 @@ For commands that need a project, the CLI takes it from:
 
 With a scoped token, naming another project fails.
 Commands that take a task ID need no project, because task IDs are unique across projects.
+When a project is named with `--project` or `HIVE_PROJECT`, the task must belong to it; otherwise the command fails and names the task's project.
+A named project is an instruction, so ignoring it would hide mistakes such as a task ID from the wrong project.
 
 ## What a bridge must do
 

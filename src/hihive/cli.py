@@ -24,7 +24,8 @@ Projects:
   Tasks, templates, and harnesses belong to a project. Commands that list or start
   tasks use the project named by --project (name or ID), else $HIVE_PROJECT, else the
   only project. With several projects and none named, the command lists them and stops.
-  Commands that take a task ID work in any project.
+  Commands that take a task ID find the task in any project, unless a project is named
+  (--project or $HIVE_PROJECT): then the task must belong to it.
 
 Commands:
   projects                    List projects
@@ -438,9 +439,19 @@ class HiHiveCLI:
         return value
 
     def resolve_task_id(self, prefix):
+        """A named project (--project or $HIVE_PROJECT) limits the task to that project."""
         matches = [task for task in self.all_tasks() if task["id"].startswith(prefix)]
         if not matches:
             self.die(f"No task matching '{prefix}'")
+        if self.project_named():
+            project = self.project()
+            in_project = [t for t in matches if t.get("project_id") == project["id"]]
+            if not in_project:
+                names = {p["id"]: p["name"] for p in self.projects()}
+                found = ", ".join(sorted({f"'{names.get(t.get('project_id'), t.get('project_id'))}'" for t in matches}))
+                self.die(f"Task '{prefix}' is in project {found}, not '{project['name']}'. "
+                         "Name that project, or leave out --project and HIVE_PROJECT.")
+            matches = in_project
         if len(matches) > 1:
             listing = "\n".join(f"  {short_id(t['id'])}  {t.get('label')}" for t in matches)
             self.die(f"Ambiguous ID '{prefix}', matches:\n{listing}")
@@ -469,6 +480,9 @@ class HiHiveCLI:
     def project_matches(project, name):
         return name.lower() == project["name"].lower() or project["id"] == name or (
             len(name) >= 4 and project["id"].startswith(name))
+
+    def project_named(self):
+        return bool(self.project_arg or os.environ.get("HIVE_PROJECT"))
 
     def project(self):
         """The project from --project, else $HIVE_PROJECT, else the only project."""
