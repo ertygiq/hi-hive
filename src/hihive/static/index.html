@@ -390,7 +390,7 @@
         <input type="checkbox" id="cfg-prevent-sleep">
         <span>Prevent system sleep while agents are running</span>
       </label>
-      <div class="muted" style="font-size:12px;margin-top:4px">macOS only; requires <code>caffeinate</code>. Keeps awake for 5 minutes after activity stops.</div>
+      <div class="muted" id="cfg-prevent-sleep-help" style="font-size:12px;margin-top:4px">Keeps awake for 5 minutes after activity stops.</div>
       <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
         <input type="checkbox" id="cfg-show-task-cost">
         <span>Show task cost</span>
@@ -408,7 +408,7 @@
       <div class="muted" style="font-size:12px;margin-top:6px">Buttons for tags in agent output. Add or change them in <code>config.json</code>. Agents can never run them; only a click here does.</div>
     </div>
     <div class="modal-footer">
-      <button class="danger" onclick="restartServer()" title="Restart the server process">↻ Restart server</button>
+      <button class="danger" id="restart-server-btn" onclick="restartServer()" title="Restart the installed service">↻ Restart server</button>
       <div style="flex:1"></div>
       <button onclick="requestCloseModal('settings-modal')">Cancel</button>
       <button class="primary" onclick="saveSettings()">Save</button>

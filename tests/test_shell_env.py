@@ -33,11 +33,13 @@ def test_startup_file_output_is_ignored_and_variables_are_read(test_dir):
 
 def test_shell_variables_are_adopted_but_hive_settings_are_kept(test_dir, monkeypatch):
     monkeypatch.setenv("PORT", "4242")
+    monkeypatch.setenv("HIVE_SUPERVISOR", "systemd")
     monkeypatch.delenv("GEM_HOME", raising=False)
     message = adopt_login_shell_env(fake_shell(test_dir, NOISY))
     assert "loaded" in message
     assert os.environ["GEM_HOME"] == "/gems/ruby-3.2.5"
     assert os.environ["PORT"] == "4242"
+    assert os.environ["HIVE_SUPERVISOR"] == "systemd"
 
 
 @pytest.mark.parametrize("body, reason", [

@@ -1,5 +1,9 @@
+import webbrowser
+
 import pytest
 
+from hihive import cli as cli_module
+from hihive import paths
 from hihive.cli import HiHiveCLI, Exit
 
 
@@ -117,6 +121,24 @@ def test_show_modes_select_explicit_kinds_and_full_prints_each_message_once(caps
         assert full.count(message["content"]) == 1
     assert "[review question] CHECK" in full
     assert "[review answer] REVIEW_ANSWER" in full
+
+
+def test_open_prints_ssh_tunnel_and_login_url_in_headless_linux(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HIVE_HOME", str(tmp_path))
+    monkeypatch.setenv("SSH_CONNECTION", "client server")
+    monkeypatch.delenv("HIVE_TOKEN", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(cli_module.sys, "platform", "linux")
+    monkeypatch.setattr(webbrowser, "open", lambda _url: pytest.fail("headless Linux must not try a browser"))
+    paths.ensure_token()
+    paths.server_lock_file().write_text("4789\n")
+
+    HiHiveCLI().cmd_open()
+
+    output = capsys.readouterr().out
+    assert "ssh -N -L 4789:127.0.0.1:4789 <user>@<hi-hive-host>" in output
+    assert "http://localhost:4789/login#token=" in output
 
 
 def test_show_prints_only_roles_and_content_not_delivery_or_kind(capsys):

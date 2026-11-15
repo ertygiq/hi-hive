@@ -1452,13 +1452,16 @@ async function openSettings(scrollToId, tab = 'project') {
   document.getElementById('cfg-session-viewer-url').value = configCache.session_viewer_url || '';
   const preventSleepEl = document.getElementById('cfg-prevent-sleep');
   preventSleepEl.checked = !!configCache.prevent_sleep_when_running;
+  document.getElementById('cfg-prevent-sleep-help').textContent = configCache.sleep_prevention_requirement
+    + ' Keeps awake for 5 minutes after activity stops.';
   preventSleepEl.onchange = () => {
     if (preventSleepEl.checked && !configCache.sleep_prevention_available) {
       preventSleepEl.checked = false;
-      showMessage("Prevent sleep requires macOS 'caffeinate' command on PATH.", 'Not available');
+      showMessage(configCache.sleep_prevention_requirement, 'Not available');
     }
   };
   document.getElementById('cfg-show-task-cost').checked = !!configCache.show_task_cost;
+  document.getElementById('restart-server-btn').style.display = configCache.restart_available ? '' : 'none';
 
   renderProjectHarnessSection(project?.default_harness);
   renderHarnessesList();
@@ -1781,7 +1784,7 @@ async function restartServer() {
     // Server shuts down before responding; that's fine.
   }
   closeModal('settings-modal');
-  // Wait for launchd to respawn, then resume polling.
+  // Wait for the installed service manager to respawn the server, then resume polling.
   setTimeout(() => poll(), 2000);
 }
 

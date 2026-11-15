@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -126,6 +127,7 @@ class PoolManager:
         self._show_task_cost = False
         self._sleep_preventer = None
         self._sleep_preventer_grace_until = None
+        self._sleep_preventer_disabled = False
         self._harnesses = []
         self._default_harness = None
         self._projects = {}
@@ -452,7 +454,9 @@ class PoolManager:
                 "session_viewer_url": self._session_viewer_url,
                 "allowed_hosts": self._allowed_hosts,
                 "prevent_sleep_when_running": self._prevent_sleep_when_running,
-                "sleep_prevention_available": _caffeinate_available(),
+                "sleep_prevention_available": (_sleep_preventer_command() is not None
+                                               and not self._sleep_preventer_disabled),
+                "sleep_prevention_requirement": self._sleep_prevention_requirement(),
                 "show_task_cost": self._show_task_cost,
                 "projects": [self._project_summary(p) for p in self._projects.values()],
                 "harnesses": self._harnesses,
@@ -528,8 +532,8 @@ class PoolManager:
                 config_changed = True
             if "prevent_sleep_when_running" in params:
                 requested = bool(params["prevent_sleep_when_running"])
-                if requested and not _caffeinate_available():
-                    raise HiveError("Prevent sleep requires macOS 'caffeinate' command on PATH.")
+                if requested and (_sleep_preventer_command() is None or self._sleep_preventer_disabled):
+                    raise HiveError(self._sleep_prevention_requirement())
                 self._prevent_sleep_when_running = requested
                 if not requested:
                     self._stop_sleep_preventer()
@@ -1394,26 +1398,48 @@ class PoolManager:
     def _active_agent_work(self):
         return any(task["status"] in ACTIVE for task in self._tasks.values())
 
+    def _sleep_prevention_requirement(self):
+        requirement = _sleep_prevention_requirement()
+        if self._sleep_preventer_disabled:
+            return requirement + " The inhibitor exited unexpectedly; restart hi-hive to retry."
+        return requirement
+
     def _ensure_sleep_preventer(self):
-        if not self._prevent_sleep_when_running or not _caffeinate_available():
+        command = _sleep_preventer_command()
+        if not self._prevent_sleep_when_running or command is None or self._sleep_preventer_disabled:
             return
-        if self._sleep_preventer and self._sleep_preventer.poll() is None:
+        if self._sleep_preventer:
+            status = self._sleep_preventer.poll()
+            if status is None:
+                return
+            self._sleep_preventer = None
+            self._sleep_preventer_disabled = True
+            print(f"[sleep] inhibitor exited with status {status}; disabled until hi-hive restarts", file=sys.stderr)
             return
         try:
-            self._sleep_preventer = subprocess.Popen(["caffeinate", "-i", "-m", "-s"], stdin=subprocess.DEVNULL,
-                                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._sleep_preventer = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                                     start_new_session=True)
             self._sleep_preventer_grace_until = None
         except OSError as error:
-            print(f"[sleep] failed to start caffeinate: {error}", file=sys.stderr)
+            print(f"[sleep] failed to start sleep inhibitor; disabled until hi-hive restarts: {error}", file=sys.stderr)
             self._sleep_preventer = None
+            self._sleep_preventer_disabled = True
 
     def _stop_sleep_preventer(self):
         if self._sleep_preventer and self._sleep_preventer.poll() is None:
-            self._sleep_preventer.terminate()
+            try:
+                os.killpg(self._sleep_preventer.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 self._sleep_preventer.wait(2)
             except subprocess.TimeoutExpired:
-                pass
+                try:
+                    os.killpg(self._sleep_preventer.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                self._sleep_preventer.wait()
         self._sleep_preventer = None
         self._sleep_preventer_grace_until = None
 
@@ -1484,8 +1510,22 @@ def _task_harness_id(task):
     return str(task.get("harness") or "").strip() or LEGACY_TASK_HARNESS_ID
 
 
-def _caffeinate_available():
-    return shutil.which("caffeinate") is not None
+def _sleep_preventer_command():
+    if sys.platform == "darwin" and shutil.which("caffeinate"):
+        return ["caffeinate", "-i", "-m", "-s"]
+    if sys.platform.startswith("linux") and shutil.which("systemd-inhibit"):
+        return ["systemd-inhibit", "--what=sleep:idle", "--who=hi-hive",
+                "--why=Agents are running", "--mode=block", sys.executable, "-c",
+                "import signal; signal.pause()"]
+    return None
+
+
+def _sleep_prevention_requirement():
+    if sys.platform == "darwin":
+        return "Requires macOS caffeinate on PATH."
+    if sys.platform.startswith("linux"):
+        return "Requires systemd-inhibit on PATH and an active systemd-logind session."
+    return "Sleep prevention is unavailable on this platform."
 
 
 def _derive_label(prompt):

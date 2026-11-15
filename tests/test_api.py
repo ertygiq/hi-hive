@@ -125,6 +125,16 @@ def test_validation_errors_are_json_for_the_ui(api):
     assert response.json()["error"] == "Invalid message ID"
 
 
+def test_foreground_server_refuses_restart_and_reports_it_unavailable(api, monkeypatch):
+    monkeypatch.delenv("HIVE_SUPERVISOR", raising=False)
+    config = api.client.get("/api/config").json()
+    assert config["restart_available"] is False
+    assert config["service_manager"] is None
+    response = api.client.post("/api/control/restart", json={}, headers=TRUSTED)
+    assert response.status_code == 409
+    assert "installed service" in response.json()["error"]
+
+
 def test_unconfigured_output_action_is_not_found(api):
     response = api.client.post("/api/output_actions/run-id/run", json={"value": "ab12"}, headers=TRUSTED)
     assert response.status_code == 404

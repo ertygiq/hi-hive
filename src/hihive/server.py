@@ -351,6 +351,9 @@ def create_app(pool, token, manage_pool=True):
         return JSONResponse({"paused": False})
 
     def restart(request, _body):
+        if os.environ.get("HIVE_SUPERVISOR") not in ("launchd", "systemd"):
+            raise HttpError(409, "Restart is available only when hi-hive runs as an installed service")
+
         def stop_server():
             time.sleep(0.3)
             os.kill(os.getpid(), signal.SIGTERM)
@@ -359,7 +362,10 @@ def create_app(pool, token, manage_pool=True):
         return JSONResponse({"ok": True})
 
     def get_config(request, _body):
-        return JSONResponse({**pool.config(), "hive_home": str(hive_home())})
+        supervisor = os.environ.get("HIVE_SUPERVISOR")
+        return JSONResponse({**pool.config(), "hive_home": str(hive_home()),
+                             "restart_available": supervisor in ("launchd", "systemd"),
+                             "service_manager": supervisor})
 
     def put_config(request, body):
         try:

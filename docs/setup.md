@@ -10,22 +10,31 @@ uv tool install git+https://github.com/ertygiq/hi-hive
 
 This installs the `hihive` command and `hih`, the same command with a shorter name.
 
-## Background service (macOS)
+## Background service
 
 ```bash
 hihive service install              # port 4567
 hihive service install --port 8080  # another port
+hihive service status
+hihive service restart
 hihive service uninstall
 ```
 
-The service starts at login and restarts if it crashes.
-When it starts, it loads your login shell's environment (all your shell startup files), so agents and output actions find the same commands and variables as in your terminal.
-Restart the service after changing your shell setup: `launchctl kickstart -k gui/$(id -u)/com.hihive`.
+On macOS, these commands manage a launchd user service.
 Logs are in `~/.hihive/logs/`.
+
+On Linux, these commands provide experimental support for a systemd user service.
+The unit is installed under `~/.config/systemd/user/`, starts with the user session, restarts after failure, and keeps the server and all child processes in one control group.
+Read its logs with `journalctl --user -u com.hihive.service -f`.
+Users who need the service before login can configure systemd user lingering separately with their system administrator.
+
+Both service backends run the installed `hihive` executable directly and load the login shell environment once at startup, so agents and output actions can find the same commands as in a terminal.
+Restart the service after changing shell setup.
+The Settings restart button appears only when the server reports that launchd or systemd supervises it.
 
 ## Foreground server
 
-Run the server in a terminal instead of as a service (the only way on Linux):
+Run the server in a terminal instead of as a service:
 
 ```bash
 hihive serve              # http://localhost:4567
@@ -34,6 +43,19 @@ hihive serve --port 8080  # or PORT=8080 hihive serve
 
 The server records its port in `~/.hihive/server.lock`, so the CLI finds it on any port.
 Only one server can use a data folder at a time; a second one exits with a message.
+The Settings restart button is hidden in foreground mode because no service manager would bring the process back.
+
+## Opening from Linux or SSH
+
+`hihive open` uses the desktop browser when one is available.
+In a headless or SSH session it prints a loopback-only SSH tunnel example and the login URL.
+The server still binds only to `127.0.0.1`; experimental Linux support does not expose hi-hive publicly.
+
+## Sleep prevention
+
+On macOS, sleep prevention uses `caffeinate`.
+On Linux, experimental sleep prevention uses `systemd-inhibit` and requires an active `systemd-logind` session.
+The existing five-minute grace period applies on both platforms.
 
 ## Logging in
 
