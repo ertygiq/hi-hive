@@ -23,8 +23,6 @@
         <div class="menu project-menu hidden" id="project-menu" role="menu"></div>
       </div>
     </div>
-    <button class="to-review" id="to-review-btn" onclick="showToReview()" style="display:none"
-            title="Show only results not marked done"></button>
   </div>
   <div class="header-controls">
     <button class="primary" onclick="openBatchAdd()">▶ Run template</button>
@@ -277,6 +275,35 @@
     <div class="modal-footer">
       <button onclick="requestCloseModal('new-project-modal')">Cancel</button>
       <button class="primary" onclick="submitNewProject()">Create project</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Project Modal -->
+<div class="modal-overlay hidden" id="delete-project-modal" role="dialog" aria-modal="true" aria-labelledby="delete-project-title">
+  <div class="modal" style="width:520px">
+    <div class="modal-header">
+      <h3 id="delete-project-title">Delete project?</h3>
+      <button class="icon-btn" aria-label="Close" onclick="closeDeleteProjectModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="delete-project-summary" class="delete-project-copy"></p>
+      <p id="delete-project-files" class="delete-project-copy"></p>
+      <h4 class="settings-heading">Back up first (recommended)</h4>
+      <button type="button" class="small" id="delete-project-backup" onclick="downloadBackup()">Download backup ZIP</button>
+      <div class="muted delete-project-note">The ZIP covers all projects and excludes the hi-hive login token, logs, and diagnostics.</div>
+      <div class="muted delete-project-note" id="delete-project-home"></div>
+      <div class="delete-project-warning">The ZIP contains raw settings, prompts, and agent answers. These may contain passwords, code, or personal data. Keep the file private.</div>
+      <div class="form-group" style="margin-top:18px">
+        <label for="delete-project-name" id="delete-project-name-label">Type the project name to confirm</label>
+        <input type="text" id="delete-project-name" aria-describedby="delete-project-name-help"
+               oninput="updateDeleteProjectButton()" onkeydown="if(event.key==='Enter' && !document.getElementById('delete-project-confirm').disabled) confirmDeleteProject()">
+        <div class="muted" id="delete-project-name-help" style="font-size:12px;margin-top:4px">Delete turns on when the name matches exactly.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeDeleteProjectModal()">Cancel</button>
+      <button class="primary danger" id="delete-project-confirm" onclick="confirmDeleteProject()" disabled>Delete project</button>
     </div>
   </div>
 </div>

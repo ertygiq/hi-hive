@@ -1,7 +1,10 @@
 import copy
+import io
 import json
 import os
+import re
 import uuid
+import zipfile
 
 import pytest
 from starlette.testclient import TestClient
@@ -164,10 +167,58 @@ def test_state_changing_requests_require_json(api):
 
 
 def test_ui_is_served_without_caching(api):
+    responses = {}
     for path in ("/", "/app.js", "/style.css"):
         response = api.client.get(path)
+        responses[path] = response.text
         assert response.status_code == 200
         assert "no-store" in response.headers["cache-control"]
+    assert "to-review-btn" not in responses["/"]
+    assert "showToReview" not in responses["/app.js"]
+    assert ".to-review" not in responses["/style.css"]
+
+
+def test_backup_is_full_token_only_and_contains_exactly_the_allowlisted_snapshot(api, test_dir):
+    excluded = {
+        "token": "LOGIN-TOKEN-MARKER",
+        "logs/server.log": "LOG-MARKER",
+        "runner-diagnostics/task.jsonl": "DIAGNOSTIC-MARKER",
+    }
+    for relative, marker in excluded.items():
+        path = os.path.join(test_dir, relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as file:
+            file.write(marker)
+    response = api.client.post("/api/backup", json={}, headers=TRUSTED)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert re.fullmatch(r'attachment; filename="hi-hive-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.zip"',
+                        response.headers["content-disposition"])
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["config.json", "data/state.json"]
+        assert archive.testzip() is None
+        config_content = archive.read("config.json")
+        state_content = archive.read("data/state.json")
+        json.loads(config_content)
+        state = json.loads(state_content)
+        assert api.task_id in state["tasks"]
+        assert not any(marker.encode() in config_content + state_content for marker in excluded.values())
+
+    browser = TestClient(api.client.app, base_url="http://localhost")
+    assert browser.post("/login", json={"token": TOKEN}, headers=TRUSTED).status_code == 204
+    assert browser.post("/api/backup", json={}, headers=TRUSTED).status_code == 200
+
+    unauthenticated = TestClient(api.client.app, base_url="http://localhost")
+    assert unauthenticated.post("/api/backup", json={}, headers=TRUSTED).status_code == 401
+    assert api.client.post("/api/backup", json={}).status_code == 403
+    assert api.client.post("/api/backup", json={}, headers={"Origin": "http://evil.example"}).status_code == 403
+
+    agent = api.pool._agent_tokens.issue(next(iter(api.pool._projects)), "agent", runner=type("R", (), {"state": "idle"})())
+    refused = api.client.post("/api/backup", json={}, headers={**TRUSTED, "Authorization": f"Bearer {agent}"})
+    assert refused.status_code == 403
+    assert api.client.post("/api/backup", json={}, headers={**TRUSTED, "Authorization": "Bearer wrong"}).status_code == 401
 
 
 def test_api_requires_the_secret(api):

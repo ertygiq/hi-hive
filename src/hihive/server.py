@@ -7,6 +7,7 @@ import os
 import signal
 import threading
 import time
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
@@ -18,7 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import HiveError
 from .diagnostics import redact
-from .paths import STATIC_DIR
+from .paths import STATIC_DIR, hive_home
 
 JSON_METHODS = {"POST", "PUT", "PATCH"}
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -233,6 +234,15 @@ def create_app(pool, token, manage_pool=True):
             return error(400, str(failure))
         return JSONResponse({"id": project_id})
 
+    def backup(_request, _body):
+        content = pool.backup_zip()
+        stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+        return Response(content, media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="hi-hive-backup-{stamp}.zip"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        })
+
     def delete_project(request, _body):
         result = pool.delete_project(request.path_params["id"])
         if result == "last_project":
@@ -349,7 +359,7 @@ def create_app(pool, token, manage_pool=True):
         return JSONResponse({"ok": True})
 
     def get_config(request, _body):
-        return JSONResponse(pool.config())
+        return JSONResponse({**pool.config(), "hive_home": str(hive_home())})
 
     def put_config(request, body):
         try:
@@ -391,6 +401,7 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/search", run(search, agents=True)),
         Route("/api/projects", run(projects, agents=True), methods=["GET"]),
         Route("/api/projects", run(create_project), methods=["POST"]),
+        Route("/api/backup", run(backup), methods=["POST"]),
         Route("/api/projects/{id}", run(delete_project), methods=["DELETE"]),
         Route("/api/tasks", run(add_task, agents=True), methods=["POST"]),
         Route("/api/tasks/batch", run(add_batch, agents=True), methods=["POST"]),

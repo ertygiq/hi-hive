@@ -8,7 +8,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from hihive import HiveError
-from hihive.cli import Exit, HiHiveCLI
+from hihive.cli import Exit, HiHiveCLI, USAGE
 from hihive.pool import PoolManager
 from hihive.server import create_app
 from conftest import FIXTURE, wait_until
@@ -84,11 +84,20 @@ def test_tasks_use_only_harnesses_available_in_their_project(setup):
         setup.pool.retry_task(task, harness="host")
 
 
+def test_config_rejects_leaving_any_project_without_a_harness(setup):
+    before = setup.pool.config()
+    with pytest.raises(HiveError, match="none available in 'Sandbox'"):
+        setup.pool.update_config({"harnesses": [harness("host", only=[setup.main])], "max_parallel": 9})
+    assert setup.pool.config()["max_parallel"] == before["max_parallel"]
+    assert [h["id"] for h in setup.pool.config()["harnesses"]] == ["host", "docker"]
+
+
 def test_every_agent_start_rechecks_availability(setup):
     """A task queued before its harness was limited elsewhere must not start."""
     task = setup.pool.add_task("queued", project_id=setup.main)
-    setup.pool.update_config({"harnesses": [harness("host", only=[setup.sandbox]),
-                                            harness("docker", only=[setup.sandbox])]})
+    # Bypass config validation to simulate availability changing outside a config save.
+    setup.pool._harnesses = [harness("host", only=[setup.sandbox]),
+                             harness("docker", only=[setup.sandbox])]
     setup.pool._spawn_task(setup.pool._tasks[task])
     assert setup.pool._tasks[task]["status"] == "failed"
     assert "not available" in setup.pool._tasks[task]["failure_details"]
@@ -108,6 +117,7 @@ def test_templates_and_review_sections_belong_to_one_project(setup):
 
 def test_deleting_a_project_removes_its_work_and_its_place_in_harness_lists(setup):
     task = setup.pool.add_task("gone", project_id=setup.sandbox)
+    assert setup.pool.delete_project(setup.sandbox) == "active_tasks"
     setup.pool._tasks[task]["status"] = "completed"
     keep = setup.pool.add_task("kept", project_id=setup.main)
     assert setup.pool.delete_project(setup.sandbox) is True
@@ -218,7 +228,8 @@ def test_an_agent_token_cannot_run_another_projects_template(api, setup):
 
 @pytest.mark.parametrize("method,path", [
     ("GET", "/api/config"), ("PUT", "/api/config"), ("POST", "/api/output_actions/x/run"),
-    ("POST", "/api/templates"), ("POST", "/api/projects"), ("POST", "/api/control/pause"),
+    ("POST", "/api/templates"), ("POST", "/api/projects"), ("POST", "/api/backup"),
+    ("POST", "/api/control/pause"),
     ("POST", "/api/control/restart"), ("POST", "/api/queue/reorder")])
 def test_an_agent_token_cannot_change_configuration_or_run_host_commands(api, method, path):
     response = api.call(method, path, api.agent, json={})
@@ -242,6 +253,11 @@ def test_the_full_token_sees_all_projects_or_one(api, setup):
 
 
 # --- CLI ---
+
+def test_cli_help_explains_project_ownership_and_global_harnesses():
+    assert "Tasks, templates, review sections, and working directories belong to projects." in USAGE
+    assert "Harnesses are configured globally and can be made available to selected projects." in USAGE
+
 
 class ProjectsCLI(HiHiveCLI):
     def __init__(self, projects):

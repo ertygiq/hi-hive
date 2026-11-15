@@ -1,5 +1,6 @@
 """Task pool: queue, scheduling, persistence, and the runners' event handling."""
 
+import io
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from datetime import UTC, datetime
 
 from . import HiveError
@@ -507,6 +509,13 @@ class PoolManager:
                     if template["project_id"] not in (projects or self._projects):
                         raise HiveError(f"Template '{template['name']}' belongs to an unknown project")
                 _validate_template_names(templates)
+            proposed_harnesses = harnesses if harnesses is not None else self._harnesses
+            proposed_projects = projects if projects is not None else self._projects
+            unavailable = [p["name"] for p in proposed_projects.values()
+                           if not any(pj.available_in(h, p) for h in proposed_harnesses)]
+            if unavailable:
+                names = ", ".join(f"'{name}'" for name in unavailable)
+                raise HiveError(f"Every project needs at least one available harness; none available in {names}")
             config_changed = False
             if _given(params, "max_parallel"):
                 self._max_parallel = max(_to_int(params["max_parallel"]), 1)
@@ -585,8 +594,8 @@ class PoolManager:
             if len(self._projects) == 1:
                 return "last_project"
             ids = [i for i in self._task_order if self._tasks[i]["project_id"] == project_id]
-            if any(self._tasks[i]["status"] in ACTIVE or (self._tasks[i].get("runner")
-                   and self._tasks[i]["runner"].state != "exited") for i in ids):
+            if any(self._tasks[i]["status"] == "queued" or self._tasks[i]["status"] in ACTIVE
+                   or (self._tasks[i].get("runner") and self._tasks[i]["runner"].state != "exited") for i in ids):
                 return "active_tasks"
             for task_id in ids:
                 self._tasks.pop(task_id)
@@ -638,6 +647,23 @@ class PoolManager:
         """The project an agent token is limited to, or None if the token is not an agent token."""
         with self._lock:
             return self._agent_tokens.lookup(token)
+
+    def backup_zip(self):
+        """A consistent ZIP snapshot of the two allowlisted restore files."""
+        with self._lock:
+            self._save_state(strict=True)
+            try:
+                with open(self.config_file, "rb") as file:
+                    config = file.read()
+                with open(self.persist_file, "rb") as file:
+                    state = file.read()
+            except OSError as error:
+                raise HiveError(f"Cannot read backup files: {error}") from error
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                output.writestr("config.json", config)
+                output.writestr("data/state.json", state)
+            return archive.getvalue()
 
     def run_output_action(self, tag, value):
         """"not_found", None on success, or the failure message."""

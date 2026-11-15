@@ -391,6 +391,71 @@ test('an unchanged-state reply keeps the board and asks with the current state n
   assert.match(document.getElementById('results-list').innerHTML, /Kept/);
 });
 
+test('deep search is project-aware and project switches schedule a new search', async () => {
+  const { context } = client();
+  context.urls = [];
+  context.fetch = async url => {
+    context.urls.push(url);
+    return { json: async () => ({ version: 4, ids: ['match'] }) };
+  };
+  vm.runInContext(`
+    configCache = { projects: [{id:'a', name:'A'}, {id:'b', name:'B'}], harnesses: [] };
+    currentProjectId = 'a'; selectedTaskId = null; resultsQuery = 'needle'; deepSearch = true;
+    state = fullState = {version: 4, queue: [], workers: [], results: [], stats: {}};
+  `, context);
+  await vm.runInContext('runDeepSearch()', context);
+  assert.match(context.urls[0], /project=a/);
+  assert.equal(vm.runInContext('deepMatches.projectId', context), 'a');
+
+  let scheduled = 0;
+  context.scheduleDeepSearch = () => scheduled++;
+  context.render = () => {};
+  context.renderProjectSwitcher = () => {};
+  context.closeProjectMenu = () => {};
+  vm.runInContext("switchProject('b')", context);
+  assert.equal(scheduled, 1);
+  assert.equal(vm.runInContext("deepMatchesTask({id:'match'})", context), false);
+  await vm.runInContext('runDeepSearch()', context);
+  assert.match(context.urls[1], /project=b/);
+  assert.equal(vm.runInContext('deepMatches.projectId', context), 'b');
+});
+
+test('harness availability warning counts queued and completed affected tasks', () => {
+  const { context } = client();
+  vm.runInContext(`
+    configCache = {
+      projects: [{id:'p', use_shared_harnesses:true}],
+      harnesses: [{id:'h', only:null}]
+    };
+    projectsLocal = [{id:'p', use_shared_harnesses:false}];
+    harnessesLocal = [{id:'h', only:null}];
+    fullState = {
+      queue: [{id:'q', project_id:'p', harness:'h'}], workers: [],
+      results: [{id:'r', project_id:'p', harness:'h'}]
+    };
+  `, context);
+  const warning = vm.runInContext('harnessAvailabilityWarning()', context);
+  assert.match(warning, /1 queued task/);
+  assert.match(warning, /1 completed task/);
+  vm.runInContext(`
+    projectsLocal = [{id:'p', use_shared_harnesses:true}];
+    harnessesLocal = [{id:'h', only:null}, {id:'new', only:['p']}];
+  `, context);
+  assert.equal(vm.runInContext('harnessAvailabilityWarning()', context), null);
+});
+
+test('project deletion requires the exact case-sensitive project name', () => {
+  const { context, document } = client();
+  vm.runInContext("configCache = { projects: [{id:'p', name:'Mobile app'}] }; currentProjectId = deletingProjectId = 'p';", context);
+  const input = document.getElementById('delete-project-name');
+  const button = document.getElementById('delete-project-confirm');
+  for (const [value, disabled] of [['mobile app', true], [' Mobile app ', false]]) {
+    input.value = value;
+    vm.runInContext('updateDeleteProjectButton()', context);
+    assert.equal(button.disabled, disabled);
+  }
+});
+
 test('detail scroll position is kept per task and tab while switching', () => {
   const { context, document } = client();
   const body = document.getElementById('detail-body');

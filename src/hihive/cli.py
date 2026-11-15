@@ -21,14 +21,18 @@ CLI for hi-hive - parallel task runner for coding agents (Claude Code, Pi).
 Usage: hihive [--project NAME] <command> [args]
 
 Projects:
-  Tasks, templates, and harnesses belong to a project. Commands that list or start
-  tasks use the project named by --project (name or ID), else $HIVE_PROJECT, else the
-  only project. With several projects and none named, the command lists them and stops.
-  Commands that take a task ID find the task in any project, unless a project is named
+  Tasks, templates, review sections, and working directories belong to projects.
+  Harnesses are configured globally and can be made available to selected projects.
+  Commands that list or start tasks use the project named by --project (name or ID),
+  else $HIVE_PROJECT, else the only project. With several
+  projects and none named, project-scoped commands stop and list the available names.
+  Project names are matched case-insensitively. A project ID may be shortened to a unique
+  prefix of at least 4 characters; an exact name or ID wins over a prefix.
+  Commands that take a task ID find it in any project, unless a project is named
   (--project or $HIVE_PROJECT): then the task must belong to it.
 
 Commands:
-  projects                    List projects
+  projects                    List projects (* = project other commands would use)
   status                      Show queue/running/completed counts
   templates                   List prompt templates
   harnesses                   List harnesses available in the project (* = default)

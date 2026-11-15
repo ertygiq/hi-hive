@@ -146,6 +146,7 @@ function switchProject(id) {
   if (selectedTaskId && !findTask(selectedTaskId)) closeDetail();
   renderProjectSwitcher();
   render();
+  scheduleDeepSearch();
 }
 
 function renderProjectSwitcher() {
@@ -346,7 +347,7 @@ let deepSearch = localStorage.getItem(RESULTS_DEEP_SEARCH_KEY) === '1';
 // history are not in the state payload, so the server matches those and
 // returns task IDs (/api/search). deepMatches caches the last answer, keyed by
 // the query and state version it was computed for.
-let deepMatches = { query: '', version: null, ids: new Set() };
+let deepMatches = { query: '', projectId: null, version: null, ids: new Set() };
 let deepSearchTimer = null;
 let deepSearchSeq = 0;
 
@@ -382,20 +383,21 @@ function deepSearchActive() {
 function scheduleDeepSearch() {
   clearTimeout(deepSearchTimer);
   if (!deepSearchActive()) return;
-  if (deepMatches.query === resultsQuery && deepMatches.version === state.version) return;
+  if (deepMatches.query === resultsQuery && deepMatches.projectId === currentProject()?.id
+      && deepMatches.version === state.version) return;
   deepSearchTimer = setTimeout(runDeepSearch, 150);
 }
 
 async function runDeepSearch() {
   const query = resultsQuery;
+  const projectId = currentProject()?.id || '';
   const seq = ++deepSearchSeq;
   try {
-    const project = currentProject()?.id || '';
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&project=${encodeURIComponent(project)}`);
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&project=${encodeURIComponent(projectId)}`);
     const data = await res.json();
     // Drop answers that a newer request or a changed query has overtaken.
-    if (seq !== deepSearchSeq || query !== resultsQuery) return;
-    deepMatches = { query, version: data.version, ids: new Set(data.ids || []) };
+    if (seq !== deepSearchSeq || query !== resultsQuery || projectId !== currentProject()?.id) return;
+    deepMatches = { query, projectId, version: data.version, ids: new Set(data.ids || []) };
     renderResults();
   } catch (e) {
     console.error('Search error:', e);
@@ -403,18 +405,14 @@ async function runDeepSearch() {
 }
 
 function deepMatchesTask(t) {
-  return deepMatches.query === resultsQuery && deepMatches.ids.has(t.id);
+  return deepMatches.query === resultsQuery && deepMatches.projectId === currentProject()?.id
+    && deepMatches.ids.has(t.id);
 }
 
 function onResultsSortChange() {
   resultsSort = document.getElementById('results-sort').value;
   try { localStorage.setItem(RESULTS_SORT_KEY, resultsSort); } catch (e) {}
   renderResults();
-}
-
-function showToReview() {
-  if (!hideDone) onHideDoneToggle();
-  document.getElementById('results-list').scrollTop = 0;
 }
 
 function onHideDoneToggle() {
@@ -541,11 +539,6 @@ function render() {
 }
 
 function renderStats() {
-  // The one header number worth acting on: results not marked done yet.
-  const toReview = (state.results || []).filter(t => !t.done).length;
-  const toReviewBtn = document.getElementById('to-review-btn');
-  toReviewBtn.textContent = `${toReview} to review`;
-  toReviewBtn.style.display = toReview ? '' : 'none';
   // The worker limit is shared by all projects, so the count is too.
   document.getElementById('worker-count').textContent = `${state.running_total ?? state.stats.running ?? 0} / ${state.max_parallel}`;
   document.getElementById('queue-count').textContent = state.stats.queued || 0;
@@ -1548,16 +1541,82 @@ function applyProjectForm() {
   });
 }
 
+let deletingProjectId = null;
+
 async function deleteCurrentProject() {
   const project = currentProject();
   if (!project) return;
   if (projectList().length <= 1) {
-    showMessage('Hive needs at least one project. Create another project before deleting this one.', 'Cannot delete');
-    return;
+    return showMessage('Hive needs at least one project. Create another project before deleting this one.', 'Cannot delete');
   }
-  const taskCount = boardTasks(fullState).filter(t => t.project_id === project.id).length;
-  const what = taskCount ? `its ${taskCount} task${taskCount === 1 ? '' : 's'}, templates, and review sections` : 'its templates and review sections';
-  if (!await showConfirm(`Delete project "${project.name}" with ${what}? This cannot be undone.`)) return;
+  const active = [...(fullState.queue || []), ...(fullState.workers || [])].filter(t => t.project_id === project.id);
+  if (active.length) {
+    return showMessage(`Cancel the ${active.length} queued or running task${active.length === 1 ? '' : 's'} before deleting this project.`, 'Cannot delete');
+  }
+  const snapshot = modalSnapshots.get('settings-modal');
+  if (snapshot !== undefined && snapshot !== modalState('settings-modal')
+      && !await showConfirm('Discard unsaved Settings changes before deleting this project?')) return;
+  closeModal('settings-modal');
+  deletingProjectId = project.id;
+  const tasks = boardTasks(fullState).filter(t => t.project_id === project.id).length;
+  const templates = (configCache?.templates || []).filter(t => t.project_id === project.id).length;
+  const sections = (configCache?.review_sections || []).filter(s => s.project_id === project.id).length;
+  document.getElementById('delete-project-title').textContent = `Delete project "${project.name}"?`;
+  document.getElementById('delete-project-summary').textContent =
+    `This permanently deletes from hi-hive: ${tasks} task${tasks === 1 ? '' : 's'} and their conversations, `
+    + `${templates} template${templates === 1 ? '' : 's'}, and ${sections} review section${sections === 1 ? '' : 's'}. You cannot undo this.`;
+  document.getElementById('delete-project-files').textContent =
+    `Files in ${project.work_dir} are not changed. Harnesses are kept; this project is removed from their availability lists.`;
+  document.getElementById('delete-project-home').textContent =
+    `You can also copy the hi-hive data folder yourself: ${configCache?.hive_home || ''}`;
+  document.getElementById('delete-project-name-label').textContent = `To confirm, type the project name: ${project.name}`;
+  document.getElementById('delete-project-name').value = '';
+  updateDeleteProjectButton();
+  openModal('delete-project-modal');
+  document.getElementById('delete-project-name').focus();
+}
+
+function closeDeleteProjectModal() {
+  deletingProjectId = null;
+  closeModal('delete-project-modal');
+}
+
+function updateDeleteProjectButton() {
+  const project = projectList().find(p => p.id === deletingProjectId);
+  document.getElementById('delete-project-confirm').disabled =
+    !project || document.getElementById('delete-project-name').value.trim() !== project.name;
+}
+
+async function downloadBackup() {
+  const button = document.getElementById('delete-project-backup');
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/backup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Request failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'hi-hive-backup.zip';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    showMessage(error.message || 'Backup download failed.', 'Backup not downloaded');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function confirmDeleteProject() {
+  const project = projectList().find(p => p.id === deletingProjectId);
+  if (!project || document.getElementById('delete-project-name').value.trim() !== project.name) return;
   let res;
   try {
     res = await fetch(`/api/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE' });
@@ -1568,10 +1627,11 @@ async function deleteCurrentProject() {
     const err = await res.json().catch(() => ({}));
     return showMessage(err.error || `Request failed (${res.status})`, 'Project not deleted');
   }
-  closeModal('settings-modal');
+  closeDeleteProjectModal();
   await loadConfig();
   switchProject(projectList()[0].id);
   poll();
+  showMessage(`Project "${project.name}" deleted.`);
 }
 
 function renderTemplatesList() {
@@ -1668,8 +1728,26 @@ async function removeReviewSection(id) {
   renderReviewSectionsList();
 }
 
+function proposedHarnessAvailable(harness, project) {
+  return harness && project && (harness.only == null
+    ? project.use_shared_harnesses !== false : harness.only.includes(project.id));
+}
+
+function harnessAvailabilityWarning() {
+  const oldProjects = new Map((configCache?.projects || []).map(p => [p.id, p]));
+  const newProjects = new Map(projectsLocal.map(p => [p.id, p]));
+  const oldHarnesses = new Map((configCache?.harnesses || []).map(h => [h.id, h]));
+  const newHarnesses = new Map(harnessesLocal.map(h => [h.id, h]));
+  const affected = task => proposedHarnessAvailable(oldHarnesses.get(task.harness), oldProjects.get(task.project_id))
+    && !proposedHarnessAvailable(newHarnesses.get(task.harness), newProjects.get(task.project_id));
+  const queued = (fullState.queue || []).filter(affected).length;
+  const completed = (fullState.results || []).filter(affected).length;
+  if (queued + completed === 0) return null;
+  return `Harness availability is changing. ${queued} queued task${queued === 1 ? '' : 's'} and `
+    + `${completed} completed task${completed === 1 ? '' : 's'} use harnesses that would no longer be available. Save anyway?`;
+}
+
 async function persistSettingsConfig() {
-  applyProjectForm();
   const res = await fetch('/api/config', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1719,6 +1797,9 @@ async function saveSettings() {
     showMessage('This project would have no harnesses. Turn on "Use shared harnesses", or select this project in a harness under "All projects".', 'Settings not saved');
     return;
   }
+  applyProjectForm();
+  const availabilityWarning = harnessAvailabilityWarning();
+  if (availabilityWarning && !await showConfirm(availabilityWarning)) return;
   try {
     await persistSettingsConfig();
   } catch (e) {
@@ -2217,6 +2298,7 @@ function closeModal(id) {
 }
 
 async function requestCloseModal(id) {
+  if (id === 'delete-project-modal') return closeDeleteProjectModal();
   const snapshot = modalSnapshots.get(id);
   if (snapshot !== undefined && snapshot !== modalState(id) &&
       !await showConfirm('Discard unsaved changes?')) return;

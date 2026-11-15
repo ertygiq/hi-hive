@@ -6,7 +6,7 @@ Users who run Hive for unrelated work (different apps, different kinds of tasks)
 There is also a security gap that ADR 0002 left open.
 A dockerized agent can reach the `hihive` CLI through a bridge, a program on the host that runs `hihive` for the container.
 The CLI on the host reads `~/.hihive/token`, so the container gets full access.
-If the user also configures harnesses that run directly on the host, a dockerized agent can start one of them with `hihive add --harness <host harness>`, and that agent then works outside the sandbox.
+If the user also configures harnesses that run directly on the host, a dockerized agent can start one of them with `hihive start -p "..." --harness <host harness>`, and that agent then works outside the sandbox.
 
 So this ADR adds projects, and limits each agent to the project it was started in.
 

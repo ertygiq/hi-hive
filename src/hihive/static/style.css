@@ -77,16 +77,6 @@ header h1 {
   flex-wrap: wrap;
 }
 
-.to-review {
-  padding: 3px 10px;
-  border-radius: 12px;
-  border-color: rgba(88, 166, 255, 0.4);
-  background: rgba(88, 166, 255, 0.1);
-  color: var(--primary);
-  font-weight: 500;
-}
-.to-review:hover { background: rgba(88, 166, 255, 0.2); }
-
 /* Buttons */
 button {
   font-family: inherit;
@@ -1294,6 +1284,17 @@ textarea.code {
   color: var(--text-muted);
   padding: 8px 12px;
   border-top: 1px dashed var(--border);
+}
+.delete-project-copy { font-size: 14px; line-height: 1.5; margin-bottom: 10px; }
+.delete-project-note { font-size: 12px; line-height: 1.45; margin-top: 7px; overflow-wrap: anywhere; }
+.delete-project-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: var(--radius);
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* Settings tabs */

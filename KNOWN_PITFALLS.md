@@ -28,3 +28,6 @@
   Before changing the schema, stop the service with `launchctl bootout`, back up and migrate the file, then start the service again.
 - **New API routes refuse agent tokens by default** (`run(handler)` in `src/hihive/server.py`). Set `agents=True` only after the route limits the request to the agent's project with `task_id_for` or `project_for`.
   Otherwise an agent can read or change tasks in other projects if it learns their IDs (an IDOR between projects); see `docs/adr/0003-projects-and-scoped-tokens.md`.
+- **Build backups from a fixed file allowlist, never by copying the whole Hive home folder.**
+  Include only the intended restore files so the login token, logs, diagnostics, and temporary files stay out of the archive.
+  Treat the archive as sensitive because configuration and conversations may contain credentials, source code, or personal information.
