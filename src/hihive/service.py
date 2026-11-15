@@ -168,8 +168,12 @@ def _systemd_working_directory(value):
     path = os.fspath(value)
     if not os.path.isabs(path):
         raise SystemExit("The hi-hive working directory must be an absolute path")
-    if any(character in path for character in ("\0", "\n", "\r")):
+    if any(ord(character) < 0x20 or ord(character) == 0x7f for character in path):
         raise SystemExit("The hi-hive working directory contains an unsupported control character")
+    if "\\" in path or '"' in path:
+        raise SystemExit("The hi-hive working directory contains a backslash or double quote unsupported by systemd")
+    if path[-1:].isspace():
+        raise SystemExit("The hi-hive working directory cannot end with whitespace")
     return path.replace("%", "%%")
 
 

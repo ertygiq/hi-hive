@@ -66,8 +66,23 @@ def test_systemd_working_directory_keeps_spaces_raw_and_escapes_specifiers():
     assert service._systemd_working_directory("/tmp/wd test%name") == "/tmp/wd test%%name"
     with pytest.raises(SystemExit, match="absolute path"):
         service._systemd_working_directory("relative path")
+
+
+@pytest.mark.parametrize("path", ["/tmp/bad\npath", "/tmp/bad\tpath", "/tmp/bad\fpath", "/tmp/bad\x7fpath"])
+def test_systemd_working_directory_rejects_control_characters(path):
     with pytest.raises(SystemExit, match="control character"):
-        service._systemd_working_directory("/tmp/bad\npath")
+        service._systemd_working_directory(path)
+
+
+@pytest.mark.parametrize("path", ["/tmp/back\\slash", "/tmp/trailing\\", '/tmp/double"quote'])
+def test_systemd_working_directory_rejects_unit_syntax_characters(path):
+    with pytest.raises(SystemExit, match="backslash or double quote"):
+        service._systemd_working_directory(path)
+
+
+def test_systemd_working_directory_rejects_trailing_whitespace():
+    with pytest.raises(SystemExit, match="end with whitespace"):
+        service._systemd_working_directory("/tmp/trailing ")
 
 
 def test_linux_reinstall_applies_changed_port_and_preserves_existing_home_mode(service_home, monkeypatch):
