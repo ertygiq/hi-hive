@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from . import HiveError
 from . import messages as tm
 from . import output_actions
+from . import projects as pj
 from .diagnostics import redact
 from .harness import adapter_for
 from .protocol import IDLE_BACKGROUND, protocol_for
@@ -25,7 +26,10 @@ COST_REFRESH_INTERVAL = 5  # seconds between transcript re-reads for a running t
 LEGACY_TASK_HARNESS_ID = "claude-code"
 ACTIVE = ("running", "reviewing")
 FINISHED = ("completed", "failed", "cancelled")
-TEMPLATE_FIELDS = ("id", "name", "template", "review_section_ids", "color", "work_dir", "agent_args", "harness")
+TEMPLATE_FIELDS = ("id", "project_id", "name", "template", "review_section_ids", "color", "work_dir", "agent_args",
+                   "harness")
+PROJECT_FIELDS = ("id", "name", "color", "work_dir", "use_shared_harnesses", "default_harness")
+SCHEMA_VERSION = 3
 MESSAGE_ID = re.compile(r"[0-9a-f-]{36}", re.IGNORECASE)
 WHITESPACE = re.compile(r"[ \t\r\n\f\v]+")
 ANSI = re.compile(r"\x1b(?:\[[0-9;?<>=]*[a-zA-Z]|\][^\x07]*\x07)")
@@ -37,8 +41,10 @@ TEMPLATE_INPUT = re.compile(r"%(%|\{input\})")
 HARNESS_TYPES = [{"id": "claude-code", "label": "Claude Code"}, {"id": "pi", "label": "Pi"}]
 
 # Variables a parent agent or Hive's own launcher sets that must not reach the
-# agents Hive starts (see KNOWN_PITFALLS.md).
-INHERITED_AGENT_VARS = ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL")
+# agents Hive starts (see KNOWN_PITFALLS.md). Hive sets HIVE_TOKEN itself for each
+# agent; an inherited one would give the agent another agent's project.
+INHERITED_AGENT_VARS = ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL",
+                        "HIVE_TOKEN", "HIVE_PROJECT")
 PYTHON_LAUNCH_VARS = ("PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__", "UV_RUN_RECURSION_DEPTH")
 
 
@@ -110,6 +116,7 @@ class PoolManager:
         self._tasks = {}
         self._task_order = []
         self._max_parallel = None
+        # Read from config.json only to create the first project.
         self._work_dir = None
         self._session_viewer_url = None
         self._allowed_hosts = None
@@ -119,9 +126,11 @@ class PoolManager:
         self._sleep_preventer_grace_until = None
         self._harnesses = []
         self._default_harness = None
+        self._projects = {}
         self._review_sections = {}
         self._templates = {}
         self._output_actions = []
+        self._agent_tokens = pj.AgentTokens()
         self._paused = False
         self._lock = threading.RLock()
         self._running = False
@@ -136,6 +145,8 @@ class PoolManager:
         self._load_state()
         self._ensure_harnesses()
         self._output_actions = output_actions.normalize_all(self._output_actions)
+        if not self._projects:
+            self._create_first_project()
 
     def start(self):
         self._running = True
@@ -162,27 +173,31 @@ class PoolManager:
         for runner in runners:
             runner.join()
         with self._lock:
+            self._agent_tokens.revoke_all()
             self._poll_live_runners()
             self._stop_sleep_preventer()
             self._save_state()
 
     # --- State ---
 
-    def state(self):
+    def state(self, project_id=None):
         with self._lock:
-            return self._state_unlocked()
+            return self._state_unlocked(project_id)
 
-    def state_since(self, since):
-        """None when `since` ("instance:version") names the current state."""
+    def state_since(self, since, project_id=None):
+        """None when `since` ("instance:version") names the current state.
+
+        With project_id, the snapshot holds only that project's tasks.
+        """
         with self._lock:
-            return None if since == f"{self._instance_id}:{self.version}" else self._state_unlocked()
+            return None if since == f"{self._instance_id}:{self.version}" else self._state_unlocked(project_id)
 
     def task_detail(self, task_id):
         with self._lock:
             task = self._tasks.get(task_id)
             return self._serialize_task(task, full=True) if task else None
 
-    def search_result_ids(self, query):
+    def search_result_ids(self, query, project_id=None):
         """IDs of finished tasks whose conversation contains the query, case-insensitively.
 
         Prompt and label matching stays client-side; this covers only the text
@@ -194,6 +209,8 @@ class PoolManager:
             if needle:
                 for task_id in self._task_order:
                     task = self._tasks[task_id]
+                    if project_id and task["project_id"] != project_id:
+                        continue
                     if not (task.get("result_placement") or task["status"] in FINISHED):
                         continue
                     if any(m["role"] in ("user", "assistant") and needle in m["content"].lower()
@@ -203,14 +220,16 @@ class PoolManager:
 
     # --- Task management ---
 
-    def add_task(self, prompt, label=None, harness=None):
+    def add_task(self, prompt, label=None, harness=None, project_id=None):
+        """Without project_id, the task goes to the only project; with several projects one must be named."""
         if not isinstance(prompt, str) or not prompt.strip():
             raise HiveError("Prompt required")
         with self._lock:
+            project = self._project_for_new_task(project_id)
             task_id = str(uuid.uuid4())
-            harness_id = self._resolve_new_task_harness_id(harness=harness)
+            harness_id = self._resolve_new_task_harness_id(project, harness=harness)
             task = self._build_task(task_id, prompt=prompt, label=_clean_label(label) or _derive_label(prompt),
-                                    created_at=now(), harness=harness_id,
+                                    created_at=now(), harness=harness_id, project_id=project["id"],
                                     session_id=self._initial_session_id(harness_id))
             self._tasks[task_id] = task
             self._task_order.append(task_id)
@@ -227,9 +246,10 @@ class PoolManager:
                 return "missing_session"
             task_id = str(uuid.uuid4())
             harness_id = _task_harness_id(parent)
+            self._require_available(self._find_harness(harness_id), self._projects[parent["project_id"]])
             task = self._build_task(task_id, prompt=prompt, label=_clean_label(label) or _derive_label(prompt),
                                     created_at=now(), color=parent.get("color"), template_id=parent.get("template_id"),
-                                    parent_task_id=parent_id, harness=harness_id,
+                                    parent_task_id=parent_id, harness=harness_id, project_id=parent["project_id"],
                                     session_id=self._initial_session_id(harness_id))
             self._tasks[task_id] = task
             self._task_order.append(task_id)
@@ -241,7 +261,8 @@ class PoolManager:
             template = self._templates.get(template_id)
             if not template:
                 raise HiveError("Template not found")
-            harness_id = self._resolve_new_task_harness_id(harness=harness, template_id=template_id)
+            project = self._projects[template["project_id"]]
+            harness_id = self._resolve_new_task_harness_id(project, harness=harness, template_id=template_id)
             ids = []
             for value in inputs or []:
                 value = "" if value is None else str(value)
@@ -253,7 +274,7 @@ class PoolManager:
                 task = self._build_task(task_id, prompt=prompt,
                                         label=_clean_label(value) or _clean_label(template["name"]) or _derive_label(prompt),
                                         created_at=now(), review_prompts=review_prompts, color=template.get("color"),
-                                        template_id=template_id, harness=harness_id,
+                                        template_id=template_id, harness=harness_id, project_id=project["id"],
                                         session_id=self._initial_session_id(harness_id))
                 self._tasks[task_id] = task
                 self._task_order.append(task_id)
@@ -297,9 +318,11 @@ class PoolManager:
             self._bump_version()
             return True
 
-    def cancel_all_tasks(self):
+    def cancel_all_tasks(self, project_id=None):
         with self._lock:
-            changed = sum(1 for task_id in self._task_order if self._cancel_unlocked(self._tasks[task_id]))
+            changed = sum(1 for task_id in self._task_order
+                          if (not project_id or self._tasks[task_id]["project_id"] == project_id)
+                          and self._cancel_unlocked(self._tasks[task_id]))
             if changed:
                 self._bump_version()
             return changed
@@ -327,6 +350,8 @@ class PoolManager:
                 return False
             if any(t.get("parent_task_id") == task_id for t in self._tasks.values()):
                 return "has_children"
+            harness_id = self._find_harness(harness)["id"] if str(harness or "").strip() else _task_harness_id(task)
+            self._require_available(self._find_harness(harness_id), self._projects[task["project_id"]])
             runner = task.get("runner")
             if runner and runner.state != "exited":
                 runner.close("Retry requested")
@@ -334,7 +359,6 @@ class PoolManager:
                 if runner.state != "exited":
                     return False
                 self._poll_live_runners()
-            harness_id = self._find_harness(harness)["id"] if str(harness or "").strip() else _task_harness_id(task)
             task["runner"] = None
             # Keep only ID/hash receipts, not old message text, across retries.
             task.setdefault("message_receipts", []).extend(
@@ -385,16 +409,23 @@ class PoolManager:
             self._start_live_runner(task, "continue", kind="continue", resume=True)
             return True
 
-    def reorder_queue(self, ordered_ids):
+    def reorder_queue(self, ordered_ids, project_id=None):
+        """Reorder the queued tasks (of one project, when given); other tasks keep their places."""
         with self._lock:
-            queued = [i for i in self._task_order if self._tasks[i]["status"] == "queued"]
+            queued = [i for i in self._task_order if self._tasks[i]["status"] == "queued"
+                      and (not project_id or self._tasks[i]["project_id"] == project_id)]
             if not isinstance(ordered_ids, list) or sorted(map(str, ordered_ids)) != sorted(queued):
                 return False
-            others = [i for i in self._task_order if self._tasks[i]["status"] != "queued"]
-            # Running tasks first, then the reordered queue, then finished tasks.
+            moving = set(queued)
+            others = [i for i in self._task_order if i not in moving]
+            # Running tasks first, then the queue, then finished tasks. The reordered
+            # tasks take the queue positions they held, so other projects' queues keep theirs.
             running = [i for i in others if self._tasks[i]["status"] in ACTIVE]
-            done = [i for i in others if self._tasks[i]["status"] not in ACTIVE]
-            self._task_order = running + [str(i) for i in ordered_ids] + done
+            done = [i for i in others if self._tasks[i]["status"] not in ACTIVE and self._tasks[i]["status"] != "queued"]
+            slots = iter(str(i) for i in ordered_ids)
+            queue = [next(slots) if i in moving else i
+                     for i in self._task_order if self._tasks[i]["status"] == "queued"]
+            self._task_order = running + queue + done
             self._bump_version()
             return True
 
@@ -416,14 +447,13 @@ class PoolManager:
         with self._lock:
             return {
                 "max_parallel": self._max_parallel,
-                "work_dir": self._work_dir,
                 "session_viewer_url": self._session_viewer_url,
                 "allowed_hosts": self._allowed_hosts,
                 "prevent_sleep_when_running": self._prevent_sleep_when_running,
                 "sleep_prevention_available": _caffeinate_available(),
                 "show_task_cost": self._show_task_cost,
+                "projects": [self._project_summary(p) for p in self._projects.values()],
                 "harnesses": self._harnesses,
-                "default_harness": self._default_harness,
                 "harness_types": HARNESS_TYPES,
                 "review_sections": list(self._review_sections.values()),
                 "templates": list(self._templates.values()),
@@ -440,19 +470,46 @@ class PoolManager:
         with self._lock:
             # Templates are validated before anything changes, so a rejected
             # Settings save leaves the whole configuration untouched.
+            projects = None
+            if params.get("projects") is not None:
+                projects = dict(self._projects)
+                for update in params["projects"]:
+                    if str(update.get("id")) not in projects:
+                        raise HiveError("Unknown project; create projects with POST /api/projects")
+                    record = pj.project_record(**{k: update.get(k) for k in PROJECT_FIELDS if k in update})
+                    projects[record["id"]] = record
+                pj.validate_project_names(projects.values())
+            harnesses = None
+            if _given(params, "harnesses"):
+                harnesses = [_normalize_harness(h) for h in params["harnesses"]]
+                _validate_harness_names(harnesses)
+                if not harnesses:
+                    raise HiveError("At least one harness is required")
+            actions = None
+            if params.get("output_actions") is not None:
+                try:
+                    actions = output_actions.normalize_all(params["output_actions"])
+                except ValueError as error:
+                    raise HiveError(str(error)) from None
+            review_sections = None
+            if params.get("review_sections") is not None:
+                review_sections = {}
+                for section in params["review_sections"]:
+                    if not (section.get("id") and section.get("prompt")):
+                        continue
+                    section_id = str(section["id"])
+                    review_sections[section_id] = _review_section_record(section, projects or self._projects)
             templates = None
             if params.get("templates") is not None:
                 templates = [_template_record(**{k: t.get(k) for k in TEMPLATE_FIELDS if k in t})
                              for t in params["templates"]]
+                for template in templates:
+                    if template["project_id"] not in (projects or self._projects):
+                        raise HiveError(f"Template '{template['name']}' belongs to an unknown project")
                 _validate_template_names(templates)
             config_changed = False
             if _given(params, "max_parallel"):
                 self._max_parallel = max(_to_int(params["max_parallel"]), 1)
-                config_changed = True
-            if "work_dir" in params:
-                if not str(params["work_dir"] or "").strip():
-                    raise HiveError("Working directory cannot be empty")
-                self._work_dir = params["work_dir"]
                 config_changed = True
             if _given(params, "session_viewer_url"):
                 self._session_viewer_url = params["session_viewer_url"]
@@ -471,35 +528,31 @@ class PoolManager:
             if "show_task_cost" in params:
                 self._show_task_cost = bool(params["show_task_cost"])
                 config_changed = True
-            if _given(params, "harnesses"):
-                self._harnesses = [_normalize_harness(h) for h in params["harnesses"]]
-                self._validate_harness_names()
+            if harnesses is not None:
+                self._harnesses = harnesses
                 config_changed = True
-            if "default_harness" in params:
-                self._default_harness = params["default_harness"]
+            if actions is not None:
+                self._output_actions = actions
                 config_changed = True
             if config_changed:
                 self._save_config()
-            if params.get("review_sections") is not None:
-                self._review_sections = {}
-                for section in params["review_sections"]:
-                    if not (section.get("id") and section.get("prompt")):
-                        continue
-                    section_id = str(section["id"])
-                    self._review_sections[section_id] = {"id": section_id, "name": str(section.get("name") or ""),
-                                                         "prompt": section["prompt"]}
+            if projects is not None:
+                self._projects = projects
+            if review_sections is not None:
+                self._review_sections = review_sections
             if templates is not None:
                 self._templates = {t["id"]: t for t in templates}
-            if params.get("review_sections") is not None or templates is not None:
+            if review_sections is not None or templates is not None:
                 for template in self._templates.values():
-                    template["review_section_ids"] = [i for i in template.get("review_section_ids") or []
-                                                      if i in self._review_sections]
+                    template["review_section_ids"] = self._template_section_ids(template)
             self._bump_version()
 
     def save_template(self, **fields):
         with self._lock:
             record = _template_record(**fields)
-            record["review_section_ids"] = [i for i in record["review_section_ids"] if i in self._review_sections]
+            if record["project_id"] not in self._projects:
+                raise HiveError("Template needs an existing project")
+            record["review_section_ids"] = self._template_section_ids(record)
             _validate_template_names([t for t in self._templates.values() if t["id"] != record["id"]] + [record])
             self._templates[record["id"]] = record
             self._bump_version()
@@ -509,6 +562,82 @@ class PoolManager:
         with self._lock:
             self._templates.pop(template_id, None)
             self._bump_version()
+
+    # --- Projects ---
+
+    def create_project(self, name, work_dir, color=None):
+        with self._lock:
+            record = pj.project_record(name=name, work_dir=work_dir, color=color)
+            pj.validate_project_names([*self._projects.values(), record])
+            self._projects[record["id"]] = record
+            self._bump_version()
+            return record["id"]
+
+    def delete_project(self, project_id):
+        """True, False if missing, "last_project", or "active_tasks".
+
+        Deletes the project's tasks, templates, and review sections, and removes
+        the project from harnesses and output actions limited to it.
+        """
+        with self._lock:
+            if project_id not in self._projects:
+                return False
+            if len(self._projects) == 1:
+                return "last_project"
+            ids = [i for i in self._task_order if self._tasks[i]["project_id"] == project_id]
+            if any(self._tasks[i]["status"] in ACTIVE or (self._tasks[i].get("runner")
+                   and self._tasks[i]["runner"].state != "exited") for i in ids):
+                return "active_tasks"
+            for task_id in ids:
+                self._tasks.pop(task_id)
+                self._task_order.remove(task_id)
+            self._templates = {k: t for k, t in self._templates.items() if t["project_id"] != project_id}
+            self._review_sections = {k: s for k, s in self._review_sections.items()
+                                     if s["project_id"] != project_id}
+            for item in [*self._harnesses, *self._output_actions]:
+                if item.get("only") is not None and project_id in item["only"]:
+                    item["only"] = [i for i in item["only"] if i != project_id]
+            del self._projects[project_id]
+            self._save_config()
+            self._bump_version()
+            return True
+
+    def projects(self, project_id=None):
+        """What an agent or the CLI needs to know about each project; only one project with project_id.
+
+        Harness commands are left out: a project-scoped caller has no use for them.
+        """
+        with self._lock:
+            chosen = [self._projects[project_id]] if project_id else list(self._projects.values())
+            result = []
+            for project in chosen:
+                harnesses = self._available_harnesses(project)
+                result.append({
+                    **self._project_summary(project),
+                    "harnesses": [{k: h[k] for k in ("id", "name", "icon", "color", "type")} for h in harnesses],
+                    "templates": [{k: t[k] for k in ("id", "name", "template", "harness", "color")}
+                                  for t in self._templates.values() if t["project_id"] == project["id"]],
+                })
+            return result
+
+    def task_project(self, task_id):
+        with self._lock:
+            task = self._tasks.get(task_id)
+            return task["project_id"] if task else None
+
+    def template_project(self, template_id):
+        with self._lock:
+            template = self._templates.get(template_id)
+            return template["project_id"] if template else None
+
+    def has_project(self, project_id):
+        with self._lock:
+            return project_id in self._projects
+
+    def token_project(self, token):
+        """The project an agent token is limited to, or None if the token is not an agent token."""
+        with self._lock:
+            return self._agent_tokens.lookup(token)
 
     def run_output_action(self, tag, value):
         """"not_found", None on success, or the failure message."""
@@ -601,7 +730,8 @@ class PoolManager:
 
     def _save_state(self, strict=False):
         data = {
-            "schema_version": 2,
+            "schema_version": SCHEMA_VERSION,
+            "projects": self._projects,
             "tasks": {task_id: _persist_task(task) for task_id, task in self._tasks.items()},
             "task_order": self._task_order,
             "review_sections": self._review_sections,
@@ -636,6 +766,8 @@ class PoolManager:
             self._harnesses = [_normalize_harness(h) for h in raw["harnesses"]]
 
     def _save_config(self):
+        # work_dir and default_harness now belong to projects; they stay in the
+        # file only as the values for a first project.
         data = {
             "max_parallel": self._max_parallel,
             "work_dir": self._work_dir,
@@ -657,23 +789,31 @@ class PoolManager:
             return
         with open(self.persist_file, encoding="utf-8") as file:
             raw = json.load(file)
-        if raw.get("schema_version") != 2:
+        if raw.get("schema_version") != SCHEMA_VERSION:
             raise HiveError(f"Unsupported state schema {raw.get('schema_version')}; "
-                            "only schema_version 2 state files can be loaded")
+                            f"only schema_version {SCHEMA_VERSION} state files can be loaded")
+        for key, project in (raw.get("projects") or {}).items():
+            record = pj.project_record(**{"id": key, **{k: project.get(k) for k in PROJECT_FIELDS if k != "id"}})
+            self._projects[record["id"]] = record
+        if not self._projects:
+            raise HiveError("The state file has no projects")
         for key, section in (raw.get("review_sections") or {}).items():
             section_id = str(section.get("id") or key)
-            self._review_sections[section_id] = {"id": section_id, "name": str(section.get("name") or ""),
-                                                 "prompt": section.get("prompt")}
+            self._review_sections[section_id] = _review_section_record({**section, "id": section_id}, self._projects)
         if "paused" in raw:
             self._paused = raw["paused"]
         for key, template in (raw.get("templates") or {}).items():
             template_id = template.get("id") or key
+            if template.get("project_id") not in self._projects:
+                raise HiveError(f"Template '{template.get('name')}' belongs to an unknown project")
             self._templates[key] = {
                 "id": template_id,
+                "project_id": template["project_id"],
                 "name": template.get("name"),
                 "template": template.get("template"),
                 "review_section_ids": [str(i) for i in template.get("review_section_ids") or []
-                                       if str(i) in self._review_sections],
+                                       if self._review_sections.get(str(i), {}).get("project_id")
+                                       == template["project_id"]],
                 "color": template.get("color"),
                 "work_dir": template.get("work_dir"),
                 "agent_args": normalize_args(template.get("agent_args")),
@@ -683,6 +823,8 @@ class PoolManager:
         # terminal states; they are not automatically restarted.
         self._task_order = [str(i) for i in raw.get("task_order") or []]
         for key, stored in (raw.get("tasks") or {}).items():
+            if stored.get("project_id") not in self._projects:
+                raise HiveError(f"Task {key} belongs to an unknown project")
             status = stored.get("status")
             if status in ACTIVE:
                 status = "failed"
@@ -696,7 +838,7 @@ class PoolManager:
                 created_at=parse_time(stored.get("created_at")) or now(),
                 failure_details=stored.get("failure_details"), color=stored.get("color"),
                 template_id=stored.get("template_id"), parent_task_id=stored.get("parent_task_id"),
-                harness=stored.get("harness"))
+                harness=stored.get("harness"), project_id=stored["project_id"])
             task["result_placement"] = stored.get("result_placement")
             task["done"] = bool(stored.get("done"))
             task["message_receipts"] = stored.get("message_receipts") or []
@@ -714,10 +856,15 @@ class PoolManager:
 
     # --- Serialization ---
 
-    def _state_unlocked(self):
+    def _state_unlocked(self, project_id=None):
         queued, running, completed = [], [], []
+        running_total = 0
         for task_id in self._task_order:
             task = self._tasks[task_id]
+            if task["status"] in ACTIVE:
+                running_total += 1
+            if project_id and task["project_id"] != project_id:
+                continue
             placement = "completed" if task.get("result_placement") else task["status"]
             if placement == "queued":
                 queued.append(self._serialize_task(task))
@@ -730,6 +877,8 @@ class PoolManager:
             "instance": self._instance_id,
             "paused": self._paused,
             "max_parallel": self._max_parallel,
+            # Workers across all projects: the worker limit is shared.
+            "running_total": running_total,
             "prevent_sleep_when_running": self._prevent_sleep_when_running,
             "show_task_cost": self._show_task_cost,
             "queue": queued,
@@ -752,6 +901,7 @@ class PoolManager:
         last_answer = next((m for m in reversed(messages) if m["role"] == "assistant"), {})
         data = {
             "id": task["id"],
+            "project_id": task["project_id"],
             "prompt": tm.initial(task)["content"],
             "label": task.get("label"),
             "status": task["status"],
@@ -837,11 +987,16 @@ class PoolManager:
             if not valid_message(message):
                 raise HiveError("Message must contain text and be at most 256 KiB")
             harness = self._task_harness(task)
+            # Every start of an agent passes here (first run, retry, continue, follow-up, review),
+            # so this one check keeps a project on its own harnesses.
+            self._require_available(harness, self._projects[task["project_id"]])
             runner = LiveRunner(protocol=protocol_for(harness["type"]), command=harness["command"],
                                 args=self._effective_agent_args(task), session_id=task["session_id"],
                                 chdir=self._resolve_work_dir(task), env=child_process_env(), resume=resume,
                                 parent=parent, task_id=task["id"], harness=harness["type"],
                                 diagnostics_path=self._diagnostics_path(task["id"]))
+            # The agent's own token, limited to the task's project; valid until the process exits.
+            runner.env["HIVE_TOKEN"] = self._agent_tokens.issue(task["project_id"], task["id"], runner)
             if kind != "chat":
                 task.pop("result_placement", None)
             task["runner"] = runner
@@ -860,6 +1015,7 @@ class PoolManager:
             return receipt
         except Exception as error:
             if runner and not started:
+                self._agent_tokens.revoke_runner(runner)
                 task["runner"] = None
             task["status"] = "failed"
             task["failure_details"] = redact(str(error))
@@ -908,6 +1064,7 @@ class PoolManager:
             task["pending_review"] = review["id"]
 
     def _poll_live_runners(self):
+        self._agent_tokens.revoke_exited()
         for task in list(self._tasks.values()):
             runner = task.get("runner")
             if not runner:
@@ -1018,9 +1175,10 @@ class PoolManager:
 
     def _build_task(self, task_id, label, created_at, prompt=None, messages=None, status="queued", session_id=None,
                     exit_status=None, started_at=None, completed_at=None, review_prompts=(), failure_details=None,
-                    color=None, template_id=None, parent_task_id=None, harness=None):
+                    color=None, template_id=None, parent_task_id=None, harness=None, project_id=None):
         task = {
             "id": task_id,
+            "project_id": project_id,
             "messages": messages if messages is not None else [
                 tm.message("user", "initial", prompt, delivery="scheduled", timestamp=iso_micro(created_at))],
             "label": label,
@@ -1053,11 +1211,12 @@ class PoolManager:
         return result
 
     def _resolve_work_dir(self, task):
-        """Per-template working directory, falling back to the global setting."""
+        """Per-template working directory, falling back to the project's."""
         template = self._templates.get(task.get("template_id")) if task.get("template_id") else None
-        directory = (template or {}).get("work_dir") or self._work_dir
+        directory = (template or {}).get("work_dir") or self._projects[task["project_id"]]["work_dir"]
         if not str(directory or "").strip():
             raise HiveError("Working directory is not configured")
+        directory = os.path.expanduser(directory)
         os.makedirs(directory, exist_ok=True)
         return directory
 
@@ -1068,15 +1227,65 @@ class PoolManager:
 
     # --- Harnesses ---
 
-    def _resolve_new_task_harness_id(self, harness=None, template_id=None):
+    def _resolve_new_task_harness_id(self, project, harness=None, template_id=None):
+        """The named harness, else the template's, else the project's default; it must be available in the project."""
         explicit = str(harness or "").strip()
-        if explicit:
-            return self._find_harness(explicit)["id"]
         template = self._templates.get(template_id) if template_id else None
-        template_harness = str((template or {}).get("harness") or "").strip()
-        if template_harness:
-            return self._find_harness(template_harness)["id"]
-        return self._find_harness(self._default_harness)["id"]
+        chosen = explicit or str((template or {}).get("harness") or "").strip()
+        if chosen:
+            found = self._find_harness(chosen)
+            self._require_available(found, project)
+            return found["id"]
+        default = self._project_default_harness(project)
+        if not default:
+            raise HiveError(f"No harness is available in project '{project['name']}'")
+        return default["id"]
+
+    def _available_harnesses(self, project):
+        return [h for h in self._harnesses if pj.available_in(h, project)]
+
+    def _project_default_harness(self, project):
+        """The project's chosen default while it is available, else the first available harness."""
+        available = self._available_harnesses(project)
+        chosen = next((h for h in available if h["id"] == project.get("default_harness")), None)
+        return chosen or (available[0] if available else None)
+
+    def _require_available(self, harness, project):
+        if not pj.available_in(harness, project):
+            raise HiveError(f"Harness '{harness['name']}' is not available in project '{project['name']}'")
+
+    def _project_summary(self, project):
+        default = self._project_default_harness(project)
+        return {
+            **project,
+            "default_harness": default["id"] if default else None,
+            "available_harnesses": [h["id"] for h in self._available_harnesses(project)],
+            "output_actions": [a["tag"] for a in self._output_actions if pj.output_action_available_in(a, project)],
+        }
+
+    def _project_for_new_task(self, project_id):
+        if project_id:
+            project = self._projects.get(str(project_id))
+            if not project:
+                raise HiveError("Project not found")
+            return project
+        if len(self._projects) == 1:
+            return next(iter(self._projects.values()))
+        raise HiveError("Name a project: there is more than one")
+
+    def _template_section_ids(self, template):
+        """A template keeps only existing review sections of its own project."""
+        return [i for i in template.get("review_section_ids") or []
+                if self._review_sections.get(i, {}).get("project_id") == template["project_id"]]
+
+    def _create_first_project(self):
+        """On first start, one ordinary project from the old global settings in config.json."""
+        record = pj.project_record(name=pj.FIRST_PROJECT_NAME, color="slate",
+                                   work_dir=self._work_dir or os.path.join(os.path.expanduser("~"), "hihive"),
+                                   default_harness=self._default_harness)
+        self._projects[record["id"]] = record
+        self._bump_version()
+        self._save_state()
 
     def _find_harness(self, harness_id):
         harness = next((h for h in self._harnesses if h["id"] == str(harness_id)), None)
@@ -1094,14 +1303,7 @@ class PoolManager:
         """Require explicit harness config. Old tasks without a harness resolve to "claude-code"."""
         if not self._harnesses:
             raise HiveError("No harnesses configured")
-        self._validate_harness_names()
-        if self._default_harness not in [h["id"] for h in self._harnesses]:
-            raise HiveError(f"Default harness '{self._default_harness}' is not configured")
-
-    def _validate_harness_names(self):
-        names = [h["name"].strip().lower() for h in self._harnesses]
-        if len(set(names)) != len(names):
-            raise HiveError("Harness names must be unique")
+        _validate_harness_names(self._harnesses)
 
     # --- Task cost ---
     # Cost is derived from the harness's own transcript, never stored: it is
@@ -1234,6 +1436,7 @@ def _persist_task(task):
         "template_id": task.get("template_id"),
         "parent_task_id": task.get("parent_task_id"),
         "harness": task.get("harness"),
+        "project_id": task["project_id"],
         "done": bool(task.get("done")),
     }
 
@@ -1310,8 +1513,8 @@ def _to_int(value):
         return 0
 
 
-def _template_record(id=None, name=None, template=None, review_section_ids=None, color=None, work_dir=None,
-                     agent_args=None, harness=None):
+def _template_record(id=None, project_id=None, name=None, template=None, review_section_ids=None, color=None,
+                     work_dir=None, agent_args=None, harness=None):
     name = str(name or "").strip()
     if not name:
         raise HiveError("Template name cannot be empty")
@@ -1319,6 +1522,7 @@ def _template_record(id=None, name=None, template=None, review_section_ids=None,
         raise HiveError(f"Template '{name}' has no prompt")
     return {
         "id": str(id or uuid.uuid4()),
+        "project_id": str(project_id or ""),
         "name": name,
         "template": template,
         "review_section_ids": [str(i) for i in review_section_ids or []],
@@ -1330,9 +1534,10 @@ def _template_record(id=None, name=None, template=None, review_section_ids=None,
 
 
 def _validate_template_names(templates):
+    """Template names are unique within a project; the CLI finds templates by name."""
     seen = set()
     for template in templates:
-        key = template["name"].lower()
+        key = (template["project_id"], template["name"].lower())
         if key in seen:
             raise HiveError(f"Template name '{template['name']}' is already taken")
         seen.add(key)
@@ -1352,4 +1557,19 @@ def _normalize_harness(harness):
         "command": str(harness.get("command") or ""),
         "args": normalize_args(harness.get("args")),
         "sessions_dir": sessions_dir or None,
+        "only": pj.normalize_only(harness.get("only")),
     }
+
+
+def _validate_harness_names(harnesses):
+    names = [h["name"].strip().lower() for h in harnesses]
+    if len(set(names)) != len(names):
+        raise HiveError("Harness names must be unique")
+
+
+def _review_section_record(section, projects):
+    project_id = str(section.get("project_id") or "")
+    if project_id not in projects:
+        raise HiveError(f"Review section '{section.get('name') or ''}' belongs to an unknown project")
+    return {"id": str(section["id"]), "project_id": project_id, "name": str(section.get("name") or ""),
+            "prompt": section.get("prompt")}

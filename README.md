@@ -19,6 +19,9 @@ And here's the part that really excites me: there's a CLI tool. Which means your
 
 ## How It Works
 
+**Projects** keep unrelated work apart: each project has its own tasks, templates, review sections, and working directory, and a switcher in the header changes the project you see.
+See [Projects](docs/features.md#projects), including how to keep a project on sandboxed harnesses.
+
 **Templates** define reusable prompts with an `%{input}` placeholder. Optionally attach **review sections** — self-review questions the agent answers after completing the task.
 
 Create a batch by picking a template and providing inputs. hi-hive creates one task per input, runs them in parallel (configurable concurrency), and collects results.
@@ -61,6 +64,8 @@ hi-hive includes a command-line client, installed together with the server as `h
 
 ```bash
 hihive open                        # open the web UI and log this browser in
+hihive projects                    # list projects
+hihive --project NAME status       # most commands work in one project (or set HIVE_PROJECT)
 hihive status                      # queue/running/completed counts
 hihive templates                   # list prompt templates
 hihive start <template> <input>    # start task from template
@@ -78,6 +83,8 @@ hihive retry <id>                  # retry a task
 ```
 
 Task IDs can be shortened to a unique prefix (e.g. `4f63e134` instead of the full UUID).
+With more than one project, commands that list or start tasks need `--project NAME` or `HIVE_PROJECT`.
+Agents that Hive starts work in their own task's project automatically.
 
 The CLI connects to the server that uses `~/.hihive` (or `HIVE_HOME`), on whatever port it runs.
 

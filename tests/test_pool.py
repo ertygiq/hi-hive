@@ -212,7 +212,7 @@ def test_canonical_storage_has_no_conversation_or_diagnostic_copies(p):
     p.pool.stop()
     with open(p.persist) as file:
         state = json.load(file)
-    assert state["schema_version"] == 2
+    assert state["schema_version"] == 3
     task = state["tasks"][p.task]
     for key in ("prompt", "output", "output_in_chat", "review_prompts", "review_output", "review_entries",
                 "chat_history", "live_messages", "diagnostics"):

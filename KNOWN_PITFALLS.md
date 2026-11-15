@@ -24,3 +24,7 @@
 - **Listening on localhost and checking Host and Origin don't stop local programs.** On Docker Desktop for Mac (tested), a container reaches Hive through `host.docker.internal`, Hive sees a local connection, and the container can fake both headers.
   Other setups can do the same, for example a container started with `--network host` on Linux.
   Every API request must carry the secret from `~/.hihive/token` (see `docs/adr/0002-local-authentication.md`).
+- **The launchd service runs the editable checkout, and `KeepAlive` restarts it with whatever code is checked out.** A restart after a state schema change made the server refuse the old `state.json` and fail again on every restart.
+  Before changing the schema, stop the service with `launchctl bootout`, back up and migrate the file, then start the service again.
+- **New API routes refuse agent tokens by default** (`run(handler)` in `src/hihive/server.py`). Set `agents=True` only after the route limits the request to the agent's project with `task_id_for` or `project_for`.
+  Otherwise an agent can read or change tasks in other projects if it learns their IDs (an IDOR between projects); see `docs/adr/0003-projects-and-scoped-tokens.md`.

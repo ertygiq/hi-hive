@@ -61,6 +61,8 @@ def work():
         else:
             emit({"type": "system", "subtype": "init", "session_id": session,
                   "capabilities": [] if scenario == "no-capability" else ["msg_lifecycle_v1"]})
+    with open(path("hive_token"), "w") as file:
+        file.write(os.environ.get("HIVE_TOKEN", ""))
     with open(path("started"), "w") as file:
         file.write("yes")
     if scenario == "unknown-event":

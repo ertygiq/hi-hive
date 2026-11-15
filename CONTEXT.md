@@ -4,6 +4,17 @@ Hive runs tasks through agent harnesses and keeps their conversations available 
 
 ## Language
 
+**Project**:
+A group of tasks, templates, and review sections with its own working directory and its own set of available harnesses.
+Every task belongs to exactly one project.
+_Avoid_: Workspace, which is easy to confuse with the working directory.
+
+**Shared harness**:
+A harness available in all projects ("Available in: All projects"), unless a project turned off "Use shared harnesses".
+
+**Agent token**:
+The secret Hive gives each agent process it starts, in `HIVE_TOKEN`; it allows access only to that task's project and expires when the process exits.
+
 **Task conversation**:
 The initial prompt, agent answers, steering messages, self-reviews, and follow-ups belonging to one task.
 _Avoid_: Chat history when referring only to follow-ups.

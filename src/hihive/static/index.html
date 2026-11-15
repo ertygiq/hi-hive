@@ -15,6 +15,13 @@
     <div class="brand">
       <img src="/favicon.svg" alt="" class="brand-logo" width="24" height="24">
       <h1>hi-hive</h1>
+      <div class="menu-wrap project-switcher">
+        <button class="project-btn" id="project-btn" onclick="toggleProjectMenu()" aria-haspopup="menu"
+                aria-expanded="false" aria-controls="project-menu" title="Switch project">
+          <span class="project-dot" id="project-dot"></span><span id="project-name"></span><span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="menu project-menu hidden" id="project-menu" role="menu"></div>
+      </div>
     </div>
     <button class="to-review" id="to-review-btn" onclick="showToReview()" style="display:none"
             title="Show only results not marked done"></button>
@@ -52,6 +59,7 @@
         </div>
       </div>
       <div class="task-list" id="workers-list"></div>
+      <div class="workers-elsewhere" id="workers-elsewhere" style="display:none"></div>
     </section>
   </div>
 
@@ -246,6 +254,33 @@
   </div>
 </div>
 
+<!-- New Project Modal -->
+<div class="modal-overlay hidden" id="new-project-modal">
+  <div class="modal" style="width:440px">
+    <div class="modal-header">
+      <h3>New project</h3>
+      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('new-project-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="np-name">Name</label>
+        <input type="text" id="np-name" placeholder="e.g. Mobile app"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();submitNewProject()}">
+      </div>
+      <div class="form-group">
+        <label for="np-work-dir">Working directory</label>
+        <input type="text" id="np-work-dir" placeholder="e.g. ~/code/mobile-app"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();submitNewProject()}">
+      </div>
+      <div class="muted" id="np-harness-hint" style="font-size:12px"></div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="requestCloseModal('new-project-modal')">Cancel</button>
+      <button class="primary" onclick="submitNewProject()">Create project</button>
+    </div>
+  </div>
+</div>
+
 <!-- Settings Modal -->
 <div class="modal-overlay hidden" id="settings-modal">
   <div class="modal" style="width:640px">
@@ -253,16 +288,72 @@
       <h3>Settings</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('settings-modal')">✕</button>
     </div>
-    <div class="modal-body">
+    <div class="settings-tabs" role="tablist">
+      <button class="settings-tab" role="tab" id="settings-tab-project" onclick="switchSettingsTab('project')">
+        <span class="project-dot" id="settings-project-dot"></span><span id="settings-project-tab-label">Project</span>
+      </button>
+      <button class="settings-tab" role="tab" id="settings-tab-global" onclick="switchSettingsTab('global')">All projects</button>
+    </div>
+    <div class="modal-body" id="settings-pane-project" role="tabpanel">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="prj-name">Name</label>
+          <input type="text" id="prj-name">
+        </div>
+        <div class="form-group">
+          <label for="prj-work-dir">Working directory</label>
+          <input type="text" id="prj-work-dir">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Color</label>
+        <div id="prj-color-picker" class="color-picker"></div>
+      </div>
+
+      <hr class="settings-divider">
+      <h4 class="settings-heading">Harnesses</h4>
+      <div class="form-group">
+        <label>This project can use</label>
+        <div class="harness-chips" id="prj-harness-chips"></div>
+      </div>
+      <div class="form-group">
+        <label for="prj-default-harness">Default harness</label>
+        <select id="prj-default-harness"></select>
+      </div>
+      <div class="toggle-row">
+        <label class="switch"><input type="checkbox" id="prj-use-shared" onchange="onUseSharedChange()"
+               aria-describedby="prj-use-shared-help"><span aria-hidden="true"></span></label>
+        <div>
+          <label for="prj-use-shared" class="toggle-title">Use shared harnesses</label>
+          <div class="muted toggle-help" id="prj-use-shared-help"></div>
+        </div>
+      </div>
+
+      <hr class="settings-divider">
+      <h4 id="templates-heading" class="settings-heading">Templates</h4>
+      <div id="templates-list"></div>
+      <button class="small" onclick="addTemplateForm()" style="margin-top:8px">+ Add Template</button>
+
+      <hr class="settings-divider">
+      <h4 class="settings-heading">Review Sections</h4>
+      <div id="review-sections-list"></div>
+      <button class="small" onclick="addReviewSectionForm()" style="margin-top:8px">+ Add Review Section</button>
+
+      <hr class="settings-divider">
+      <h4 class="settings-heading">Output actions</h4>
+      <div class="harness-chips" id="prj-output-actions"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Output actions are set up in the "All projects" tab.</div>
+
+      <hr class="settings-divider">
+      <button class="small danger" id="prj-delete-btn" onclick="deleteCurrentProject()">Delete project…</button>
+    </div>
+    <div class="modal-body hidden" id="settings-pane-global" role="tabpanel">
       <div class="form-row">
         <div class="form-group">
           <label>Max Parallel Workers</label>
           <input type="number" id="cfg-max-parallel" min="1" max="50" value="4">
         </div>
-        <div class="form-group">
-          <label>Working Directory</label>
-          <input type="text" id="cfg-work-dir">
-        </div>
+        <div class="form-group"></div>
       </div>
       <div class="form-group">
         <label>Session Viewer URL</label>
@@ -279,24 +370,15 @@
       </label>
       <div class="muted" style="font-size:12px;margin-top:4px">Read from the harness's session transcript. Currently only Pi reports cost; other tasks show nothing.</div>
 
-      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
-      <h4 style="margin-bottom:12px">Harnesses</h4>
-      <div class="form-group">
-        <label>Default harness</label>
-        <div id="harness-default-picker" class="harness-picker"></div>
-      </div>
+      <hr class="settings-divider">
+      <h4 class="settings-heading">Harnesses</h4>
       <div id="harnesses-list"></div>
       <button class="small" onclick="addHarnessForm()" style="margin-top:8px">+ Add Harness</button>
 
-      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
-      <h4 id="templates-heading" style="margin-bottom:12px">Templates</h4>
-      <div id="templates-list"></div>
-      <button class="small" onclick="addTemplateForm()" style="margin-top:8px">+ Add Template</button>
-
-      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
-      <h4 style="margin-bottom:12px">Review Sections</h4>
-      <div id="review-sections-list"></div>
-      <button class="small" onclick="addReviewSectionForm()" style="margin-top:8px">+ Add Review Section</button>
+      <hr class="settings-divider">
+      <h4 class="settings-heading">Output actions</h4>
+      <div id="output-actions-list"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Buttons for tags in agent output. Add or change them in <code>config.json</code>. Agents can never run them; only a click here does.</div>
     </div>
     <div class="modal-footer">
       <button class="danger" onclick="restartServer()" title="Restart the server process">↻ Restart server</button>
@@ -324,11 +406,11 @@
         <textarea class="code" id="tmpl-body" rows="8" placeholder="Explain %{input} in simple terms.&#10;&#10;Include:&#10;- What it is&#10;- Why it matters&#10;- A practical example"></textarea>
       </div>
       <div class="form-group">
-        <label>Working Directory (optional, overrides global)</label>
-        <input type="text" id="tmpl-work-dir" placeholder="Leave empty to use global setting">
+        <label>Working Directory (optional, overrides the project's)</label>
+        <input type="text" id="tmpl-work-dir" placeholder="Leave empty to use the project's working directory">
       </div>
       <div class="form-group">
-        <label>Extra Agent Args (optional, appended to global args)</label>
+        <label>Extra Agent Args (optional, appended to the harness's args)</label>
         <input type="text" id="tmpl-agent-args" placeholder="e.g., --foo bar --baz">
       </div>
       <div class="form-group">
@@ -414,6 +496,15 @@
         <label>Color</label>
         <div id="harness-color-picker" class="color-picker"></div>
       </div>
+      <fieldset class="form-group availability">
+        <legend>Available in</legend>
+        <label class="radio-item"><input type="radio" name="harness-availability" id="harness-avail-all" value="all"
+               onchange="updateHarnessAvailabilityFields()"> All projects</label>
+        <label class="radio-item"><input type="radio" name="harness-availability" id="harness-avail-only" value="only"
+               onchange="updateHarnessAvailabilityFields()"> Only selected projects</label>
+        <div class="availability-projects" id="harness-avail-projects"></div>
+        <div class="muted" style="font-size:12px;margin-top:4px">A project that turned off "Use shared harnesses" sees only the harnesses that select it.</div>
+      </fieldset>
     </div>
     <div class="modal-footer">
       <button onclick="requestCloseModal('harness-modal')">Cancel</button>

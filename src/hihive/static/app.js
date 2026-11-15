@@ -89,8 +89,158 @@ function backgroundActivityHtml(t) {
   return `<span class="background-activity" title="${title}"><span class="pulse" aria-hidden="true"></span>${label}</span>`;
 }
 
-// State
+// State. The server sends every project's tasks (fullState); the board shows
+// only the current project's (state), so switching projects needs no request.
 let state = { queue: [], workers: [], results: [], stats: {}, paused: false, max_parallel: 4, version: 0 };
+let fullState = state;
+
+// --- Projects ---
+const CURRENT_PROJECT_KEY = 'hihive.current_project';
+let currentProjectId = null;
+try { currentProjectId = localStorage.getItem(CURRENT_PROJECT_KEY); } catch (_) {}
+
+function projectList() {
+  return configCache?.projects || [];
+}
+
+function currentProject() {
+  const list = projectList();
+  return list.find(p => p.id === currentProjectId) || list[0] || null;
+}
+
+function projectSwatch(colorId) {
+  return TASK_COLORS.find(c => c.id === colorId)?.swatch || 'var(--text-muted)';
+}
+
+function projectView(snapshot) {
+  const id = currentProject()?.id;
+  const mine = t => t.project_id === id;
+  const queue = (snapshot.queue || []).filter(mine);
+  const workers = (snapshot.workers || []).filter(mine);
+  const results = (snapshot.results || []).filter(mine);
+  const count = status => results.filter(t => t.status === status).length;
+  return {
+    ...snapshot, queue, workers, results,
+    stats: { queued: queue.length, running: workers.length,
+             completed: count('completed'), failed: count('failed'), cancelled: count('cancelled') }
+  };
+}
+
+// The same rule as the server: a harness lists the project, or it is shared and
+// the project uses shared harnesses.
+function harnessAvailableIn(harness, project) {
+  if (!project) return false;
+  return harness.only == null ? project.use_shared_harnesses !== false : harness.only.includes(project.id);
+}
+
+function outputActionAvailableIn(action, project) {
+  return action.only == null || (project && action.only.includes(project.id));
+}
+
+function switchProject(id) {
+  if (!projectList().some(p => p.id === id)) return;
+  currentProjectId = id;
+  try { localStorage.setItem(CURRENT_PROJECT_KEY, id); } catch (_) {}
+  closeProjectMenu();
+  state = projectView(fullState);
+  if (selectedTaskId && !findTask(selectedTaskId)) closeDetail();
+  renderProjectSwitcher();
+  render();
+}
+
+function renderProjectSwitcher() {
+  const project = currentProject();
+  if (!project) return;
+  document.getElementById('project-name').textContent = project.name;
+  document.getElementById('project-dot').style.setProperty('--project-color', projectSwatch(project.color));
+  document.getElementById('project-btn').title = `Project: ${project.name} (click to switch)`;
+  document.title = projectList().length > 1 ? `${project.name} · hi-hive` : 'hi-hive';
+}
+
+function renderProjectMenu() {
+  const current = currentProject()?.id;
+  const tasks = boardTasks(fullState);
+  const items = projectList().map(p => {
+    const mine = tasks.filter(t => t.project_id === p.id);
+    const running = (fullState.workers || []).filter(t => t.project_id === p.id).length;
+    const unread = mine.some(t => unreadReplies.ids.has(t.id));
+    return `
+      <button role="menuitemradio" aria-checked="${p.id === current}" class="project-item${p.id === current ? ' current' : ''}"
+              onclick="switchProject('${esc(p.id)}')">
+        <span class="project-dot" style="--project-color:${projectSwatch(p.color)}"></span>
+        <span class="project-item-name">${esc(p.name)}</span>
+        ${p.use_shared_harnesses === false ? '<span class="own-harnesses-tag" title="Uses only harnesses that select this project">own harnesses</span>' : ''}
+        <span class="project-item-meta">
+          ${unread ? '<span class="unread-dot" title="New follow-up reply"></span>' : ''}
+          ${running ? `<span title="Running tasks">${running} running</span>` : ''}
+        </span>
+      </button>`;
+  }).join('');
+  document.getElementById('project-menu').innerHTML = `${items}<hr>
+    <button role="menuitem" onclick="closeProjectMenu();openNewProject()">+ New project…</button>
+    <button role="menuitem" onclick="closeProjectMenu();openSettings()">Project settings…</button>`;
+}
+
+function toggleProjectMenu() {
+  const menu = document.getElementById('project-menu');
+  const opening = menu.classList.contains('hidden');
+  if (opening) renderProjectMenu();
+  menu.classList.toggle('hidden', !opening);
+  document.getElementById('project-btn').setAttribute('aria-expanded', String(opening));
+  if (opening) (menu.querySelector('.current') || menu.querySelector('button'))?.focus();
+}
+
+function closeProjectMenu() {
+  document.getElementById('project-menu').classList.add('hidden');
+  document.getElementById('project-btn').setAttribute('aria-expanded', 'false');
+}
+
+function projectMenuOpen() {
+  return !document.getElementById('project-menu').classList.contains('hidden');
+}
+
+function sharedHarnessNames() {
+  return (configCache?.harnesses || []).filter(h => h.only == null).map(h => h.name);
+}
+
+function openNewProject() {
+  document.getElementById('np-name').value = '';
+  document.getElementById('np-work-dir').value = '';
+  const shared = sharedHarnessNames();
+  document.getElementById('np-harness-hint').textContent = shared.length
+    ? `The project starts with all shared harnesses: ${shared.join(', ')}. You can change this later in its settings.`
+    : 'There are no shared harnesses yet. After creating the project, select it in a harness under Settings → All projects.';
+  openModal('new-project-modal');
+  document.getElementById('np-name').focus();
+}
+
+async function submitNewProject() {
+  const nameEl = document.getElementById('np-name');
+  const dirEl = document.getElementById('np-work-dir');
+  const name = nameEl.value.trim();
+  const work_dir = dirEl.value.trim();
+  if (!name) return flagInvalid(nameEl, 'Enter a name.');
+  if (projectList().some(p => p.name.toLowerCase() === name.toLowerCase())) {
+    return flagInvalid(nameEl, `A project named '${name}' already exists.`);
+  }
+  if (!work_dir) return flagInvalid(dirEl, 'Enter the folder agents work in.');
+  const used = new Set(projectList().map(p => p.color));
+  const color = (TASK_COLORS.find(c => !used.has(c.id)) || TASK_COLORS[0]).id;
+  let res;
+  try {
+    res = await fetch('/api/projects', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, work_dir, color })
+    });
+  } catch (e) {
+    return showMessage('Could not reach the server.', 'Project not created');
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return showMessage(data.error || `Request failed (${res.status})`, 'Project not created');
+  closeModal('new-project-modal');
+  await loadConfig();
+  switchProject(data.id);
+}
 
 // Only outstanding unread tasks are retained, never a per-task read history.
 const UNREAD_REPLIES_KEY = 'hive-unread-follow-up-replies';
@@ -121,7 +271,7 @@ function boardTasks(snapshot) {
 }
 
 function trackUnreadReplies(snapshot) {
-  const previous = new Map(boardTasks(state).map(task => [task.id, task.latest_follow_up_reply_at]));
+  const previous = new Map(boardTasks(fullState).map(task => [task.id, task.latest_follow_up_reply_at]));
   const tasks = boardTasks(snapshot);
   const present = new Set(tasks.map(task => task.id));
   let changed = false;
@@ -240,7 +390,8 @@ async function runDeepSearch() {
   const query = resultsQuery;
   const seq = ++deepSearchSeq;
   try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const project = currentProject()?.id || '';
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&project=${encodeURIComponent(project)}`);
     const data = await res.json();
     // Drop answers that a newer request or a changed query has overtaken.
     if (seq !== deepSearchSeq || query !== resultsQuery) return;
@@ -335,7 +486,8 @@ async function poll() {
     const data = await res.json();
     if (!hasLoadedState || data.version !== state.version || data.instance !== state.instance) {
       trackUnreadReplies(data);
-      state = data;
+      fullState = data;
+      state = projectView(data);
       hasLoadedState = true;
       stateChanged = true;
     }
@@ -394,7 +546,8 @@ function renderStats() {
   const toReviewBtn = document.getElementById('to-review-btn');
   toReviewBtn.textContent = `${toReview} to review`;
   toReviewBtn.style.display = toReview ? '' : 'none';
-  document.getElementById('worker-count').textContent = `${state.stats.running || 0} / ${state.max_parallel}`;
+  // The worker limit is shared by all projects, so the count is too.
+  document.getElementById('worker-count').textContent = `${state.running_total ?? state.stats.running ?? 0} / ${state.max_parallel}`;
   document.getElementById('queue-count').textContent = state.stats.queued || 0;
   // Cancel all only has something to do while tasks are queued or running.
   const active = (state.queue?.length || 0) + (state.workers?.length || 0);
@@ -445,6 +598,10 @@ function renderQueue() {
 }
 
 function renderWorkers() {
+  const elsewhere = Math.max(0, (state.running_total || 0) - state.workers.length);
+  const elsewhereEl = document.getElementById('workers-elsewhere');
+  elsewhereEl.textContent = `+ ${elsewhere} running in other projects`;
+  elsewhereEl.style.display = elsewhere ? '' : 'none';
   const list = document.getElementById('workers-list');
   document.getElementById('workers-panel').classList.toggle('is-empty', state.workers.length === 0);
   if (state.workers.length === 0) {
@@ -533,10 +690,11 @@ function renderResults() {
     }
   }
 
-  // Garbage-collect stale entries: drop collapsed IDs no longer present.
+  // Garbage-collect stale entries: drop collapsed IDs no longer present in any project.
+  const allResultIds = new Set((fullState.results || []).map(t => t.id));
   let collapsedDirty = false;
   for (const id of collapsedForks) {
-    if (!byId.has(id)) { collapsedForks.delete(id); collapsedDirty = true; }
+    if (!allResultIds.has(id)) { collapsedForks.delete(id); collapsedDirty = true; }
   }
   if (collapsedDirty) saveCollapsedForks();
   // Children sorted by created_at ascending — fork order, oldest fork first
@@ -999,11 +1157,11 @@ async function cancelTask(id) {
 async function cancelAllTasks() {
   const activeCount = (state.queue?.length || 0) + (state.workers?.length || 0);
   if (activeCount === 0) return;
-  if (!await showConfirm('Cancel all queued and running tasks?')) return;
+  if (!await showConfirm(`Cancel all queued and running tasks in ${currentProject()?.name || 'this project'}?`)) return;
   await fetch('/api/tasks/cancel_all', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}'
+    body: JSON.stringify({ project_id: currentProject()?.id })
   });
   poll();
 }
@@ -1018,7 +1176,7 @@ async function retryTask(id) {
   await loadConfig();
   const task = findTask(id);
   retryTaskId = id;
-  populateHarnessSelect(document.getElementById('retry-harness'), task?.harness || configCache?.default_harness);
+  populateHarnessSelect(document.getElementById('retry-harness'), task?.harness);
   openModal('retry-modal');
 }
 
@@ -1136,7 +1294,7 @@ async function openAddTask() {
   await loadConfig();
   document.getElementById('add-label').value = '';
   document.getElementById('add-prompt').value = '';
-  populateHarnessSelect(document.getElementById('add-harness'), configCache?.default_harness);
+  populateHarnessSelect(document.getElementById('add-harness'));
   openModal('add-task-modal');
   document.getElementById('add-prompt').focus();
 }
@@ -1148,7 +1306,7 @@ async function submitAddTask() {
   const label = document.getElementById('add-label').value.trim();
   const harness = document.getElementById('add-harness').value || null;
 
-  const error = await postJson('/api/tasks', { prompt, label: label || null, harness });
+  const error = await postJson('/api/tasks', { prompt, label: label || null, harness, project_id: currentProject()?.id });
   if (error) return showMessage(error, 'Task not added');
   closeModal('add-task-modal');
   poll();
@@ -1199,9 +1357,8 @@ function updateBatchModal() {
   preview.parentElement.style.display = tmpl ? '' : 'none';
   updateBatchSubmitLabel();
 
-  // Preselect the template's harness if it pins one, else the global default.
-  const preselect = (tmpl && tmpl.harness) ? tmpl.harness : configCache?.default_harness;
-  populateHarnessSelect(document.getElementById('batch-harness'), preselect);
+  // Preselect the template's harness if it pins one, else the project's default.
+  populateHarnessSelect(document.getElementById('batch-harness'), tmpl?.harness);
 }
 
 function batchInputLines() {
@@ -1220,7 +1377,7 @@ function updateBatchSubmitLabel() {
 async function openBatchAdd() {
   await loadConfig();
   const select = document.getElementById('batch-template');
-  const templates = configCache?.templates || [];
+  const templates = projectTemplates();
   // Without templates there is nothing to run: go straight to where they are added.
   if (templates.length === 0) return openSettings('templates-heading');
   select.innerHTML = templates.map(t =>
@@ -1250,19 +1407,55 @@ async function submitBatch() {
 }
 
 // --- Settings ---
+// Settings has two tabs: the current project, and what all projects share.
+// Edits stay local until Save sends everything in one request.
+let projectsLocal = [];
+let outputActionsLocal = [];
+let settingsTab = 'project';
+let selectedProjectColor = null;
+let editingOutputActionTag = null;
+const PROJECT_FIELDS = ['id', 'name', 'color', 'work_dir', 'use_shared_harnesses', 'default_harness'];
+
 async function loadConfig() {
   const res = await fetch('/api/config');
   configCache = await res.json();
-  reviewSectionsLocal = [...(configCache.review_sections || [])];
+  reviewSectionsLocal = (configCache.review_sections || []).map(s => ({ ...s }));
   templatesLocal = (configCache.templates || []).map(t => ({ ...t }));
-  harnessesLocal = (configCache.harnesses || []).map(h => ({ ...h }));
-  defaultHarnessLocal = configCache.default_harness || (harnessesLocal[0] && harnessesLocal[0].id) || null;
+  harnessesLocal = (configCache.harnesses || []).map(h => ({ ...h, only: h.only ? [...h.only] : null }));
+  projectsLocal = (configCache.projects || []).map(p => Object.fromEntries(PROJECT_FIELDS.map(k => [k, p[k]])));
+  outputActionsLocal = (configCache.output_actions || []).map(a => ({ ...a, only: a.only ? [...a.only] : null }));
+  if (!projectList().some(p => p.id === currentProjectId)) currentProjectId = projectList()[0]?.id || null;
+  state = projectView(fullState);
+  renderProjectSwitcher();
 }
 
-async function openSettings(scrollToId) {
+function projectTemplates() {
+  const id = currentProject()?.id;
+  return (configCache?.templates || []).filter(t => t.project_id === id);
+}
+
+// The project being edited in Settings, with the form's unsaved switch value.
+function editedProject() {
+  const project = projectsLocal.find(p => p.id === currentProject()?.id);
+  if (!project) return null;
+  return { ...project, use_shared_harnesses: document.getElementById('prj-use-shared').checked };
+}
+
+function editedProjectHarnesses() {
+  const project = editedProject();
+  return harnessesLocal.filter(h => harnessAvailableIn(h, project));
+}
+
+async function openSettings(scrollToId, tab = 'project') {
   await loadConfig();
+  const project = projectsLocal.find(p => p.id === currentProject()?.id);
+  document.getElementById('prj-name').value = project?.name || '';
+  document.getElementById('prj-work-dir').value = project?.work_dir || '';
+  document.getElementById('prj-use-shared').checked = project?.use_shared_harnesses !== false;
+  renderProjectColorPicker(project?.color || 'slate');
+  editingOutputActionTag = null;
+
   document.getElementById('cfg-max-parallel').value = configCache.max_parallel;
-  document.getElementById('cfg-work-dir').value = configCache.work_dir || '';
   document.getElementById('cfg-session-viewer-url').value = configCache.session_viewer_url || '';
   const preventSleepEl = document.getElementById('cfg-prevent-sleep');
   preventSleepEl.checked = !!configCache.prevent_sleep_when_running;
@@ -1272,23 +1465,121 @@ async function openSettings(scrollToId) {
       showMessage("Prevent sleep requires macOS 'caffeinate' command on PATH.", 'Not available');
     }
   };
-
   document.getElementById('cfg-show-task-cost').checked = !!configCache.show_task_cost;
 
-  renderHarnessDefaultPicker();
+  renderProjectHarnessSection(project?.default_harness);
   renderHarnessesList();
   renderTemplatesList();
   renderReviewSectionsList();
+  renderProjectOutputActions();
+  renderOutputActionsList();
+  switchSettingsTab(tab);
 
   openModal('settings-modal');
   if (scrollToId) document.getElementById(scrollToId).scrollIntoView({ block: 'start' });
 }
 
+function switchSettingsTab(tab) {
+  settingsTab = tab;
+  for (const name of ['project', 'global']) {
+    document.getElementById(`settings-tab-${name}`).setAttribute('aria-selected', String(name === tab));
+    document.getElementById(`settings-pane-${name}`).classList.toggle('hidden', name !== tab);
+  }
+  const name = document.getElementById('prj-name').value.trim() || currentProject()?.name || '';
+  document.getElementById('settings-project-tab-label').textContent = `Project: ${name}`;
+  document.getElementById('settings-project-dot').style.setProperty('--project-color', projectSwatch(selectedProjectColor));
+  // Harness availability may have changed in the other tab.
+  if (tab === 'project') {
+    renderProjectHarnessSection(document.getElementById('prj-default-harness').value);
+    renderProjectOutputActions();
+  }
+}
+
+function renderProjectColorPicker(selectedId) {
+  selectedProjectColor = selectedId;
+  document.getElementById('prj-color-picker').innerHTML = TASK_COLORS.map(c => `
+    <button type="button" class="color-swatch ${c.id === selectedId ? 'selected' : ''}"
+            style="background:${c.swatch}" title="${c.label}" aria-label="${c.label}"
+            onclick="renderProjectColorPicker('${c.id}');switchSettingsTab('project')"></button>
+  `).join('');
+}
+
+function onUseSharedChange() {
+  renderProjectHarnessSection(document.getElementById('prj-default-harness').value);
+}
+
+function renderProjectHarnessSection(selectedDefault) {
+  const project = editedProject();
+  if (!project) return;
+  const available = editedProjectHarnesses();
+  document.getElementById('prj-harness-chips').innerHTML = available.length
+    ? available.map(h => `<span class="chip" style="--harness-accent:${harnessSwatch(h.color)}"><span class="harness-glyph">${esc(h.icon || '◆')}</span>${esc(h.name)}</span>`).join('')
+    : '<span class="muted">No harnesses. Turn on shared harnesses, or select this project in a harness under "All projects".</span>';
+  const select = document.getElementById('prj-default-harness');
+  const chosen = available.some(h => h.id === selectedDefault) ? selectedDefault : available[0]?.id;
+  select.innerHTML = available.map(h =>
+    `<option value="${esc(h.id)}" ${h.id === chosen ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}</option>`).join('');
+  select.disabled = available.length === 0;
+  const own = harnessesLocal.filter(h => h.only && h.only.includes(project.id)).map(h => h.name);
+  document.getElementById('prj-use-shared-help').textContent =
+    'Shared harnesses are the ones set to "All projects". Turn this off to keep this project on its own harnesses'
+    + (own.length ? ` (${own.join(', ')})` : '')
+    + '. Agents started in this project can then only start tasks with those harnesses.';
+}
+
+function renderProjectOutputActions() {
+  const project = editedProject();
+  const actions = outputActionsLocal.filter(a => outputActionAvailableIn(a, project));
+  document.getElementById('prj-output-actions').innerHTML = actions.length
+    ? actions.map(a => `<span class="chip">${esc(a.label || a.tag)}</span>`).join('')
+    : '<span class="muted">None</span>';
+}
+
+// Copy the project form into projectsLocal before saving.
+function applyProjectForm() {
+  const id = currentProject()?.id;
+  projectsLocal = projectsLocal.map(p => p.id !== id ? p : {
+    ...p,
+    name: document.getElementById('prj-name').value.trim(),
+    work_dir: document.getElementById('prj-work-dir').value.trim(),
+    color: selectedProjectColor,
+    use_shared_harnesses: document.getElementById('prj-use-shared').checked,
+    default_harness: document.getElementById('prj-default-harness').value || null
+  });
+}
+
+async function deleteCurrentProject() {
+  const project = currentProject();
+  if (!project) return;
+  if (projectList().length <= 1) {
+    showMessage('Hive needs at least one project. Create another project before deleting this one.', 'Cannot delete');
+    return;
+  }
+  const taskCount = boardTasks(fullState).filter(t => t.project_id === project.id).length;
+  const what = taskCount ? `its ${taskCount} task${taskCount === 1 ? '' : 's'}, templates, and review sections` : 'its templates and review sections';
+  if (!await showConfirm(`Delete project "${project.name}" with ${what}? This cannot be undone.`)) return;
+  let res;
+  try {
+    res = await fetch(`/api/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE' });
+  } catch (e) {
+    return showMessage('Could not reach the server.', 'Project not deleted');
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    return showMessage(err.error || `Request failed (${res.status})`, 'Project not deleted');
+  }
+  closeModal('settings-modal');
+  await loadConfig();
+  switchProject(projectList()[0].id);
+  poll();
+}
+
 function renderTemplatesList() {
   const list = document.getElementById('templates-list');
-  const templates = templatesLocal;
+  const id = currentProject()?.id;
+  const templates = templatesLocal.filter(t => t.project_id === id);
   if (templates.length === 0) {
-    list.innerHTML = '<div class="empty">No templates defined</div>';
+    list.innerHTML = '<div class="empty">No templates in this project</div>';
     return;
   }
   list.innerHTML = templates.map(t => {
@@ -1305,13 +1596,19 @@ function renderTemplatesList() {
   }).join('');
 }
 
+function projectReviewSections() {
+  const id = currentProject()?.id;
+  return reviewSectionsLocal.filter(s => s.project_id === id);
+}
+
 function renderReviewSectionsList() {
   const list = document.getElementById('review-sections-list');
-  if (reviewSectionsLocal.length === 0) {
-    list.innerHTML = '<div class="empty">No review sections</div>';
+  const sections = projectReviewSections();
+  if (sections.length === 0) {
+    list.innerHTML = '<div class="empty">No review sections in this project</div>';
     return;
   }
-  list.innerHTML = reviewSectionsLocal.map(section => `
+  list.innerHTML = sections.map(section => `
     <div class="template-item">
       <span class="template-name">${esc(section.name || '(no name)')}</span>
       <div>
@@ -1349,14 +1646,14 @@ function saveReviewSection() {
   const name = nameEl.value.trim();
   const prompt = promptEl.value.trim();
   if (!name) return flagInvalid(nameEl, 'Enter a name.');
-  if (reviewSectionsLocal.some(s => s.id !== editingReviewSectionId && (s.name || '').toLowerCase() === name.toLowerCase())) {
+  if (projectReviewSections().some(s => s.id !== editingReviewSectionId && (s.name || '').toLowerCase() === name.toLowerCase())) {
     return flagInvalid(nameEl, `A review section named '${name}' already exists.`);
   }
   if (!prompt) return flagInvalid(promptEl, 'Enter the review prompt.');
 
   reviewSectionsLocal = editingReviewSectionId
     ? reviewSectionsLocal.map(s => s.id === editingReviewSectionId ? { ...s, name, prompt } : s)
-    : [...reviewSectionsLocal, { id: crypto.randomUUID(), name, prompt }];
+    : [...reviewSectionsLocal, { id: crypto.randomUUID(), project_id: currentProject()?.id, name, prompt }];
   closeModal('review-section-modal');
   renderReviewSectionsList();
 }
@@ -1372,19 +1669,20 @@ async function removeReviewSection(id) {
 }
 
 async function persistSettingsConfig() {
+  applyProjectForm();
   const res = await fetch('/api/config', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       max_parallel: parseInt(document.getElementById('cfg-max-parallel').value, 10),
-      work_dir: document.getElementById('cfg-work-dir').value.trim() || null,
       session_viewer_url: document.getElementById('cfg-session-viewer-url').value.trim(),
       prevent_sleep_when_running: document.getElementById('cfg-prevent-sleep').checked,
       show_task_cost: document.getElementById('cfg-show-task-cost').checked,
+      projects: projectsLocal,
       review_sections: reviewSectionsLocal,
       templates: templatesLocal,
       harnesses: harnessesLocal,
-      default_harness: defaultHarnessLocal
+      output_actions: outputActionsLocal
     })
   });
   if (!res.ok) {
@@ -1410,6 +1708,17 @@ async function restartServer() {
 }
 
 async function saveSettings() {
+  const nameEl = document.getElementById('prj-name');
+  const dirEl = document.getElementById('prj-work-dir');
+  if (!nameEl.value.trim() || !dirEl.value.trim()) {
+    switchSettingsTab('project');
+    return flagInvalid(nameEl.value.trim() ? dirEl : nameEl, nameEl.value.trim() ? 'Enter the folder agents work in.' : 'Enter a name.');
+  }
+  if (editedProjectHarnesses().length === 0) {
+    switchSettingsTab('project');
+    showMessage('This project would have no harnesses. Turn on "Use shared harnesses", or select this project in a harness under "All projects".', 'Settings not saved');
+    return;
+  }
   try {
     await persistSettingsConfig();
   } catch (e) {
@@ -1418,13 +1727,13 @@ async function saveSettings() {
   }
   closeModal('settings-modal');
   await loadConfig();
+  render();
   poll();
 }
 
 // --- Harnesses ---
-// Edited locally and persisted with the rest of Settings on Save (like review sections).
+// Defined once for all projects; each says where it is available.
 let harnessesLocal = [];
-let defaultHarnessLocal = null;
 let editingHarnessId = null;
 let selectedHarnessColor = null;
 
@@ -1432,29 +1741,18 @@ function harnessSwatch(colorId) {
   return TASK_COLORS.find(c => c.id === colorId)?.swatch || 'var(--text-muted)';
 }
 
-function renderHarnessDefaultPicker() {
-  const el = document.getElementById('harness-default-picker');
-  if (harnessesLocal.length === 0) {
-    el.innerHTML = '<div class="empty">Add a harness below</div>';
-    return;
-  }
-  el.innerHTML = harnessesLocal.map(h => `
-    <button type="button" class="harness-pill ${h.id === defaultHarnessLocal ? 'active' : ''}"
-            style="--harness-accent:${harnessSwatch(h.color)}"
-            onclick="setDefaultHarness('${h.id}')">
-      <span class="harness-glyph">${esc(h.icon || '◆')}</span>${esc(h.name)}
-    </button>
-  `).join('');
-}
-
-function setDefaultHarness(id) {
-  defaultHarnessLocal = id;
-  renderHarnessDefaultPicker();
-  renderHarnessesList();
-}
-
 function harnessTypeLabel(typeId) {
   return (configCache?.harness_types || []).find(t => t.id === typeId)?.label || typeId || '';
+}
+
+function availabilityLabel(item) {
+  if (item.only == null) return 'All projects';
+  const names = item.only.map(id => projectsLocal.find(p => p.id === id)?.name).filter(Boolean);
+  return names.length ? `Only ${names.join(', ')}` : 'No projects';
+}
+
+function availabilityTagHtml(item) {
+  return `<span class="availability-tag${item.only == null ? '' : ' only'}">${esc(availabilityLabel(item))}</span>`;
 }
 
 function renderHarnessesList() {
@@ -1468,7 +1766,7 @@ function renderHarnessesList() {
       <span class="template-name" style="--harness-accent:${harnessSwatch(h.color)}">
         <span class="harness-glyph">${esc(h.icon || '◆')}</span>${esc(h.name)}
         <span class="harness-type-tag">${esc(harnessTypeLabel(h.type))}</span>
-        ${h.id === defaultHarnessLocal ? '<span class="harness-default-tag">default</span>' : ''}
+        ${availabilityTagHtml(h)}
       </span>
       <div>
         <button class="small" onclick="editHarness('${h.id}')">Edit</button>
@@ -1512,6 +1810,27 @@ function pickHarnessColor(id) {
   });
 }
 
+// "Available in" for a harness: all projects, or the ticked projects only.
+function renderHarnessAvailability(only) {
+  document.getElementById(only == null ? 'harness-avail-all' : 'harness-avail-only').checked = true;
+  const selected = only || [currentProject()?.id];
+  document.getElementById('harness-avail-projects').innerHTML = projectsLocal.map(p => `
+    <label class="checkbox-item"><input type="checkbox" value="${esc(p.id)}" ${selected.includes(p.id) ? 'checked' : ''}>
+      <span class="project-dot" style="--project-color:${projectSwatch(p.color)}"></span>${esc(p.name)}</label>
+  `).join('');
+  updateHarnessAvailabilityFields();
+}
+
+function updateHarnessAvailabilityFields() {
+  const only = document.getElementById('harness-avail-only').checked;
+  document.getElementById('harness-avail-projects').style.display = only ? '' : 'none';
+}
+
+function readHarnessAvailability() {
+  if (!document.getElementById('harness-avail-only').checked) return null;
+  return [...document.querySelectorAll('#harness-avail-projects input:checked')].map(input => input.value);
+}
+
 function addHarnessForm() {
   editingHarnessId = null;
   document.getElementById('harness-modal-title').textContent = 'Add Harness';
@@ -1522,6 +1841,7 @@ function addHarnessForm() {
   document.getElementById('harness-sessions-dir').value = '';
   renderHarnessTypeOptions(configCache?.harness_types?.[0]?.id || 'claude-code');
   renderHarnessColorPicker(randomColor());
+  renderHarnessAvailability(null);
   openModal('harness-modal');
 }
 
@@ -1537,6 +1857,7 @@ function editHarness(id) {
   document.getElementById('harness-sessions-dir').value = h.sessions_dir || '';
   renderHarnessTypeOptions(h.type || 'claude-code');
   renderHarnessColorPicker(h.color || randomColor());
+  renderHarnessAvailability(h.only);
   openModal('harness-modal');
 }
 
@@ -1545,6 +1866,10 @@ function saveHarness() {
   const command = document.getElementById('harness-command').value.trim();
   if (!name) return flagInvalid(document.getElementById('harness-name'), 'Enter a name.');
   if (!command) return flagInvalid(document.getElementById('harness-command'), 'Enter a command.');
+  const only = readHarnessAvailability();
+  if (only && only.length === 0) {
+    return flagInvalid(document.getElementById('harness-avail-projects'), 'Select at least one project, or choose "All projects".');
+  }
   const icon = document.getElementById('harness-icon').value.trim() || '◆';
   const type = document.getElementById('harness-type').value;
   const argsRaw = document.getElementById('harness-args').value.trim();
@@ -1552,17 +1877,14 @@ function saveHarness() {
   const sessionsDirRaw = document.getElementById('harness-sessions-dir').value.trim();
   const sessions_dir = type === 'pi' && sessionsDirRaw ? sessionsDirRaw : null;
 
+  const fields = { name, icon, type, command, args, sessions_dir, color: selectedHarnessColor, only };
   if (editingHarnessId) {
-    harnessesLocal = harnessesLocal.map(h =>
-      h.id === editingHarnessId ? { ...h, name, icon, type, command, args, sessions_dir, color: selectedHarnessColor } : h);
+    harnessesLocal = harnessesLocal.map(h => h.id === editingHarnessId ? { ...h, ...fields } : h);
   } else {
-    const id = crypto.randomUUID();
-    harnessesLocal.push({ id, name, icon, type, command, args, sessions_dir, color: selectedHarnessColor });
-    if (!defaultHarnessLocal) defaultHarnessLocal = id;
+    harnessesLocal.push({ id: crypto.randomUUID(), ...fields });
   }
 
   closeModal('harness-modal');
-  renderHarnessDefaultPicker();
   renderHarnessesList();
 }
 
@@ -1573,27 +1895,78 @@ async function deleteHarness(id) {
   }
   if (!await showConfirm('Delete this harness?')) return;
   harnessesLocal = harnessesLocal.filter(h => h.id !== id);
-  if (defaultHarnessLocal === id) defaultHarnessLocal = harnessesLocal[0]?.id || null;
-  renderHarnessDefaultPicker();
   renderHarnessesList();
 }
 
-// Populate a template's harness <select> with "Use default" + every harness.
+// --- Output actions (availability only; the rest is set in config.json) ---
+function renderOutputActionsList() {
+  const list = document.getElementById('output-actions-list');
+  if (outputActionsLocal.length === 0) {
+    list.innerHTML = '<div class="empty">No output actions</div>';
+    return;
+  }
+  list.innerHTML = outputActionsLocal.map(a => {
+    const open = editingOutputActionTag === a.tag;
+    const selected = a.only || [];
+    return `
+    <div class="template-item output-action-item">
+      <span class="template-name">${esc(a.label || a.tag)} <span class="harness-type-tag">&lt;${esc(a.tag)}&gt;</span> ${availabilityTagHtml(a)}</span>
+      <button class="small" aria-expanded="${open}" onclick="toggleOutputActionEditor('${esc(a.tag)}')">${open ? 'Done' : 'Edit'}</button>
+      ${open ? `<fieldset class="availability availability-editor">
+        <legend>Available in</legend>
+        <label class="radio-item"><input type="radio" name="oa-${esc(a.tag)}" ${a.only == null ? 'checked' : ''}
+               onchange="setOutputActionOnly('${esc(a.tag)}', null)"> All projects</label>
+        <label class="radio-item"><input type="radio" name="oa-${esc(a.tag)}" ${a.only != null ? 'checked' : ''}
+               onchange="setOutputActionOnly('${esc(a.tag)}', [currentProject()?.id])"> Only selected projects</label>
+        ${a.only != null ? `<div class="availability-projects">${projectsLocal.map(p => `
+          <label class="checkbox-item"><input type="checkbox" ${selected.includes(p.id) ? 'checked' : ''}
+                 onchange="toggleOutputActionProject('${esc(a.tag)}', '${esc(p.id)}', this.checked)">
+            <span class="project-dot" style="--project-color:${projectSwatch(p.color)}"></span>${esc(p.name)}</label>`).join('')}</div>` : ''}
+      </fieldset>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function toggleOutputActionEditor(tag) {
+  editingOutputActionTag = editingOutputActionTag === tag ? null : tag;
+  renderOutputActionsList();
+}
+
+function setOutputActionOnly(tag, only) {
+  outputActionsLocal = outputActionsLocal.map(a => a.tag === tag ? { ...a, only } : a);
+  renderOutputActionsList();
+}
+
+function toggleOutputActionProject(tag, projectId, checked) {
+  outputActionsLocal = outputActionsLocal.map(a => {
+    if (a.tag !== tag) return a;
+    const only = new Set(a.only || []);
+    if (checked) only.add(projectId); else only.delete(projectId);
+    return { ...a, only: [...only] };
+  });
+  renderOutputActionsList();
+}
+
+// Populate a template's harness <select> with "Use project default" + the
+// harnesses available in the project.
 function renderTemplateHarnessOptions(selectedId) {
   const sel = document.getElementById('tmpl-harness');
-  sel.innerHTML = ['<option value="">Use default</option>']
-    .concat(harnessesLocal.map(h =>
+  sel.innerHTML = ['<option value="">Use project default</option>']
+    .concat(editedProjectHarnesses().map(h =>
       `<option value="${esc(h.id)}" ${h.id === selectedId ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}</option>`))
     .join('');
 }
 
-// Action modals (Add Task / Batch / Retry) send an explicit harness id — no
-// "use default" sentinel. The global default is preselected and tagged.
+// Action modals (Add Task / Batch / Retry) send an explicit harness id from the
+// harnesses available in the current project. The project default is preselected and tagged.
 function populateHarnessSelect(sel, selectedId) {
-  const harnesses = configCache?.harnesses || [];
-  const def = configCache?.default_harness;
+  const project = currentProject();
+  const available = new Set(project?.available_harnesses || []);
+  const harnesses = (configCache?.harnesses || []).filter(h => available.has(h.id));
+  const def = project?.default_harness;
+  const chosen = available.has(selectedId) ? selectedId : def;
   sel.innerHTML = harnesses.map(h =>
-    `<option value="${esc(h.id)}" ${h.id === selectedId ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}${h.id === def ? ' (default)' : ''}</option>`
+    `<option value="${esc(h.id)}" ${h.id === chosen ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}${h.id === def ? ' (default)' : ''}</option>`
   ).join('');
 }
 
@@ -1651,12 +2024,13 @@ function editTemplate(id) {
 
 function renderTemplateReviewSections(selectedIds) {
   const container = document.getElementById('tmpl-review-sections');
-  if (reviewSectionsLocal.length === 0) {
-    container.innerHTML = '<div class="empty">No review sections available</div>';
+  const sections = projectReviewSections();
+  if (sections.length === 0) {
+    container.innerHTML = '<div class="empty">No review sections in this project</div>';
     return;
   }
 
-  container.innerHTML = reviewSectionsLocal.map(section => `
+  container.innerHTML = sections.map(section => `
     <label class="checkbox-item">
       <input type="checkbox" value="${esc(section.id)}" ${selectedIds.includes(section.id) ? 'checked' : ''}>
       <span>${esc(section.name || section.prompt.substring(0, 80))}</span>
@@ -1671,14 +2045,17 @@ function saveTemplate() {
   const bodyEl = document.getElementById('tmpl-body');
   const name = nameEl.value.trim();
   const template = bodyEl.value;
+  const projectId = editingTemplateId
+    ? templatesLocal.find(t => t.id === editingTemplateId)?.project_id : currentProject()?.id;
   if (!name) return flagInvalid(nameEl, 'Enter a name.');
-  if (templatesLocal.some(t => t.id !== editingTemplateId && t.name.toLowerCase() === name.toLowerCase())) {
-    return flagInvalid(nameEl, `A template named '${name}' already exists.`);
+  if (templatesLocal.some(t => t.id !== editingTemplateId && t.project_id === projectId && t.name.toLowerCase() === name.toLowerCase())) {
+    return flagInvalid(nameEl, `A template named '${name}' already exists in this project.`);
   }
   if (!template.trim()) return flagInvalid(bodyEl, 'Enter the template text.');
 
   const record = {
     id: editingTemplateId || crypto.randomUUID(),
+    project_id: projectId,
     name,
     template,
     review_section_ids: Array.from(document.querySelectorAll('#tmpl-review-sections input:checked')).map(input => input.value),
@@ -1734,7 +2111,7 @@ function drop(e, targetId) {
   fetch('/api/queue/reorder', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ order: queueIds })
+    body: JSON.stringify({ order: queueIds, project_id: currentProject()?.id })
   }).then(() => poll());
 
   draggedId = null;
@@ -1810,14 +2187,15 @@ const modalSnapshots = new Map();
 
 // In action dialogs only typed text is worth protecting: a dropdown choice is
 // one click to redo. In editors every field, dropdowns included, is an edit.
-const TEXT_ONLY_MODALS = new Set(['add-task-modal', 'fork-task-modal', 'batch-modal', 'retry-modal']);
+const TEXT_ONLY_MODALS = new Set(['add-task-modal', 'fork-task-modal', 'batch-modal', 'retry-modal', 'new-project-modal']);
 
 function modalState(id) {
   const selector = TEXT_ONLY_MODALS.has(id) ? 'input[type="text"], textarea' : 'input, textarea, select';
   const fields = [...document.getElementById(id).querySelectorAll(selector)]
     .map(el => (el.type === 'checkbox' ? el.checked : el.value));
   const local = {
-    'settings-modal': () => [harnessesLocal, defaultHarnessLocal, reviewSectionsLocal, templatesLocal],
+    'settings-modal': () => [harnessesLocal, projectsLocal, reviewSectionsLocal, templatesLocal, outputActionsLocal,
+                             selectedProjectColor],
     'template-modal': () => [selectedTemplateColor],
     'harness-modal': () => [selectedHarnessColor]
   }[id];
@@ -1861,6 +2239,7 @@ function flagInvalid(el, message) {
 
 document.addEventListener('click', (e) => {
   if (detailMenuOpen() && !e.target.closest('.menu-wrap')) closeDetailMenu();
+  if (projectMenuOpen() && !e.target.closest('.project-switcher')) closeProjectMenu();
   if (!e.target.classList.contains('modal-overlay')) return;
   if (e.target.id === 'confirm-modal') resolveConfirm(false);
   else requestCloseModal(e.target.id);
@@ -1870,6 +2249,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (confirmResolve) return resolveConfirm(false);
+  if (projectMenuOpen()) {
+    closeProjectMenu();
+    document.getElementById('project-btn').focus();
+    return;
+  }
   if (detailMenuOpen()) {
     closeDetailMenu();
     document.getElementById('detail-menu-btn').focus();
@@ -1938,7 +2322,8 @@ function postProcessMarkdown(html) {
 // <run-id>ab12</run-id>, becomes a button that runs the tag's command. Tags in
 // code are examples, not actions, so they stay as text.
 function insertOutputActionButtons(textNode) {
-  const actions = (configCache && configCache.output_actions) || [];
+  const project = currentProject();
+  const actions = ((configCache && configCache.output_actions) || []).filter(a => outputActionAvailableIn(a, project));
   if (!actions.length || textNode.parentElement?.closest('code, pre, a')) return;
   const parts = splitOutputActions(textNode.data, actions.map(a => a.tag));
   if (parts.length === 1 && typeof parts[0] === 'string') return;

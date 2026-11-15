@@ -67,7 +67,7 @@ const replyTime = n => `2026-09-26T12:00:0${n}.000000Z`;
 function unreadSnapshot(c, replyAt, extra = {}) {
   c.snapshot = { results: [{ id: 'task', label: 'Task', status: 'completed',
     latest_follow_up_reply_at: replyAt, completed_at: '2020-01-01T00:00:00Z', ...extra }], workers: [], queue: [] };
-  vm.runInContext('trackUnreadReplies(snapshot); state = snapshot;', c);
+  vm.runInContext('trackUnreadReplies(snapshot); state = fullState = snapshot;', c);
 }
 function unreadIds(c) { return Array.from(vm.runInContext('[...unreadReplies.ids]', c)); }
 
