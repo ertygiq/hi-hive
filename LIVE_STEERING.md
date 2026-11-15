@@ -135,6 +135,9 @@ It requires uv and Node.js for the client tests:
 Coverage includes two-message steering, shared results, active/settled races, duplicate prevention, ordinary follow-up, serialized reviews, protocol errors, lost receipts, cancellation, restart recovery, EOF while the child lives, guardian relay failure, reaping, and server SIGKILL cleanup.
 API and client tests verify visible errors, redaction, and draft recovery.
 
+The GitHub Actions Linux workflow runs only the deterministic suite.
+It receives no harness credentials and does not run live tests.
+
 Live smoke tests are explicitly opt-in and spend model tokens:
 
 ```sh

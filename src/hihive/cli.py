@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from . import paths
 
@@ -68,8 +68,10 @@ Server commands:
   serve [--port N] [--shell-env]
                               Run the server in the foreground (default port: $PORT or 4567).
                               --shell-env loads your login shell's environment first (used by the service)
-  service install [--port N]  Run the server in the background at login (macOS launchd)
-  service uninstall           Stop the background server and remove it from login
+  service install [--port N]  Install the login service (launchd on macOS, systemd on Linux)
+  service uninstall           Stop and remove the login service
+  service status              Show service status
+  service restart             Restart the installed service
 
 Notes:
   prompt — the message sent to the agent
@@ -401,8 +403,16 @@ class HiHiveCLI:
         url = f"{self.base_url.rstrip('/')}/login#{urlencode({'token': self.token})}"
         import webbrowser
 
-        if not webbrowser.open(url):
-            puts(f"Open this link in your browser: {url}")
+        headless = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+        if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            headless = True
+        if headless or not webbrowser.open(url):
+            port = urlsplit(self.base_url).port or paths.DEFAULT_PORT
+            puts("Could not open a local browser. If hi-hive is on another machine, run this on your computer:")
+            puts(f"  ssh -N -L {port}:127.0.0.1:{port} <user>@<hi-hive-host>")
+            puts("Then open this login URL on your computer:")
+            puts(url)
+            puts("This URL grants full hi-hive access. Keep it private and do not paste it into logs or issues.")
 
     # --- HTTP ---
 
@@ -690,8 +700,12 @@ def main(argv=None):
                 service.install(_port_option(argv[2:]))
             elif action == "uninstall":
                 service.uninstall()
+            elif action == "status":
+                service.status()
+            elif action == "restart":
+                service.restart()
             else:
-                raise SystemExit("Usage: hihive service install [--port N] | hihive service uninstall")
+                raise SystemExit("Usage: hihive service install [--port N] | uninstall | status | restart")
         else:
             HiHiveCLI().run(argv)
     except Exit as done:

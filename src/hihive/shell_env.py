@@ -20,7 +20,7 @@ TIMEOUT = 10  # seconds
 # Values that describe the probe shell itself, not the user's setup.
 SHELL_SESSION_VARS = ("PWD", "OLDPWD", "SHLVL", "_")
 # Hive's own settings from the service definition win over the shell's values.
-HIVE_VARS = ("PORT", "HIVE_HOME", "HIVE_CONFIG_FILE", "HIVE_STATE_FILE")
+HIVE_VARS = ("PORT", "HIVE_HOME", "HIVE_CONFIG_FILE", "HIVE_STATE_FILE", "HIVE_SUPERVISOR")
 
 
 def user_shell():

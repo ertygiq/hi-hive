@@ -13,9 +13,8 @@ And here's the part that really excites me: there's a CLI tool. Which means your
 ## Supported platforms
 
 - macOS: supported.
-- Linux: not tested; the code uses only Unix features, but there is no background service (run `hihive serve`).
+- Linux: available and tested on Ubuntu 24.04.
 - Windows: not supported.
-- Harnesses: Claude Code 2.1.283 or newer, Pi 0.87.1 or newer.
 
 ## How It Works
 
@@ -47,7 +46,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), [Claude Code](https://claude.ai
 
 ```bash
 uv tool install git+https://github.com/ertygiq/hi-hive
-hihive service install   # macOS; on Linux run `hihive serve` instead
+hihive service install
 hihive open
 ```
 

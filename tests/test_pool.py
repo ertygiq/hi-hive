@@ -8,8 +8,116 @@ import pytest
 
 from hihive import HiveError
 from hihive import messages as tm
+from hihive import pool as pool_module
 from hihive.pool import PoolManager
 from conftest import FIXTURE, touch, wait_until
+
+
+def test_sleep_prevention_uses_platform_inhibitor_commands(monkeypatch):
+    monkeypatch.setattr(pool_module.sys, "platform", "darwin")
+    monkeypatch.setattr(pool_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert pool_module._sleep_preventer_command() == ["caffeinate", "-i", "-m", "-s"]
+    assert "caffeinate" in pool_module._sleep_prevention_requirement()
+
+    monkeypatch.setattr(pool_module.sys, "platform", "linux")
+    command = pool_module._sleep_preventer_command()
+    assert command[:6] == ["systemd-inhibit", "--what=sleep:idle", "--who=hi-hive",
+                           "--why=Agents are running", "--mode=block", sys.executable]
+    assert command[-2:] == ["-c", "import signal; signal.pause()"]
+    assert "systemd-inhibit" in pool_module._sleep_prevention_requirement()
+
+
+def test_sleep_prevention_is_unavailable_without_the_platform_command(monkeypatch):
+    monkeypatch.setattr(pool_module.sys, "platform", "linux")
+    monkeypatch.setattr(pool_module.shutil, "which", lambda _name: None)
+    assert pool_module._sleep_preventer_command() is None
+
+
+def test_sleep_inhibitor_owns_and_stops_its_process_group(monkeypatch):
+    class Process:
+        pid = 123
+
+        def __init__(self):
+            self.waits = 0
+
+        def poll(self):
+            return None
+
+        def wait(self, _timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise pool_module.subprocess.TimeoutExpired("inhibitor", 2)
+            return 0
+
+    process = Process()
+    popen = []
+    monkeypatch.setattr(pool_module, "_sleep_preventer_command", lambda: ["inhibitor"])
+    monkeypatch.setattr(pool_module.subprocess, "Popen",
+                        lambda command, **kwargs: popen.append((command, kwargs)) or process)
+    signals = []
+    monkeypatch.setattr(pool_module.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    manager = object.__new__(PoolManager)
+    manager._prevent_sleep_when_running = True
+    manager._sleep_preventer = None
+    manager._sleep_preventer_grace_until = None
+    manager._sleep_preventer_disabled = False
+
+    manager._ensure_sleep_preventer()
+    manager._stop_sleep_preventer()
+
+    assert popen[0][0] == ["inhibitor"]
+    assert popen[0][1]["start_new_session"] is True
+    assert signals == [(123, pool_module.signal.SIGTERM), (123, pool_module.signal.SIGKILL)]
+
+
+def test_sleep_inhibitor_spawn_failure_is_logged_once_and_disabled(monkeypatch, capsys):
+    starts = []
+    monkeypatch.setattr(pool_module, "_sleep_preventer_command", lambda: ["inhibitor"])
+
+    def fail(*_args, **_kwargs):
+        starts.append(True)
+        raise OSError("no session bus")
+
+    monkeypatch.setattr(pool_module.subprocess, "Popen", fail)
+    manager = object.__new__(PoolManager)
+    manager._prevent_sleep_when_running = True
+    manager._sleep_preventer = None
+    manager._sleep_preventer_grace_until = None
+    manager._sleep_preventer_disabled = False
+
+    manager._ensure_sleep_preventer()
+    manager._ensure_sleep_preventer()
+
+    assert len(starts) == 1
+    assert manager._sleep_preventer_disabled is True
+    assert capsys.readouterr().err.count("disabled until hi-hive restarts") == 1
+
+
+def test_exited_sleep_inhibitor_is_logged_once_and_disabled_for_the_server_run(monkeypatch, capsys):
+    class Process:
+        pid = 123
+
+        def poll(self):
+            return 1
+
+    starts = []
+    monkeypatch.setattr(pool_module, "_sleep_preventer_command", lambda: ["inhibitor"])
+    monkeypatch.setattr(pool_module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: starts.append(True) or Process())
+    manager = object.__new__(PoolManager)
+    manager._prevent_sleep_when_running = True
+    manager._sleep_preventer = None
+    manager._sleep_preventer_grace_until = None
+    manager._sleep_preventer_disabled = False
+
+    manager._ensure_sleep_preventer()
+    manager._ensure_sleep_preventer()
+    manager._ensure_sleep_preventer()
+
+    assert len(starts) == 1
+    assert manager._sleep_preventer_disabled is True
+    assert capsys.readouterr().err.count("disabled until hi-hive restarts") == 1
+    assert "restart hi-hive to retry" in manager._sleep_prevention_requirement()
 
 
 class Pool:
