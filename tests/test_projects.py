@@ -343,3 +343,57 @@ def test_cancel_with_a_named_project_does_not_touch_another_projects_task(monkey
     with pytest.raises(Exit):
         c.run(["--project", "Sandbox", "cancel", "aaaa"])
     assert c.posts == []
+
+
+TWINS = [{"id": "abcd1111", "name": "Frontend", "templates": [], "harnesses": []},
+         {"id": "abcd2222", "name": "abcd", "templates": [], "harnesses": []},
+         {"id": "abce3333", "name": "Backend", "templates": [], "harnesses": []}]
+
+
+def test_an_ambiguous_project_prefix_says_so_and_an_exact_name_wins(monkeypatch, capsys):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+    cli = ProjectsCLI(TWINS)
+    cli.project_arg = "abcd1"
+    assert cli.project()["name"] == "Frontend"
+    cli = ProjectsCLI(TWINS)
+    cli.project_arg = "abcd"  # a project name, and also a prefix of two IDs
+    assert cli.project()["id"] == "abcd2222"
+    cli = ProjectsCLI(TWINS)
+    cli.project_arg = "abc"
+    with pytest.raises(Exit):
+        cli.project()
+    assert "No project matching 'abc'" in capsys.readouterr().err
+    cli = ProjectsCLI([TWINS[0], TWINS[2], {"id": "abcd4444", "name": "Other", "templates": [], "harnesses": []}])
+    cli.project_arg = "abcd"
+    with pytest.raises(Exit):
+        cli.project()
+    error = capsys.readouterr().err
+    assert "Ambiguous project 'abcd'" in error and "Frontend" in error and "Other" in error
+
+
+def test_projects_marks_the_project_commands_would_use(monkeypatch, capsys):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+    ProjectsCLI(PROJECTS[:1]).cmd_projects()
+    assert capsys.readouterr().out.startswith("* Main")
+    ProjectsCLI(PROJECTS).cmd_projects()
+    assert "*" not in capsys.readouterr().out
+    monkeypatch.setenv("HIVE_PROJECT", "Sandbox")
+    ProjectsCLI(PROJECTS).cmd_projects()
+    assert [line[0] for line in capsys.readouterr().out.splitlines()] == [" ", "*"]
+
+
+class ListingCLI(ProjectsCLI):
+    def get(self, path):
+        if path.startswith("/api/state?project="):
+            return {"paused": False, "queue": [], "workers": [], "results": [],
+                    "stats": {k: 0 for k in ("queued", "running", "completed", "failed", "cancelled")}}
+        return super().get(path)
+
+
+@pytest.mark.parametrize("command", [["status"], ["queue"], ["results", "--no-pager"]])
+def test_listings_name_their_project_and_start_prints_only_the_id(monkeypatch, capsys, command):
+    monkeypatch.setenv("HIVE_PROJECT", "Sandbox")
+    ListingCLI(PROJECTS).run(command)
+    assert capsys.readouterr().out.splitlines()[0].split() == ["Project:", "Sandbox"]
+    ListingCLI(PROJECTS).run(["start", "-p", "hello"])
+    assert capsys.readouterr().out == "new\n"

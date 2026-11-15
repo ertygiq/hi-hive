@@ -133,14 +133,20 @@ class HiHiveCLI:
     # --- Commands ---
 
     def cmd_projects(self):
-        current = self.project_arg or os.environ.get("HIVE_PROJECT")
-        for project in self.projects():
-            marker = "*" if current and self.project_matches(project, current) else " "
+        """* marks the project other commands would use now, however it was chosen."""
+        projects = self.projects()
+        wanted = self.project_wanted()
+        current, problem = self.find_project(wanted) if wanted else (projects[0] if len(projects) == 1 else None, None)
+        for project in projects:
+            marker = "*" if current and project["id"] == current["id"] else " "
             puts(f"{marker} {project['name']}  ({project['id'][:8]})  {project.get('work_dir') or ''}".rstrip())
+        if problem:
+            sys.stderr.write(problem + "\n")
 
     def cmd_status(self):
         state = self.project_state()
         stats = state["stats"]
+        puts(f"Project:   {self.project()['name']}")
         puts(f"Paused:    {'yes' if state.get('paused') else 'no'}")
         puts(f"Queued:    {stats['queued']}")
         puts(f"Running:   {stats['running']}")
@@ -195,6 +201,7 @@ class HiHiveCLI:
     def cmd_queue(self):
         state = self.project_state()
         tasks = (state.get("queue") or []) + (state.get("workers") or [])
+        puts(f"Project: {self.project()['name']}")
         if not tasks:
             puts("No queued or running tasks.")
             return
@@ -215,7 +222,9 @@ class HiHiveCLI:
             limit = None
 
         tasks = self.project_state().get("results") or []
+        heading = f"Project: {self.project()['name']}"
         if not tasks:
+            puts(heading)
             puts("No results.")
             return
         by_id = {task["id"]: task for task in tasks}
@@ -244,6 +253,7 @@ class HiHiveCLI:
                 print_tree(child, depth + 1)
 
         def render():
+            puts(heading)
             for root in roots:
                 print_tree(root, 0)
             if limit is not None and total_roots > limit:
@@ -476,25 +486,36 @@ class HiHiveCLI:
             self._projects = self.get("/api/projects")["projects"]
         return self._projects
 
-    @staticmethod
-    def project_matches(project, name):
-        return name.lower() == project["name"].lower() or project["id"] == name or (
-            len(name) >= 4 and project["id"].startswith(name))
+    def project_wanted(self):
+        return self.project_arg or os.environ.get("HIVE_PROJECT")
 
     def project_named(self):
-        return bool(self.project_arg or os.environ.get("HIVE_PROJECT"))
+        return bool(self.project_wanted())
+
+    def find_project(self, wanted):
+        """(project, None), or (None, why not): an exact name or ID wins over an ID prefix of 4+ characters."""
+        projects = self.projects()
+        exact = [p for p in projects if wanted.lower() == p["name"].lower() or wanted == p["id"]]
+        matches = exact or [p for p in projects if len(wanted) >= 4 and p["id"].startswith(wanted)]
+        if len(matches) == 1:
+            return matches[0], None
+        if matches:
+            listing = "\n".join(f"  {p['name']}  ({p['id'][:8]})" for p in matches)
+            return None, (f"Ambiguous project '{wanted}', matches:\n{listing}\n"
+                          "Use a longer ID prefix or the project name.")
+        listing = "\n".join(f"  {p['name']}" for p in projects)
+        return None, f"No project matching '{wanted}'. Available:\n{listing}"
 
     def project(self):
         """The project from --project, else $HIVE_PROJECT, else the only project."""
         if self._project is None:
             projects = self.projects()
-            wanted = self.project_arg or os.environ.get("HIVE_PROJECT")
+            wanted = self.project_wanted()
             listing = "\n".join(f"  {p['name']}" for p in projects)
             if wanted:
-                matches = [p for p in projects if self.project_matches(p, wanted)]
-                if len(matches) != 1:
-                    self.die(f"No project matching '{wanted}'. Available:\n{listing}")
-                self._project = matches[0]
+                self._project, problem = self.find_project(wanted)
+                if problem:
+                    self.die(problem)
             elif len(projects) == 1:
                 self._project = projects[0]
             else:
