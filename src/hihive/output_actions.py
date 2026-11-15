@@ -10,6 +10,8 @@ import re
 import subprocess
 import threading
 
+from .projects import normalize_only
+
 TAG_FORMAT = re.compile(r"[a-z][a-z0-9-]*")
 VALUE_PLACEHOLDER = "{value}"
 RUN_TIMEOUT = 60  # seconds; a command still running after this is left running
@@ -50,7 +52,7 @@ def normalize(entry):
     if not isinstance(args, list):
         raise OutputActionError(f"Output action '{tag}' args must be a list")
     return {"tag": tag, "label": _text(entry.get("label")), "pattern": pattern, "command": command,
-            "args": [_text(arg) for arg in args]}
+            "args": [_text(arg) for arg in args], "only": normalize_only(entry.get("only"))}
 
 
 def _text(value):

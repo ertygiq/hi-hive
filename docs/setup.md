@@ -39,6 +39,7 @@ Only one server can use a data folder at a time; a second one exits with a messa
 
 Every API request needs the secret hi-hive keeps in `~/.hihive/token`.
 The `hihive` CLI sends it automatically.
+Agents started by hi-hive get a separate token limited to their task's project instead; see [Projects](features.md#a-project-for-sandboxed-agents).
 `hihive open` logs your browser in with a one-time link; a browser that isn't logged in shows a "Login required" message.
 See [adr/0002-local-authentication.md](adr/0002-local-authentication.md) for why.
 
@@ -46,8 +47,8 @@ See [adr/0002-local-authentication.md](adr/0002-local-authentication.md) for why
 
 hi-hive keeps its settings in `~/.hihive/config.json` and its tasks in `~/.hihive/data/`.
 Set `HIVE_HOME` to use another folder.
-On first start, hi-hive creates `config.json` from the defaults.
-Configure the agent command and templates in the settings panel (gear icon).
+On first start, hi-hive creates `config.json` from the defaults, and a first project named "My project" that uses the `work_dir` from `config.json` as its working directory.
+Configure harnesses, projects, and templates in the settings panel (gear icon).
 
 ## Development
 

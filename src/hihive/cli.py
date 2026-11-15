@@ -18,12 +18,20 @@ FINISHED = ("completed", "failed", "cancelled")
 USAGE = """\
 CLI for hi-hive - parallel task runner for coding agents (Claude Code, Pi).
 
-Usage: hihive <command> [args]
+Usage: hihive [--project NAME] <command> [args]
+
+Projects:
+  Tasks, templates, and harnesses belong to a project. Commands that list or start
+  tasks use the project named by --project (name or ID), else $HIVE_PROJECT, else the
+  only project. With several projects and none named, the command lists them and stops.
+  Commands that take a task ID find the task in any project, unless a project is named
+  (--project or $HIVE_PROJECT): then the task must belong to it.
 
 Commands:
+  projects                    List projects
   status                      Show queue/running/completed counts
   templates                   List prompt templates
-  harnesses                   List available harness names (* = default)
+  harnesses                   List harnesses available in the project (* = default)
   start <template> [input] [--harness NAME]
                                       Start a task from a saved template (see `templates`).
                                       <input> replaces %{input} in the template body and is used as the label.
@@ -65,6 +73,8 @@ Notes:
 
 Task IDs can be shortened to a unique prefix (e.g. "4f63e134" instead of full UUID).
 Server data: ~/.hihive (override with HIVE_HOME); the CLI connects to the server that uses it.
+Agents started by Hive get $HIVE_TOKEN, which limits them to their task's project; when it is
+set, the CLI uses only that token and never reads ~/.hihive/token.
 """
 
 
@@ -83,14 +93,22 @@ def puts(text=""):
 class HiHiveCLI:
     def __init__(self):
         self.base_url = paths.server_url()
-        self.token = paths.read_token()
+        # An agent's token must never fall back to the full token in ~/.hihive/token.
+        self.agent_token = "HIVE_TOKEN" in os.environ
+        self.token = os.environ["HIVE_TOKEN"].strip() if self.agent_token else paths.read_token()
+        self.project_arg = None
         self._all_tasks = None
-        self._template_names = None
+        self._projects = None
+        self._project = None
 
     def run(self, argv):
         argv = list(argv)
+        self.project_arg = self.take_named_arg(argv, "--project")
         command = argv.pop(0) if argv else None
+        if self.agent_token and not self.token and command not in ("help", "-h", "--help", None):
+            self.die("HIVE_TOKEN is set but empty. Unset it to use the token in ~/.hihive/token.")
         commands = {
+            "projects": lambda: self.cmd_projects(),
             "status": lambda: self.cmd_status(),
             "templates": lambda: self.cmd_templates(),
             "harnesses": lambda: self.cmd_harnesses(),
@@ -114,9 +132,21 @@ class HiHiveCLI:
 
     # --- Commands ---
 
+    def cmd_projects(self):
+        """* marks the project other commands would use now, however it was chosen."""
+        projects = self.projects()
+        wanted = self.project_wanted()
+        current, problem = self.find_project(wanted) if wanted else (projects[0] if len(projects) == 1 else None, None)
+        for project in projects:
+            marker = "*" if current and project["id"] == current["id"] else " "
+            puts(f"{marker} {project['name']}  ({project['id'][:8]})  {project.get('work_dir') or ''}".rstrip())
+        if problem:
+            sys.stderr.write(problem + "\n")
+
     def cmd_status(self):
-        state = self.get("/api/state")
+        state = self.project_state()
         stats = state["stats"]
+        puts(f"Project:   {self.project()['name']}")
         puts(f"Paused:    {'yes' if state.get('paused') else 'no'}")
         puts(f"Queued:    {stats['queued']}")
         puts(f"Running:   {stats['running']}")
@@ -125,7 +155,7 @@ class HiHiveCLI:
         puts(f"Cancelled: {stats['cancelled']}")
 
     def cmd_templates(self):
-        templates = self.get("/api/config").get("templates") or []
+        templates = self.project()["templates"]
         if not templates:
             puts("No templates configured.")
             return
@@ -136,23 +166,24 @@ class HiHiveCLI:
             puts()
 
     def cmd_harnesses(self):
-        config = self.get("/api/config")
-        harnesses = config.get("harnesses") or []
+        project = self.project()
+        harnesses = project["harnesses"]
         if not harnesses:
-            puts("No harnesses configured.")
+            puts(f"No harnesses are available in project '{project['name']}'.")
             return
         for harness in harnesses:
-            marker = "*" if harness["id"] == config.get("default_harness") else " "
+            marker = "*" if harness["id"] == project.get("default_harness") else " "
             puts(f"{marker} {harness['name']}")
 
     def cmd_start(self, args):
         label = self.take_named_arg(args, "--label")
-        harness = self.resolve_harness_name(self.take_named_arg(args, "--harness"))
+        project = self.project()
+        harness = self.resolve_harness_name(self.take_named_arg(args, "--harness"), project["harnesses"])
         if "-p" in args:
             index = args.index("-p")
             if index + 1 >= len(args):
                 self.die("Missing prompt after -p")
-            body = {"prompt": args[index + 1], "label": label}
+            body = {"prompt": args[index + 1], "label": label, "project_id": project["id"]}
             if harness:
                 body["harness"] = harness
             puts(self.post("/api/tasks", body)["id"])
@@ -161,15 +192,16 @@ class HiHiveCLI:
             self.die("--label is only supported with -p (template tasks derive label from input or template name)")
         if not args:
             self.die("Usage: hihive start <template> [input]  (run `hihive templates` to list available templates)")
-        template = self.match_template(args.pop(0))
+        template = self.match_template(args.pop(0), project)
         body = {"template_id": template["id"], "inputs": [" ".join(args)]}
         if harness:
             body["harness"] = harness
         puts(self.post("/api/tasks/batch", body)["ids"][0])
 
     def cmd_queue(self):
-        state = self.get("/api/state")
+        state = self.project_state()
         tasks = (state.get("queue") or []) + (state.get("workers") or [])
+        puts(f"Project: {self.project()['name']}")
         if not tasks:
             puts("No queued or running tasks.")
             return
@@ -189,8 +221,10 @@ class HiHiveCLI:
         if limit is not None and limit <= 0:
             limit = None
 
-        tasks = self.get("/api/state").get("results") or []
+        tasks = self.project_state().get("results") or []
+        heading = f"Project: {self.project()['name']}"
         if not tasks:
+            puts(heading)
             puts("No results.")
             return
         by_id = {task["id"]: task for task in tasks}
@@ -219,6 +253,7 @@ class HiHiveCLI:
                 print_tree(child, depth + 1)
 
         def render():
+            puts(heading)
             for root in roots:
                 print_tree(root, 0)
             if limit is not None and total_roots > limit:
@@ -335,10 +370,12 @@ class HiHiveCLI:
         puts(f"Cancelled {short_id(task_id)}")
 
     def cmd_retry(self, args):
-        harness = self.resolve_harness_name(self.take_named_arg(args, "--harness"))
+        harness_name = self.take_named_arg(args, "--harness")
         if not args:
             self.die("Usage: hihive retry <id> [--harness NAME]")
         task_id = self.resolve_task_id(args[0])
+        task_project = next((p for p in self.projects() if p["id"] == self.lookup_task(task_id).get("project_id")), None)
+        harness = self.resolve_harness_name(harness_name, task_project["harnesses"] if task_project else [])
         self.post(f"/api/tasks/{quote(task_id, safe='')}/retry", {"harness": harness} if harness else {})
         puts(f"Retried {short_id(task_id)}")
 
@@ -352,6 +389,8 @@ class HiHiveCLI:
 
     def cmd_open(self):
         """Open the UI with a login link, so this browser gets the login cookie."""
+        if self.agent_token:
+            self.die("`hihive open` needs the full token; it does not work with HIVE_TOKEN.")
         if not self.token:
             self.die(f"No Hive token at {paths.token_file()}. Start the server first (hihive serve).")
         # A fragment is never sent to the server; the login page removes it from the address bar.
@@ -410,9 +449,19 @@ class HiHiveCLI:
         return value
 
     def resolve_task_id(self, prefix):
+        """A named project (--project or $HIVE_PROJECT) limits the task to that project."""
         matches = [task for task in self.all_tasks() if task["id"].startswith(prefix)]
         if not matches:
             self.die(f"No task matching '{prefix}'")
+        if self.project_named():
+            project = self.project()
+            in_project = [t for t in matches if t.get("project_id") == project["id"]]
+            if not in_project:
+                names = {p["id"]: p["name"] for p in self.projects()}
+                found = ", ".join(sorted({f"'{names.get(t.get('project_id'), t.get('project_id'))}'" for t in matches}))
+                self.die(f"Task '{prefix}' is in project {found}, not '{project['name']}'. "
+                         "Name that project, or leave out --project and HIVE_PROJECT.")
+            matches = in_project
         if len(matches) > 1:
             listing = "\n".join(f"  {short_id(t['id'])}  {t.get('label')}" for t in matches)
             self.die(f"Ambiguous ID '{prefix}', matches:\n{listing}")
@@ -428,18 +477,61 @@ class HiHiveCLI:
         return self._all_tasks
 
     def template_names(self):
-        if self._template_names is None:
-            templates = self.get("/api/config").get("templates") or []
-            self._template_names = {t["id"]: t["name"] for t in templates}
-        return self._template_names
+        return {t["id"]: t["name"] for p in self.projects() for t in p["templates"]}
+
+    # --- Projects ---
+
+    def projects(self):
+        if self._projects is None:
+            self._projects = self.get("/api/projects")["projects"]
+        return self._projects
+
+    def project_wanted(self):
+        return self.project_arg or os.environ.get("HIVE_PROJECT")
+
+    def project_named(self):
+        return bool(self.project_wanted())
+
+    def find_project(self, wanted):
+        """(project, None), or (None, why not): an exact name or ID wins over an ID prefix of 4+ characters."""
+        projects = self.projects()
+        exact = [p for p in projects if wanted.lower() == p["name"].lower() or wanted == p["id"]]
+        matches = exact or [p for p in projects if len(wanted) >= 4 and p["id"].startswith(wanted)]
+        if len(matches) == 1:
+            return matches[0], None
+        if matches:
+            listing = "\n".join(f"  {p['name']}  ({p['id'][:8]})" for p in matches)
+            return None, (f"Ambiguous project '{wanted}', matches:\n{listing}\n"
+                          "Use a longer ID prefix or the project name.")
+        listing = "\n".join(f"  {p['name']}" for p in projects)
+        return None, f"No project matching '{wanted}'. Available:\n{listing}"
+
+    def project(self):
+        """The project from --project, else $HIVE_PROJECT, else the only project."""
+        if self._project is None:
+            projects = self.projects()
+            wanted = self.project_wanted()
+            listing = "\n".join(f"  {p['name']}" for p in projects)
+            if wanted:
+                self._project, problem = self.find_project(wanted)
+                if problem:
+                    self.die(problem)
+            elif len(projects) == 1:
+                self._project = projects[0]
+            else:
+                self.die(f"Name a project with --project NAME or HIVE_PROJECT. Available:\n{listing}")
+        return self._project
+
+    def project_state(self):
+        return self.get(f"/api/state?project={quote(self.project()['id'], safe='')}")
 
     def task_display_label(self, task):
         raw = re.sub(r"\s+", " ", task.get("label") or "").strip()
         template = self.template_names().get(task["template_id"]) if task.get("template_id") else None
         return f"[{template}] {raw}" if template else raw
 
-    def match_template(self, name):
-        templates = self.get("/api/config").get("templates") or []
+    def match_template(self, name, project):
+        templates = project["templates"]
         matches = [t for t in templates if name.lower() in t["name"].lower()]
         if not matches:
             listing = "\n".join(f"  {t['name']}" for t in templates)
@@ -449,15 +541,14 @@ class HiHiveCLI:
             self.die(f"Ambiguous template '{name}', matches:\n{listing}")
         return matches[0]
 
-    def resolve_harness_name(self, name):
+    def resolve_harness_name(self, name, harnesses):
         if not name:
             return None
-        harnesses = self.get("/api/config").get("harnesses") or []
         match = next((h for h in harnesses if str(h.get("name") or "").lower() == name.lower()), None)
         if match:
             return match["id"]
         listing = "\n".join(f"  {h['name']}" for h in harnesses)
-        self.die(f"No harness named '{name}'. Available:\n{listing}")
+        self.die(f"No harness named '{name}' in this project. Available:\n{listing}")
 
     def die(self, message):
         sys.stderr.write(message if message.endswith("\n") else message + "\n")

@@ -21,6 +21,10 @@ def make_pool(directory, **extra):
     return PoolManager(config_file=write_config(directory, **extra), persist_file=os.path.join(directory, "state.json"))
 
 
+def first_project(pool):
+    return next(iter(pool._projects))
+
+
 # --- Stored conversations ---
 
 def test_invalid_stored_conversation_fails_instead_of_being_discarded():
@@ -70,29 +74,35 @@ def test_template_input_placeholder():
 
 def test_new_review_section_can_be_attached_in_the_same_save(test_dir):
     pool = make_pool(test_dir)
+    p = first_project(pool)
     pool.update_config({
-        "review_sections": [{"id": "r1", "name": "Check", "prompt": "Check it"}],
-        "templates": [{"id": "t1", "name": "explain", "template": "Explain %{input}", "review_section_ids": ["r1", "gone"]}],
+        "review_sections": [{"id": "r1", "project_id": p, "name": "Check", "prompt": "Check it"}],
+        "templates": [{"id": "t1", "project_id": p, "name": "explain", "template": "Explain %{input}",
+                       "review_section_ids": ["r1", "gone"]}],
     })
-    assert pool.config()["templates"] == [{"id": "t1", "name": "explain", "template": "Explain %{input}",
+    assert pool.config()["templates"] == [{"id": "t1", "project_id": p, "name": "explain", "template": "Explain %{input}",
                                            "review_section_ids": ["r1"], "color": None, "work_dir": None,
                                            "agent_args": [], "harness": None}]
 
 
 def test_rejected_templates_leave_the_whole_config_unchanged(test_dir):
     pool = make_pool(test_dir)
-    pool.update_config({"templates": [{"id": "t1", "name": "explain", "template": "A"}]})
+    p = first_project(pool)
+    pool.update_config({"templates": [{"id": "t1", "project_id": p, "name": "explain", "template": "A"}]})
     with pytest.raises(HiveError, match="already taken"):
-        pool.update_config({"max_parallel": 9, "templates": [{"id": "t1", "name": "explain", "template": "A"},
-                                                            {"id": "t2", "name": "Explain", "template": "B"}]})
+        pool.update_config({"max_parallel": 9,
+                            "templates": [{"id": "t1", "project_id": p, "name": "explain", "template": "A"},
+                                          {"id": "t2", "project_id": p, "name": "Explain", "template": "B"}]})
     assert pool.config()["max_parallel"] == 2
     assert [t["id"] for t in pool.config()["templates"]] == ["t1"]
 
 
 def test_omitted_templates_are_deleted(test_dir):
     pool = make_pool(test_dir)
-    pool.update_config({"templates": [{"id": "t1", "name": "a", "template": "A"}, {"id": "t2", "name": "b", "template": "B"}]})
-    pool.update_config({"templates": [{"id": "t2", "name": "b", "template": "B"}]})
+    p = first_project(pool)
+    pool.update_config({"templates": [{"id": "t1", "project_id": p, "name": "a", "template": "A"},
+                                      {"id": "t2", "project_id": p, "name": "b", "template": "B"}]})
+    pool.update_config({"templates": [{"id": "t2", "project_id": p, "name": "b", "template": "B"}]})
     assert [t["id"] for t in pool.config()["templates"]] == ["t2"]
 
 

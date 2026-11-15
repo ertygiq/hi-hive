@@ -1,5 +1,44 @@
 # More features
 
+## Projects
+
+A project groups tasks, templates, review sections, and a working directory.
+The switcher next to the hi-hive name changes the project you see; queue, results, and search show only that project.
+The worker limit is shared, so the Workers panel also says how many tasks run in other projects.
+
+On first start hi-hive creates one project, "My project".
+"+ New project…" in the switcher asks only for a name and a working directory.
+Project settings (name, working directory, harnesses, templates, review sections) are in the "Project" tab of Settings; what all projects share is in the "All projects" tab.
+
+### Which harnesses a project can use
+
+Harnesses are defined once, under Settings → All projects.
+Each harness has an "Available in" setting: "All projects" (the default; such a harness is called shared) or "Only selected projects".
+Each project has a "Use shared harnesses" switch, on by default.
+A harness is available in a project when the harness selects that project, or when the harness is shared and the project uses shared harnesses.
+
+So nothing needs configuring when every project should use every harness.
+
+### A project for sandboxed agents
+
+To keep a project on sandboxed harnesses, for example agents wrapped in Docker:
+
+1. Add the sandboxed harnesses and set their "Available in" to "Only selected projects", with only that project ticked.
+2. In that project's settings, turn off "Use shared harnesses".
+
+The project then offers only the sandboxed harnesses, a shared harness added later stays out of it, and the sandboxed harnesses do not appear in other projects.
+
+Every agent that hi-hive starts gets its own token in the `HIVE_TOKEN` environment variable.
+The token works only for that task's project and stops working when the agent process exits.
+With it, an agent can list, start, steer, and manage tasks in its own project, using only that project's harnesses.
+It cannot see other projects, read or change settings, or run output actions.
+When `HIVE_TOKEN` is set, the `hihive` CLI uses only that token and never falls back to `~/.hihive/token`.
+
+If a sandboxed agent reaches `hihive` through a program that runs it on the host for the container (a bridge), the bridge must pass the agent's `HIVE_TOKEN` to `hihive`.
+When the variable is missing or empty, the bridge must refuse to run `hihive`; otherwise `hihive` would use the full token.
+Agents running directly on the host can read `~/.hihive/token`, so this limit protects only agents that cannot read that file, such as containers that do not mount `~/.hihive/`.
+See [adr/0003-projects-and-scoped-tokens.md](adr/0003-projects-and-scoped-tokens.md) for the design.
+
 ## Output actions
 
 Output actions turn a custom tag in an agent's answer into a button.
@@ -26,6 +65,7 @@ Then tell the agent, for example in a template, to print the value as `<run-id>a
 - `pattern`: a regular expression the whole value must match. hi-hive rejects any other value.
 - `command` and `args`: what hi-hive runs. `{value}` in an argument is replaced by the tag's value. hi-hive runs the command directly, without a shell.
 - `label`: the tooltip on the button.
+- `only` (optional): a list of project IDs; the button then appears only in those projects. You can also set this in Settings → All projects → Output actions.
 
 Agent output is untrusted, for example when the agent reads web pages, so keep `pattern` strict.
 Tags inside code blocks and inline code stay as text.
