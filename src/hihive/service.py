@@ -163,6 +163,16 @@ def _systemd_path(value):
     return "".join(escaped)
 
 
+def _systemd_working_directory(value):
+    """Serialize WorkingDirectory using systemd runtime syntax, which keeps spaces raw."""
+    path = os.fspath(value)
+    if not os.path.isabs(path):
+        raise SystemExit("The hi-hive working directory must be an absolute path")
+    if any(character in path for character in ("\0", "\n", "\r")):
+        raise SystemExit("The hi-hive working directory contains an unsupported control character")
+    return path.replace("%", "%%")
+
+
 def _require_systemctl():
     if not shutil.which("systemctl"):
         raise SystemExit("systemctl is required for the experimental Linux user service; run `hihive serve` instead.")
@@ -179,7 +189,7 @@ def _systemd_unit(port):
         "[Service]",
         "Type=simple",
         f"ExecStart={_systemd_path(_executable())} serve --shell-env",
-        f"WorkingDirectory={_systemd_path(paths.hive_home())}",
+        f"WorkingDirectory={_systemd_working_directory(paths.hive_home())}",
         *(f"Environment={_systemd_quote(item)}" for item in environment),
         "UMask=0077",
         "KillMode=control-group",

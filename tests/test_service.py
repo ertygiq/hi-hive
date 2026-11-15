@@ -43,7 +43,8 @@ def test_linux_install_writes_private_direct_systemd_user_service(service_home, 
     assert path.stat().st_mode & 0o777 == 0o600
     assert hive.stat().st_mode & 0o777 == 0o700
     assert 'ExecStart=/opt/hi\\x20hive/bin/hihive serve --shell-env' in text
-    assert f"WorkingDirectory={service._systemd_path(hive)}" in text
+    assert f"WorkingDirectory={hive}" in text
+    assert "WorkingDirectory=" in text and "\\x20" not in text.split("WorkingDirectory=", 1)[1].splitlines()[0]
     assert 'Environment="PORT=4789"' in text
     assert f'Environment="HIVE_HOME={hive}"' in text
     assert "$cash" in text and "$$cash" not in text
@@ -59,6 +60,14 @@ def test_linux_install_writes_private_direct_systemd_user_service(service_home, 
         ["systemctl", "--user", "enable", service.UNIT_NAME],
         ["systemctl", "--user", "restart", service.UNIT_NAME],
     ]
+
+
+def test_systemd_working_directory_keeps_spaces_raw_and_escapes_specifiers():
+    assert service._systemd_working_directory("/tmp/wd test%name") == "/tmp/wd test%%name"
+    with pytest.raises(SystemExit, match="absolute path"):
+        service._systemd_working_directory("relative path")
+    with pytest.raises(SystemExit, match="control character"):
+        service._systemd_working_directory("/tmp/bad\npath")
 
 
 def test_linux_reinstall_applies_changed_port_and_preserves_existing_home_mode(service_home, monkeypatch):
