@@ -306,8 +306,9 @@ def create_app(pool, token, manage_pool=True):
         return JSONResponse({"ok": True, "done": result})
 
     def chat(request, body):
+        task_id = task_id_for(request)  # outside the try: a refused task must stay a 404, not become a 500
         try:
-            result = pool.send_chat(task_id_for(request), body.get("message"), message_id=body.get("message_id"))
+            result = pool.send_chat(task_id, body.get("message"), message_id=body.get("message_id"))
         except Exception as failure:
             status = 422 if isinstance(failure, (HiveError, ValueError)) else 500
             prompt = str(body.get("message") or "")

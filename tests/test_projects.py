@@ -188,6 +188,34 @@ def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
     assert "command" not in project["harnesses"][0]
 
 
+@pytest.mark.parametrize("method,path,body", [
+    ("GET", "", None), ("DELETE", "", None), ("POST", "/fork", {"prompt": "x"}), ("POST", "/cancel", {}),
+    ("POST", "/continue", {}), ("POST", "/retry", {}), ("POST", "/done", {}),
+    ("POST", "/chat", {"message": "x"}), ("POST", "/chat/cancel", {"msg_id": None})])
+def test_an_agent_token_cannot_use_any_task_route_on_another_projects_task(api, setup, method, path, body):
+    """Each task route (behind show, wait, followup, cancel, retry, fork) must check the task's project."""
+    other = setup.pool.add_task("other", project_id=setup.main)
+    setup.pool._tasks[other]["status"] = "failed"
+    setup.pool._tasks[other]["session_id"] = "session"
+    before = json.dumps(setup.pool.task_detail(other), sort_keys=True, default=str)
+    tasks_before = set(setup.pool._tasks)
+    response = api.call(method, f"/api/tasks/{other}{path}", api.agent, **({"json": body} if body is not None else {}))
+    assert response.status_code == 404
+    assert json.dumps(setup.pool.task_detail(other), sort_keys=True, default=str) == before
+    assert set(setup.pool._tasks) == tasks_before
+    # The same request with the full token reaches the task, so the 404 above comes from the project check.
+    assert api.call(method, f"/api/tasks/{other}{path}", TOKEN,
+                    **({"json": body} if body is not None else {})).status_code != 404 or method == "DELETE"
+
+
+def test_an_agent_token_cannot_run_another_projects_template(api, setup):
+    setup.pool.update_config({"templates": [
+        {"id": "t-main", "project_id": setup.main, "name": "main", "template": "Main %{input}"}]})
+    response = api.call("POST", "/api/tasks/batch", api.agent, json={"template_id": "t-main", "inputs": ["x"]})
+    assert response.status_code == 404
+    assert setup.pool._tasks == {}
+
+
 @pytest.mark.parametrize("method,path", [
     ("GET", "/api/config"), ("PUT", "/api/config"), ("POST", "/api/output_actions/x/run"),
     ("POST", "/api/templates"), ("POST", "/api/projects"), ("POST", "/api/control/pause"),
