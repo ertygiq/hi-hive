@@ -71,6 +71,7 @@ class LiveRunner:
         self._probes = {}
         self._answer = ""
         self._stderr = b""
+        self._version_failure_output = b""
         self._run_error = None
         self._close_reason = None
         self._unexpected_eof = False
@@ -352,12 +353,15 @@ class LiveRunner:
                 if status is not None:
                     exited = True
                     if status != 0:
-                        raise HiveError("Harness version check failed; output fingerprint recorded in diagnostics")
+                        raise HiveError(f"Harness version check failed (exit {status})")
                     break
             text = output.decode("utf-8", "replace")
             self._diagnostics.binary_version = find_version(text)
             self._diagnose("version_check", context=bytes(output))
             self.protocol.check_version(text)
+        except Exception:
+            self._version_failure_output = bytes(output)
+            raise
         finally:
             self._diagnose("version_probe_output", context=bytes(output))
             if not exited:
@@ -503,7 +507,12 @@ class LiveRunner:
                 self._diagnose(self._phase or "runner_error", event=self._last_event, error=message,
                                context=self._stderr)
                 if not self._close_reason:
-                    self._emit("error", message)
+                    output = self._version_failure_output or self._stderr
+                    # Redaction is a precaution: we have not established that harness
+                    # errors contain credentials. It is best-effort, not a guarantee.
+                    excerpt = self._safe_error("\n".join(output.decode("utf-8", "replace").splitlines()[-8:])).strip()
+                    # Keep subprocess text out of the diagnostics journal above.
+                    self._emit("error", f"{message}\n{excerpt}" if excerpt else message)
         finally:
             status = self._cleanup(process, status)
             with self._lock:

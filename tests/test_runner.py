@@ -492,6 +492,36 @@ def test_errors_redact_credentials_and_full_input_text():
         assert secret not in redacted
 
 
+@pytest.mark.parametrize("phase", ["version", "session"])
+def test_subprocess_failure_excerpt_is_visible_but_not_journaled(h, phase):
+    script = h.path("failing.py")
+    with open(script, "w") as file:
+        file.write(
+            "import sys\n"
+            f"if '--version' in sys.argv and {phase != 'version'!r}:\n"
+            "    print('0.87.1')\n"
+            "    sys.exit(0)\n"
+            "print('old noise\\n' * 20, file=sys.stderr)\n"
+            "print('Bridge failed: api_key=secret-value BASE', file=sys.stderr)\n"
+            "sys.exit(1)\n"
+        )
+    h.runner = LiveRunner(protocol=PiRpcProtocol(), command=sys.executable,
+                          args=[script], session_id=str(uuid.uuid4()), chdir=h.dir,
+                          diagnostics_path=h.path("diagnostics.jsonl"))
+    h.runner.submit("BASE")
+    h.runner.start()
+    h.wait(lambda: h.runner.state == "exited")
+    error = "\n".join(h.of("error"))
+    assert "Bridge failed: api_key=[credential omitted] [input omitted]" in error
+    assert "secret-value" not in error
+    assert error.count("old noise") < 20
+    assert len(error) < 1000
+    journal = json.dumps(h.diagnostics())
+    assert "Bridge failed" not in journal
+    assert "secret-value" not in journal
+    assert "sha256" in journal
+
+
 def test_version_and_conflicting_flags():
     with pytest.raises(HiveError):
         PiRpcProtocol().check_version("0.86.0")

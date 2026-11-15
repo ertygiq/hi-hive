@@ -115,6 +115,9 @@ The complete append-only journal is stored beside the state file at `runner-diag
 Each record includes task/session/runner identity, harness, observed binary version, timestamp, order, lifecycle state, and input/result identifiers when known.
 Diagnostics store redacted errors and byte counts/SHA-256 fingerprints of relevant wire/output context, not raw prompts, model output, credentials, or stderr.
 Stderr fingerprints cover the retained tail, bounded to 64 KiB.
+Visible runner failures include a best-effort redacted excerpt of the last eight lines of stderr (combined stdout/stderr for version-check failures), limited to 500 characters.
+These excerpts are not included in the diagnostics journal, but can be saved with task errors and conversation notices.
+Redaction is a precaution; we have not established that harness errors contain credentials, and redaction cannot guarantee that every secret is removed.
 The ordinary conversation state still stores prompts and answers, as before.
 Diagnostic write failure stops delivery and is surfaced as an error.
 
