@@ -1247,6 +1247,17 @@ async function cancelChatMessage(taskId, msgId) {
 
 let uncertainChatRequest = null;
 
+function resizeChatInput(input = document.getElementById('chat-input')) {
+  if (!input) return;
+  const borderHeight = Math.max(0, (input.offsetHeight || 0) - (input.clientHeight || 0));
+  input.style.height = '0px';
+  const naturalHeight = input.scrollHeight + borderHeight;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  const maxHeight = Math.min(240, viewportHeight * 0.35);
+  input.style.height = `${Math.min(naturalHeight, maxHeight)}px`;
+  input.style.overflowY = naturalHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const message = input.value.trim();
@@ -1256,6 +1267,7 @@ async function sendChat() {
   const request = uncertainChatRequest?.taskId === taskId && uncertainChatRequest.message === message
     ? uncertainChatRequest : { taskId, message, message_id: crypto.randomUUID() };
   input.value = '';
+  resizeChatInput(input);
   let res;
   try {
     res = await fetch(`/api/tasks/${taskId}/chat`, {
@@ -1266,6 +1278,7 @@ async function sendChat() {
   } catch (error) {
     uncertainChatRequest = request;
     input.value = message;
+    resizeChatInput(input);
     showMessage('Connection lost. Retrying this text will reuse its message ID to avoid duplicate delivery.', 'Delivery unknown');
     return;
   }
@@ -1274,8 +1287,10 @@ async function sendChat() {
     const err = await res.json().catch(() => ({}));
     showMessage(err.error || 'Follow-up failed', 'Follow-up failed');
     input.value = message;
+    resizeChatInput(input);
     return;
   }
+  resizeChatInput(input);
   poll();
   setTimeout(poll, 1000);
   setTimeout(poll, 3000);
@@ -2518,8 +2533,10 @@ document.getElementById('detail-body').addEventListener('click', event => {
 document.getElementById('results-sort').value = resultsSort;
 syncHideDoneButton();
 syncDeepSearchButton();
+resizeChatInput();
 updateLayoutMetrics();
 window.addEventListener('resize', () => {
+  resizeChatInput();
   updateLayoutMetrics();
   if (selectedTaskId) applyDetailWidth();
 });

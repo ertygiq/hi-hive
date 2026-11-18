@@ -129,6 +129,7 @@
   </div>
   <div class="chat-input-area" id="chat-area" style="display:none">
     <textarea id="chat-input" placeholder="Send a message to this session..." rows="1" aria-label="Message to this session"
+      oninput="resizeChatInput(this)"
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
     <button class="primary" onclick="sendChat()">Send</button>
   </div>

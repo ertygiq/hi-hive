@@ -7,9 +7,12 @@ const { randomUUID } = require('node:crypto');
 function client(storage = new Map()) {
   const elements = new Map();
   const listeners = new Map();
-  const element = () => ({ style: {}, value: '', textContent: '', innerHTML: '', classList: { add() {}, remove() {}, toggle() {} }, querySelectorAll() { return []; } });
+  const element = () => ({ style: {}, value: '', textContent: '', innerHTML: '', scrollHeight: 34,
+    offsetHeight: 36, clientHeight: 34,
+    classList: { add() {}, remove() {}, toggle() {} }, querySelectorAll() { return []; } });
   const document = {
     visibilityState: 'visible',
+    documentElement: { clientHeight: 800 },
     getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     querySelectorAll() { return []; }, addEventListener(name, callback) { listeners.set(name, callback); },
     createElement() {
@@ -22,7 +25,8 @@ function client(storage = new Map()) {
     getItem(key) { return storage.get(key) ?? null; },
     setItem(key, value) { storage.set(key, value); }
   }, addEventListener(name, callback) { listeners.set(name, callback); },
-    setInterval() {}, setTimeout() {}, clearTimeout() {}, crypto: { randomUUID }, console });
+    setInterval() {}, setTimeout() {}, clearTimeout() {}, crypto: { randomUUID }, console, innerHeight: 800 });
+  context.window = context;
   const source = fs.readFileSync('src/hihive/static/app.js', 'utf8').split('// --- Init ---')[0];
   vm.runInContext(source, context);
   vm.runInContext("selectedTaskId = 'task'; configCache = { harnesses: [] }; const originalPoll = poll; poll = () => {};", context);
@@ -253,22 +257,88 @@ test('background activity uses the existing board poll without extra requests', 
   assert.equal(requests, 3);
 });
 
+test('chat textarea grows with content and shrinks back to one line', () => {
+  const { context, document } = client();
+  const input = document.getElementById('chat-input');
+  input.scrollHeight = 78;
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '80px');
+  assert.equal(input.style.overflowY, 'hidden');
+
+  input.scrollHeight = 34;
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '36px');
+  assert.equal(input.style.overflowY, 'hidden');
+});
+
+test('chat textarea caps at the smaller of 240px and 35vh and scrolls only above it', () => {
+  const { context, document } = client();
+  const input = document.getElementById('chat-input');
+  context.innerHeight = 400;
+  input.scrollHeight = 200;
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '140px');
+  assert.equal(input.style.overflowY, 'auto');
+
+  input.scrollHeight = 138;
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '140px');
+  assert.equal(input.style.overflowY, 'hidden');
+
+  context.innerHeight = 1000;
+  input.scrollHeight = 300;
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '240px');
+  assert.equal(input.style.overflowY, 'auto');
+});
+
+test('sending clears and resets the chat textarea before the request completes', async () => {
+  const { context, document } = client();
+  const input = document.getElementById('chat-input');
+  Object.defineProperty(input, 'scrollHeight', { get() { return input.value ? 98 : 34; } });
+  input.value = 'two\nlines';
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '100px');
+
+  let finishRequest;
+  context.fetch = () => new Promise(resolve => { finishRequest = resolve; });
+  const sending = vm.runInContext('sendChat()', context);
+  assert.equal(input.value, '');
+  assert.equal(input.style.height, '36px');
+  assert.equal(input.style.overflowY, 'hidden');
+  finishRequest({ ok: true, status: 202 });
+  await sending;
+  assert.equal(input.style.height, '36px');
+});
+
+test('chat textarea keeps Enter to send and Shift+Enter for a newline', () => {
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  assert.match(html, /id="chat-input"[^>]*rows="1"[^>]*oninput="resizeChatInput\(this\)"[^>]*onkeydown="if\(event\.key==='Enter'&&!event\.shiftKey\)\{event\.preventDefault\(\);sendChat\(\)\}"/s);
+});
+
 test('request errors are shown with their server-provided reason and draft restored', async () => {
   const { context, document } = client();
   context.fetch = async () => ({ ok: false, json: async () => ({ error: 'Hive owns protocol/session flags' }) });
-  document.getElementById('chat-input').value = 'steer';
+  const input = document.getElementById('chat-input');
+  Object.defineProperty(input, 'scrollHeight', { get() { return input.value ? 98 : 34; } });
+  input.value = 'steer';
   await vm.runInContext('sendChat()', context);
   assert.equal(document.getElementById('message-text').textContent, 'Hive owns protocol/session flags');
-  assert.equal(document.getElementById('chat-input').value, 'steer');
+  assert.equal(input.value, 'steer');
+  assert.equal(input.style.height, '100px');
+  assert.equal(input.style.overflowY, 'hidden');
 });
 
 test('transport errors are visible and retry reuses the original Hive message ID', async () => {
   const { context, document } = client();
   const ids = [];
   context.fetch = async (_url, options) => { ids.push(JSON.parse(options.body).message_id); throw new Error('offline'); };
-  document.getElementById('chat-input').value = 'steer';
+  const input = document.getElementById('chat-input');
+  Object.defineProperty(input, 'scrollHeight', { get() { return input.value ? 98 : 34; } });
+  input.value = 'steer';
   await vm.runInContext('sendChat()', context);
   assert.match(document.getElementById('message-text').textContent, /Connection lost/);
+  assert.equal(input.style.height, '100px');
   await vm.runInContext('sendChat()', context);
   assert.equal(ids[0], ids[1]);
 });

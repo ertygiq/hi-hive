@@ -633,6 +633,7 @@ main {
 /* Chat */
 .chat-input-area {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
@@ -649,7 +650,8 @@ main {
   font-size: 13px;
   resize: none;
   min-height: 36px;
-  max-height: 100px;
+  max-height: min(240px, 35vh);
+  overflow-y: hidden;
 }
 .chat-input-area textarea:focus {
   outline: none;
