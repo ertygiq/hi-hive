@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from . import paths
@@ -60,13 +62,87 @@ def _executable():
     raise SystemExit("Cannot find the installed 'hihive' command. Install it first: uv tool install .")
 
 
+def available():
+    selected = manager()
+    if selected == "launchd":
+        return bool(shutil.which("launchctl") and subprocess.run(
+            ["launchctl", "print", _domain()], capture_output=True, check=False).returncode == 0)
+    if not shutil.which("systemctl"):
+        return False
+    return subprocess.run(["systemctl", "--user", "show-environment"],
+                          capture_output=True, check=False).returncode == 0
+
+
+def _logs_hint():
+    if manager() == "launchd":
+        return f"Logs: {paths.logs_dir() / 'server.log'} and {paths.logs_dir() / 'server.err'}"
+    return f"Logs: journalctl --user -u {UNIT_NAME} -f"
+
+
+def _server_config(timeout=0.5):
+    token = paths.read_token()
+    if not token:
+        return None
+    request = urllib.request.Request(paths.server_url().rstrip("/") + "/api/config")
+    request.add_header("Origin", paths.server_url())
+    request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            import json
+            return json.loads(response.read())
+    except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
+        return None
+
+
+def _wait_for_health(selected, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        config = _server_config()
+        if config and config.get("service_manager") == selected:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _cleanup_failed_service(selected):
+    try:
+        if selected == "launchd":
+            _uninstall_launchd(quiet=True)
+        else:
+            _uninstall_systemd(quiet=True)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+
 def install(port=None):
     selected = manager()
+    if not available():
+        detail = "no systemd user session" if selected == "systemd" else "no logged-in launchd GUI session"
+        raise SystemExit(f"The background service is not available here ({detail}).\n"
+                         "Run hi-hive in a terminal instead:  hihive serve")
     port = port or int(os.environ.get("PORT") or paths.DEFAULT_PORT)
-    if selected == "launchd":
-        _install_launchd(port)
-    else:
-        _install_systemd(port)
+    current = _server_config()
+    if current and current.get("service_manager") not in ("launchd", "systemd"):
+        running_port = paths.server_url().rsplit(":", 1)[-1]
+        raise SystemExit(f"hi-hive is already running in a terminal (port {running_port}). "
+                         "Stop it there with Ctrl-C, then run this again.")
+    try:
+        if selected == "launchd":
+            _install_launchd(port)
+        else:
+            _install_systemd(port)
+    except subprocess.CalledProcessError as error:
+        _cleanup_failed_service(selected)
+        raise SystemExit(f"Could not start the background service ({selected}, exit {error.returncode}).\n"
+                         f"{_logs_hint()}\nRun hi-hive in a terminal instead:  hihive serve") from None
+    if not _wait_for_health(selected):
+        _cleanup_failed_service(selected)
+        raise SystemExit(f"The background service started, but hi-hive did not answer on port {port} within 10 s.\n"
+                         f"{_logs_hint()}\n"
+                         "Run hi-hive in a terminal instead:  hihive serve")
+    print(f"hi-hive is running in the background on http://localhost:{port} and starts at login.")
+    print("Open it:  hihive open")
+    print(_logs_hint())
 
 
 def uninstall():
@@ -74,16 +150,27 @@ def uninstall():
         _uninstall_launchd()
     else:
         _uninstall_systemd()
+    print(f"hi-hive is no longer running and will not start at login. Your data in {paths.hive_home()} is kept.")
+    print("Start it yourself:            hihive serve")
+    print("Or turn the service back on:  hihive service install")
 
 
 def status():
-    if manager() == "launchd":
-        result = subprocess.run(["launchctl", "print", f"{_domain()}/{LABEL}"], check=False)
+    selected = manager()
+    if not available():
+        raise SystemExit("Background service: unavailable. Run hi-hive in a terminal with:  hihive serve")
+    installed = launchd_path().exists() if selected == "launchd" else systemd_path().exists()
+    if not installed:
+        print(f"Background service: not installed ({selected})")
+        return
+    if selected == "launchd":
+        running = _launchd_loaded()
     else:
-        _require_systemctl()
-        result = subprocess.run(["systemctl", "--user", "status", UNIT_NAME, "--no-pager"], check=False)
-    if result.returncode:
-        raise SystemExit(result.returncode)
+        running = subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT_NAME], check=False).returncode == 0
+    config = _server_config() if running else None
+    state = "running" if config and config.get("service_manager") == selected else ("starting" if running else "stopped")
+    port = paths.server_url().rsplit(":", 1)[-1] if config else "-"
+    print(f"Background service: installed, {state}, port {port} ({selected})")
 
 
 def restart():
@@ -129,18 +216,18 @@ def _install_launchd(port):
     print(f"Wrote {path}")
     _launchd_bootout()
     subprocess.run(["launchctl", "bootstrap", _domain(), str(path)], check=True)
-    print(f"Started {LABEL} on port {port} (launchd)")
-    print(f"Logs: tail -f {logs / 'server.log'} {logs / 'server.err'}")
 
 
-def _uninstall_launchd():
+def _uninstall_launchd(quiet=False):
     if _launchd_loaded():
         _launchd_bootout()
-        print(f"Stopped {LABEL}")
+        if not quiet:
+            print(f"Stopped {LABEL}")
     path = launchd_path()
     if path.exists():
         path.unlink()
-        print(f"Removed {path}")
+        if not quiet:
+            print(f"Removed {path}")
 
 
 def _systemd_quote(value):
@@ -224,15 +311,14 @@ def _install_systemd(port):
     # Restart also starts an inactive unit and always applies a rewritten unit.
     subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
     print(f"Wrote {path}")
-    print(f"Started {UNIT_NAME} on port {port} (systemd user service)")
-    print(f"Logs: journalctl --user -u {UNIT_NAME} -f")
 
 
-def _uninstall_systemd():
+def _uninstall_systemd(quiet=False):
     _require_systemctl()
     subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
     path = systemd_path()
     if path.exists():
         path.unlink()
-        print(f"Removed {path}")
+        if not quiet:
+            print(f"Removed {path}")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)

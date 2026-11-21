@@ -5,10 +5,7 @@
   "allowed_hosts": ["localhost", "127.0.0.1"],
   "prevent_sleep_when_running": false,
   "show_task_cost": false,
-  "default_harness": "claude-code",
-  "harnesses": [
-    { "id": "claude-code", "name": "Claude Code", "icon": "◆", "color": "slate", "type": "claude-code", "command": "claude", "args": ["--dangerously-skip-permissions"] },
-    { "id": "pi", "name": "Pi", "icon": "✦", "color": "purple", "type": "pi", "command": "pi", "args": [], "sessions_dir": null }
-  ],
+  "default_harness": null,
+  "harnesses": [],
   "output_actions": []
 }

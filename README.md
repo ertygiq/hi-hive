@@ -42,13 +42,15 @@ See [Live steering](LIVE_STEERING.md) for supported versions, message states, vi
 
 ## Setup
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), [Claude Code](https://claude.ai/claude-code) or Pi.
+Install on macOS or Ubuntu-tested Linux:
 
 ```bash
-uv tool install git+https://github.com/ertygiq/hi-hive
-hihive service install
-hihive open
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
 ```
+
+The installer shows every download and asks whether hi-hive should run in the background.
+It detects supported Claude Code and Pi commands already installed on your computer; it does not install them or check their login.
+See [installation details](docs/install.md) for trust, manual installation, flags, updates, and uninstalling.
 
 **Warning:** agents run with full access to your computer; Claude Code starts with `--dangerously-skip-permissions`.
 An agent can delete files or run harmful commands, for example after reading a malicious web page.

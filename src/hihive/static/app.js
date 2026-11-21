@@ -532,10 +532,20 @@ function render() {
   renderWorkers();
   renderResults();
   renderPausedBanner();
+  renderCodingAgentOnboarding();
 
   if (selectedTaskId) {
     refreshDetail();
   }
+}
+
+function renderCodingAgentOnboarding() {
+  const empty = (configCache?.harnesses || []).length === 0;
+  document.getElementById('coding-agent-onboarding').style.display = empty ? 'flex' : 'none';
+  document.querySelectorAll('.header-controls button.primary, .header-controls button:nth-child(2)').forEach(button => {
+    button.disabled = empty;
+    button.title = empty ? 'Add a supported coding agent in Settings first' : '';
+  });
 }
 
 function renderStats() {
@@ -1300,6 +1310,10 @@ async function sendChat() {
 // --- Add Task ---
 async function openAddTask() {
   await loadConfig();
+  if ((configCache?.harnesses || []).length === 0) {
+    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Harnesses.', 'No coding agent');
+    return;
+  }
   document.getElementById('add-label').value = '';
   document.getElementById('add-prompt').value = '';
   populateHarnessSelect(document.getElementById('add-harness'));
@@ -1384,6 +1398,10 @@ function updateBatchSubmitLabel() {
 
 async function openBatchAdd() {
   await loadConfig();
+  if ((configCache?.harnesses || []).length === 0) {
+    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Harnesses.', 'No coding agent');
+    return;
+  }
   const select = document.getElementById('batch-template');
   const templates = projectTemplates();
   // Without templates there is nothing to run: go straight to where they are added.
@@ -1810,9 +1828,9 @@ async function saveSettings() {
     switchSettingsTab('project');
     return flagInvalid(nameEl.value.trim() ? dirEl : nameEl, nameEl.value.trim() ? 'Enter the folder agents work in.' : 'Enter a name.');
   }
-  if (editedProjectHarnesses().length === 0) {
+  if (harnessesLocal.length > 0 && editedProjectHarnesses().length === 0) {
     switchSettingsTab('project');
-    showMessage('This project would have no harnesses. Turn on "Use shared harnesses", or select this project in a harness under "All projects".', 'Settings not saved');
+    showMessage('This project would have no coding agent. Turn on shared coding agents, or select this project for one under "All projects".', 'Settings not saved');
     return;
   }
   applyProjectForm();
@@ -1857,7 +1875,7 @@ function availabilityTagHtml(item) {
 function renderHarnessesList() {
   const list = document.getElementById('harnesses-list');
   if (harnessesLocal.length === 0) {
-    list.innerHTML = '<div class="empty">No harnesses defined</div>';
+    list.innerHTML = '<div class="empty">No coding agents configured. Add Claude Code or Pi after installing it on this computer.</div>';
     return;
   }
   list.innerHTML = harnessesLocal.map(h => `
@@ -1988,11 +2006,7 @@ function saveHarness() {
 }
 
 async function deleteHarness(id) {
-  if (harnessesLocal.length <= 1) {
-    showMessage('At least one harness is required.', 'Cannot delete');
-    return;
-  }
-  if (!await showConfirm('Delete this harness?')) return;
+  if (!await showConfirm('Delete this coding agent configuration?')) return;
   harnessesLocal = harnessesLocal.filter(h => h.id !== id);
   renderHarnessesList();
 }

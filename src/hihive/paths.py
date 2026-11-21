@@ -57,6 +57,15 @@ def logs_dir() -> Path:
     return hive_home() / "logs"
 
 
+def installer_state_dir() -> Path:
+    base = Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser()
+    return base / "hi-hive"
+
+
+def installer_record_file() -> Path:
+    return installer_state_dir() / "install.json"
+
+
 def ensure_config(path: Path) -> None:
     """Create the config file from the packaged defaults on first start."""
     if path.exists():

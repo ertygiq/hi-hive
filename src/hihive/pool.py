@@ -147,7 +147,7 @@ class PoolManager:
 
         self._load_config()
         self._load_state()
-        self._ensure_harnesses()
+        self._validate_harnesses()
         self._output_actions = output_actions.normalize_all(self._output_actions)
         if not self._projects:
             self._create_first_project()
@@ -489,8 +489,6 @@ class PoolManager:
             if _given(params, "harnesses"):
                 harnesses = [_normalize_harness(h) for h in params["harnesses"]]
                 _validate_harness_names(harnesses)
-                if not harnesses:
-                    raise HiveError("At least one harness is required")
             actions = None
             if params.get("output_actions") is not None:
                 try:
@@ -515,8 +513,9 @@ class PoolManager:
                 _validate_template_names(templates)
             proposed_harnesses = harnesses if harnesses is not None else self._harnesses
             proposed_projects = projects if projects is not None else self._projects
-            unavailable = [p["name"] for p in proposed_projects.values()
-                           if not any(pj.available_in(h, p) for h in proposed_harnesses)]
+            unavailable = ([p["name"] for p in proposed_projects.values()
+                            if not any(pj.available_in(h, p) for h in proposed_harnesses)]
+                           if proposed_harnesses else [])
             if unavailable:
                 names = ", ".join(f"'{name}'" for name in unavailable)
                 raise HiveError(f"Every project needs at least one available harness; none available in {names}")
@@ -1329,10 +1328,8 @@ class PoolManager:
     def _initial_session_id(self, harness_id):
         return str(uuid.uuid4()) if adapter_for(self._find_harness(harness_id)["type"]).preassign_session_id() else None
 
-    def _ensure_harnesses(self):
-        """Require explicit harness config. Old tasks without a harness resolve to "claude-code"."""
-        if not self._harnesses:
-            raise HiveError("No harnesses configured")
+    def _validate_harnesses(self):
+        """Validate configured coding agents; an empty first-start config is allowed."""
         _validate_harness_names(self._harnesses)
 
     # --- Task cost ---

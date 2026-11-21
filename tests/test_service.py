@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from hihive import service
+from hihive import paths, service
 
 
 class Result:
@@ -21,6 +21,8 @@ def service_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_HOME", str(hive))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setattr(service, "_executable", lambda: "/opt/hi hive/bin/hihive")
+    monkeypatch.setattr(service, "_server_config", lambda timeout=0.5: None)
+    monkeypatch.setattr(service, "_wait_for_health", lambda selected, timeout=10: True)
     return home, hive
 
 
@@ -56,6 +58,7 @@ def test_linux_install_writes_private_direct_systemd_user_service(service_home, 
     assert "token" not in text.lower()
     assert "/bin/sh" not in text
     assert [call[0] for call in calls] == [
+        ["systemctl", "--user", "show-environment"],
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", service.UNIT_NAME],
         ["systemctl", "--user", "restart", service.UNIT_NAME],
@@ -110,7 +113,9 @@ def test_linux_install_rejects_hive_home_that_is_a_file(service_home, monkeypatc
     hive.write_text("not a directory")
     monkeypatch.setattr(service.sys, "platform", "linux")
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(service.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("must fail before systemctl"))
+    monkeypatch.setattr(service.subprocess, "run", lambda args, **_kwargs: Result()
+                        if args == ["systemctl", "--user", "show-environment"]
+                        else pytest.fail("must fail before service installation"))
 
     with pytest.raises(FileExistsError):
         service.install(4567)
@@ -136,13 +141,17 @@ def test_linux_status_restart_and_uninstall_use_systemctl_user(service_home, mon
     calls = []
     monkeypatch.setattr(service.subprocess, "run",
                         lambda args, **kwargs: calls.append((args, kwargs)) or Result())
+    monkeypatch.setattr(service, "_server_config", lambda timeout=0.5: {"service_manager": "systemd"})
+    paths.server_lock_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.server_lock_file().write_text("4567\n")
 
     service.status()
     service.restart()
     service.uninstall()
 
     assert [call[0] for call in calls] == [
-        ["systemctl", "--user", "status", service.UNIT_NAME, "--no-pager"],
+        ["systemctl", "--user", "show-environment"],
+        ["systemctl", "--user", "is-active", "--quiet", service.UNIT_NAME],
         ["systemctl", "--user", "restart", service.UNIT_NAME],
         ["systemctl", "--user", "disable", "--now", service.UNIT_NAME],
         ["systemctl", "--user", "daemon-reload"],
@@ -164,7 +173,43 @@ def test_macos_install_keeps_launchd_and_marks_the_supervisor(service_home, monk
     assert plist["ProgramArguments"] == ["/opt/hi hive/bin/hihive", "serve", "--shell-env"]
     assert plist["EnvironmentVariables"]["HIVE_SUPERVISOR"] == "launchd"
     assert plist["Umask"] == 0o077
-    assert calls[0][0][:2] == ["launchctl", "bootstrap"]
+    assert calls[0][0][:3] == ["launchctl", "print", service._domain()]
+    assert calls[1][0][:2] == ["launchctl", "bootstrap"]
+
+
+def test_install_refuses_terminal_lock_owner(service_home, monkeypatch):
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service, "available", lambda: True)
+    monkeypatch.setattr(service, "_server_config", lambda timeout=0.5: {"service_manager": None})
+    monkeypatch.setattr(service, "_install_systemd", lambda _port: pytest.fail("must not replace terminal server"))
+
+    with pytest.raises(SystemExit, match="already running in a terminal"):
+        service.install(4567)
+
+
+def test_health_timeout_unloads_failed_service_before_manual_guidance(service_home, monkeypatch):
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service, "available", lambda: True)
+    monkeypatch.setattr(service, "_install_systemd", lambda _port: None)
+    monkeypatch.setattr(service, "_wait_for_health", lambda selected, timeout=10: False)
+    cleaned = []
+    monkeypatch.setattr(service, "_cleanup_failed_service", lambda selected: cleaned.append(selected))
+
+    with pytest.raises(SystemExit, match="did not answer") as failure:
+        service.install(4567)
+
+    assert cleaned == ["systemd"]
+    assert "hihive serve" in str(failure.value)
+
+
+def test_unavailable_linux_service_has_clean_manual_fallback(service_home, monkeypatch):
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service, "available", lambda: False)
+
+    with pytest.raises(SystemExit, match="no systemd user session") as failure:
+        service.install(4567)
+
+    assert "hihive serve" in str(failure.value)
 
 
 def test_other_platforms_keep_foreground_fallback(monkeypatch):
