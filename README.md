@@ -45,7 +45,7 @@ See [Live steering](LIVE_STEERING.md) for supported versions, message states, vi
 Install on macOS or Ubuntu-tested Linux:
 
 ```bash
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
 ```
 
 The installer reports the exact hi-hive commit and any additional software it downloads.

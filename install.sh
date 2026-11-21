@@ -1,6 +1,6 @@
 #!/bin/sh
 # hi-hive per-user installer for macOS and Ubuntu-tested Linux.
-# Designed to run as: curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL URL | sh
+# Designed to run as: curl -fsSL URL | sh
 
 say() { printf '%s\n' "$*"; }
 

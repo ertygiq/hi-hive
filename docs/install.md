@@ -6,13 +6,13 @@ The installer supports macOS and Ubuntu-tested Linux.
 It installs only for the current user, refuses root, and never uses `sudo`.
 
 ```sh
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
 ```
 
 To inspect the installer before running it:
 
 ```sh
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
+curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
 less install-hi-hive.sh
 sh install-hi-hive.sh
 ```
@@ -169,7 +169,7 @@ uv tool install --python 3.14 https://github.com/ertygiq/hi-hive/archive/COMMIT_
 Download the installer, inspect it if desired, and run:
 
 ```sh
-curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
+curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
 less install-hi-hive.sh
 sh install-hi-hive.sh --uninstall
 ```
