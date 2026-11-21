@@ -30,8 +30,31 @@ def launchd_path():
     return Path("~/Library/LaunchAgents").expanduser() / f"{LABEL}.plist"
 
 
+def _systemd_manager_environment():
+    result = subprocess.run(["systemctl", "--user", "show-environment"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise SystemExit("Cannot read the systemd user manager environment; run `hihive serve` instead.")
+    environment = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name in environment:
+            raise SystemExit(f"The systemd user manager returned an ambiguous {name} setting")
+        environment[name] = value
+    return environment
+
+
 def systemd_path():
-    return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd" / "user" / UNIT_NAME
+    configured = _systemd_manager_environment().get("XDG_CONFIG_HOME")
+    if configured:
+        root = Path(configured)
+        if not root.is_absolute():
+            raise SystemExit(f"The systemd user manager has a relative XDG_CONFIG_HOME: {configured}")
+    else:
+        root = Path.home() / ".config"
+    return root / "systemd" / "user" / UNIT_NAME
 
 
 def _domain():
