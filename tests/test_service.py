@@ -127,15 +127,17 @@ def test_service_uninstall_refuses_symlinked_ancestor_without_deleting_redirecte
     victim = redirected / relative
     victim.parent.mkdir(parents=True)
     victim.write_text("KEEP\n")
-    monkeypatch.setattr(service, "_launchd_loaded", lambda: False)
+    calls = []
+    monkeypatch.setattr(service, "_launchd_loaded", lambda: pytest.fail("launchctl state must not be checked"))
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: calls.append(args) or Result())
 
     uninstaller = service._uninstall_launchd if backend == "launchd" else service._uninstall_systemd
     with pytest.raises(SystemExit, match="symbolic links"):
         uninstaller(quiet=True)
 
     assert victim.read_text() == "KEEP\n"
+    assert calls == []
 
 
 def test_systemd_uninstall_refuses_symlinked_custom_xdg_config_ancestor(service_home, monkeypatch):
@@ -148,13 +150,84 @@ def test_systemd_uninstall_refuses_symlinked_custom_xdg_config_ancestor(service_
     victim = redirected / "systemd/user/com.hihive.service"
     victim.parent.mkdir(parents=True)
     victim.write_text("KEEP\n")
+    calls = []
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: calls.append(args) or Result())
 
     with pytest.raises(SystemExit, match="symbolic links"):
         service._uninstall_systemd(quiet=True)
 
     assert victim.read_text() == "KEEP\n"
+    assert calls == []
+
+
+def test_systemd_install_and_uninstall_allow_safe_external_xdg_config_home(service_home, monkeypatch):
+    home, _hive = service_home
+    external = home.parent / "external-config"
+    external.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
+
+    service._install_systemd(4567)
+    path = external / "systemd/user/com.hihive.service"
+    assert path.exists()
+
+    calls.clear()
+    service._uninstall_systemd(quiet=True)
+    assert not path.exists()
+    assert calls == [
+        ["systemctl", "--user", "disable", "--now", service.UNIT_NAME],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+
+
+def test_systemd_uninstall_refuses_group_writable_external_xdg_without_changes(service_home, monkeypatch):
+    home, _hive = service_home
+    external = home.parent / "external-uninstall-unsafe"
+    victim = external / "systemd/user/com.hihive.service"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("KEEP\n")
+    external.chmod(0o770)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
+    calls = []
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
+
+    with pytest.raises(SystemExit, match="group/world-writable"):
+        service._uninstall_systemd(quiet=True)
+
+    assert victim.read_text() == "KEEP\n"
+    assert calls == []
+
+
+@pytest.mark.parametrize("unsafe", ["group-writable", "symlink", "unsafe-parent"])
+def test_systemd_install_refuses_unsafe_external_xdg_config_home_without_systemctl_calls(service_home, monkeypatch, unsafe):
+    home, _hive = service_home
+    calls = []
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
+    if unsafe == "group-writable":
+        external = home.parent / "external-unsafe"
+        external.mkdir(mode=0o700)
+        external.chmod(0o770)
+    elif unsafe == "symlink":
+        redirected = home.parent / "external-redirected"
+        redirected.mkdir(mode=0o700)
+        external = home.parent / "external-link"
+        external.symlink_to(redirected)
+    else:
+        parent = home.parent / "external-parent"
+        parent.mkdir(mode=0o700)
+        parent.chmod(0o770)
+        external = parent / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
+
+    with pytest.raises(SystemExit, match="group/world-writable|symbolic links"):
+        service._install_systemd(4567)
+
+    assert calls == []
 
 
 @pytest.mark.parametrize("backend", ["launchd", "systemd"])

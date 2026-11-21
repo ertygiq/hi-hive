@@ -188,11 +188,30 @@ def restart():
     print(f"Restarted hi-hive ({manager()})")
 
 
-def _validate_service_directory(directory, create=False):
+def _service_directory_root(directory):
     directory = Path(directory)
     home = Path.home()
-    if directory != home and home not in directory.parents:
-        raise SystemExit(f"Service directory must be inside the current user's home: {directory}")
+    if directory == home or home in directory.parents:
+        return home
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    if configured:
+        root = Path(configured)
+        if not root.is_absolute():
+            raise SystemExit(f"XDG_CONFIG_HOME must be absolute: {root}")
+        if directory == root or root in directory.parents:
+            return root
+    raise SystemExit(f"Service directory must be inside HOME or XDG_CONFIG_HOME: {directory}")
+
+
+def _validate_service_directory(directory, create=False):
+    directory = Path(directory)
+    root = _service_directory_root(directory)
+    anchor = root
+    while not anchor.exists() and not anchor.is_symlink():
+        parent = anchor.parent
+        if parent == anchor:
+            break
+        anchor = parent
     current = directory
     while True:
         if current.is_symlink():
@@ -203,7 +222,7 @@ def _validate_service_directory(directory, create=False):
                 raise SystemExit(f"Service directory path is not a directory: {current}")
             if details.st_uid != os.getuid() or details.st_mode & 0o022:
                 raise SystemExit(f"Service directory must be user-owned and not group/world-writable: {current}")
-        if current == home:
+        if current == anchor:
             break
         current = current.parent
     if create:
@@ -277,12 +296,12 @@ def _install_launchd(port):
 
 
 def _uninstall_launchd(quiet=False):
+    path = launchd_path()
+    _validate_service_target(path)
     if _launchd_loaded():
         _launchd_bootout()
         if not quiet:
             print(f"Stopped {LABEL}")
-    path = launchd_path()
-    _validate_service_target(path)
     if path.exists():
         path.unlink()
         if not quiet:
@@ -372,9 +391,9 @@ def _install_systemd(port):
 
 def _uninstall_systemd(quiet=False):
     _require_systemctl()
-    subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
     path = systemd_path()
     _validate_service_target(path)
+    subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
     if path.exists():
         path.unlink()
         if not quiet:
