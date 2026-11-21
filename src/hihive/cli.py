@@ -56,6 +56,7 @@ Commands:
                               --full     show output + reviews + follow-ups
                               --no-header suppress the label/status header
   wait <id>                   Wait for task to complete
+  label <id> "new label"      Change a task's label
   followup <id> "message"          Send a message to the agent (steers the agent if it is already working)
   followup <id> "message" --wait   Send and wait for the conversation run to finish; print its latest answer
   followup <id> --cancel           Stop the active conversation run, including all pending messages
@@ -123,6 +124,7 @@ class HiHiveCLI:
             "results": lambda: self.cmd_results(argv),
             "show": lambda: self.cmd_show(argv),
             "wait": lambda: self.cmd_wait(argv),
+            "label": lambda: self.cmd_label(argv),
             "followup": lambda: self.cmd_followup(argv),
             "cancel": lambda: self.cmd_cancel(argv),
             "retry": lambda: self.cmd_retry(argv),
@@ -327,6 +329,13 @@ class HiHiveCLI:
             sys.stdout.write("\r\033[K")
             raise Exit(130) from None
         raise Exit(0 if task["status"] == "completed" else 1)
+
+    def cmd_label(self, args):
+        if len(args) < 2:
+            self.die('Usage: hihive label <id> "new label"')
+        task_id = self.resolve_task_id(args.pop(0))
+        result = self.post(f"/api/tasks/{quote(task_id, safe='')}/label", {"label": " ".join(args)})
+        puts(f"Changed label for {short_id(task_id)}: {result['label']}")
 
     def cmd_followup(self, args):
         if _remove(args, "--cancel"):

@@ -186,6 +186,9 @@ def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
     assert [t["id"] for t in state["queue"]] == [own]
     assert api.call("GET", f"/api/tasks/{other}", api.agent).status_code == 404
     assert api.call("POST", f"/api/tasks/{other}/cancel", api.agent, json={}).status_code == 404
+    relabelled = api.call("POST", f"/api/tasks/{own}/label", api.agent, json={"label": "Agent label"})
+    assert relabelled.status_code == 200
+    assert setup.pool.task_detail(own)["label"] == "Agent label"
     assert api.call("GET", f"/api/state?project={setup.main}", api.agent).status_code == 403
     created = api.call("POST", "/api/tasks", api.agent, json={"prompt": "child"})
     assert setup.pool._tasks[created.json()["id"]]["project_id"] == setup.sandbox
@@ -201,7 +204,8 @@ def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
 @pytest.mark.parametrize("method,path,body", [
     ("GET", "", None), ("DELETE", "", None), ("POST", "/fork", {"prompt": "x"}), ("POST", "/cancel", {}),
     ("POST", "/continue", {}), ("POST", "/retry", {}), ("POST", "/done", {}),
-    ("POST", "/chat", {"message": "x"}), ("POST", "/chat/cancel", {"msg_id": None})])
+    ("POST", "/label", {"label": "x"}), ("POST", "/chat", {"message": "x"}),
+    ("POST", "/chat/cancel", {"msg_id": None})])
 def test_an_agent_token_cannot_use_any_task_route_on_another_projects_task(api, setup, method, path, body):
     """Each task route (behind show, wait, followup, cancel, retry, fork) must check the task's project."""
     other = setup.pool.add_task("other", project_id=setup.main)
@@ -257,6 +261,7 @@ def test_the_full_token_sees_all_projects_or_one(api, setup):
 def test_cli_help_explains_project_ownership_and_global_harnesses():
     assert "Tasks, templates, review sections, and working directories belong to projects." in USAGE
     assert "Harnesses are configured globally and can be made available to selected projects." in USAGE
+    assert 'label <id> "new label"' in USAGE
 
 
 class ProjectsCLI(HiHiveCLI):
@@ -359,6 +364,20 @@ def test_cancel_with_a_named_project_does_not_touch_another_projects_task(monkey
     with pytest.raises(Exit):
         c.run(["--project", "Sandbox", "cancel", "aaaa"])
     assert c.posts == []
+
+
+def test_label_resolves_a_short_id_inside_the_named_project(monkeypatch, capsys):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+
+    class LabelTaskCLI(TaskCLI):
+        def post(self, path, body=None):
+            self.posts.append((path, body))
+            return {"ok": True, "label": "Renamed"}
+
+    cli = LabelTaskCLI(PROJECTS)
+    cli.run(["--project", "Sandbox", "label", "bbbb", "Renamed"])
+    assert cli.posts == [("/api/tasks/bbbb-sandbox/label", {"label": "Renamed"})]
+    assert "Changed label for bbbb-san: Renamed" in capsys.readouterr().out
 
 
 TWINS = [{"id": "abcd1111", "name": "Frontend", "templates": [], "harnesses": []},

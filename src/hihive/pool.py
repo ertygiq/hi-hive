@@ -44,10 +44,10 @@ TEMPLATE_INPUT = re.compile(r"%(%|\{input\})")
 HARNESS_TYPES = [{"id": "claude-code", "label": "Claude Code"}, {"id": "pi", "label": "Pi"}]
 
 # Variables a parent agent or Hive's own launcher sets that must not reach the
-# agents Hive starts (see KNOWN_PITFALLS.md). Hive sets HIVE_TOKEN itself for each
-# agent; an inherited one would give the agent another agent's project.
+# agents Hive starts (see KNOWN_PITFALLS.md). Hive sets HIVE_TOKEN and HIVE_TASK_ID
+# itself for each agent; inherited values could identify another task or project.
 INHERITED_AGENT_VARS = ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL",
-                        "HIVE_TOKEN", "HIVE_PROJECT")
+                        "HIVE_TOKEN", "HIVE_PROJECT", "HIVE_TASK_ID")
 PYTHON_LAUNCH_VARS = ("PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__", "UV_RUN_RECURSION_DEPTH")
 
 
@@ -239,6 +239,18 @@ class PoolManager:
             self._task_order.append(task_id)
             self._bump_version()
             return task_id
+
+    def set_task_label(self, task_id, label):
+        cleaned = _clean_label(label)
+        if not cleaned:
+            raise HiveError("Label cannot be empty")
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
+            task["label"] = cleaned
+            self._bump_version()
+            return cleaned
 
     def fork_task(self, parent_id, prompt, label=None):
         """New task ID, None if the parent cannot fork, or "missing_session"."""
@@ -1025,8 +1037,10 @@ class PoolManager:
                                 chdir=self._resolve_work_dir(task), env=child_process_env(), resume=resume,
                                 parent=parent, task_id=task["id"], harness=harness["type"],
                                 diagnostics_path=self._diagnostics_path(task["id"]))
-            # The agent's own token, limited to the task's project; valid until the process exits.
+            # These values identify this exact task and its project-scoped API access.
+            # child_process_env removed any inherited values before they are set here.
             runner.env["HIVE_TOKEN"] = self._agent_tokens.issue(task["project_id"], task["id"], runner)
+            runner.env["HIVE_TASK_ID"] = task["id"]
             if kind != "chat":
                 task.pop("result_placement", None)
             task["runner"] = runner

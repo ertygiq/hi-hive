@@ -315,6 +315,15 @@ def create_app(pool, token, manage_pool=True):
             return error(404, "Task not found")
         return JSONResponse({"ok": True, "done": result})
 
+    def label_task(request, body):
+        try:
+            label = pool.set_task_label(task_id_for(request), body.get("label"))
+        except HiveError as failure:
+            return error(400, str(failure))
+        if label is None:
+            return error(404, "Task not found")
+        return JSONResponse({"ok": True, "label": label})
+
     def chat(request, body):
         task_id = task_id_for(request)  # outside the try: a refused task must stay a 404, not become a 500
         try:
@@ -419,6 +428,7 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/tasks/{id}/continue", run(continue_task, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/retry", run(retry, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/done", run(done, agents=True), methods=["POST"]),
+        Route("/api/tasks/{id}/label", run(label_task, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/chat", run(chat, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/chat/cancel", run(chat_cancel, agents=True), methods=["POST"]),
         Route("/api/queue/reorder", run(reorder), methods=["POST"]),

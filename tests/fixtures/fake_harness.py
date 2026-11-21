@@ -63,6 +63,8 @@ def work():
                   "capabilities": [] if scenario == "no-capability" else ["msg_lifecycle_v1"]})
     with open(path("hive_token"), "w") as file:
         file.write(os.environ.get("HIVE_TOKEN", ""))
+    with open(path("hive_task_id"), "w") as file:
+        file.write(os.environ.get("HIVE_TASK_ID", ""))
     with open(path("started"), "w") as file:
         file.write("yes")
     if scenario == "unknown-event":
