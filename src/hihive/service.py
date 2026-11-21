@@ -182,6 +182,22 @@ def install(port=None):
     print(_logs_hint())
 
 
+def _systemd_service_location():
+    context = _systemd_manager_context()
+    path = systemd_path(context)
+    _validate_service_target(path, context[1], context[0])
+    return context, path
+
+
+def installed():
+    if manager() == "launchd":
+        path = launchd_path()
+        _validate_service_target(path)
+    else:
+        _context, path = _systemd_service_location()
+    return path.exists()
+
+
 def uninstall():
     if manager() == "launchd":
         _uninstall_launchd()
@@ -196,14 +212,7 @@ def status():
     selected = manager()
     if not available():
         raise SystemExit("Background service: unavailable. Run hi-hive in a terminal with:  hihive serve")
-    if selected == "launchd":
-        installed = launchd_path().exists()
-    else:
-        context = _systemd_manager_context()
-        path = systemd_path(context)
-        _validate_service_target(path, context[1], context[0])
-        installed = path.exists()
-    if not installed:
+    if not installed():
         print(f"Background service: not installed ({selected})")
         return
     if selected == "launchd":
@@ -223,9 +232,7 @@ def restart():
         subprocess.run(["launchctl", "kickstart", "-k", f"{_domain()}/{LABEL}"], check=True)
     else:
         _require_systemctl()
-        context = _systemd_manager_context()
-        path = systemd_path(context)
-        _validate_service_target(path, context[1], context[0])
+        _context, path = _systemd_service_location()
         if not path.exists():
             raise SystemExit("hi-hive systemd user service is not installed")
         subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
@@ -423,9 +430,8 @@ def _ensure_private_hive_home():
 
 def _install_systemd(port):
     _require_systemctl()
-    context = _systemd_manager_context()
+    context, path = _systemd_service_location()
     _ensure_private_hive_home()
-    path = systemd_path(context)
     _atomic_service_file(path, _systemd_unit(port).encode(), context[1], context[0])
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", UNIT_NAME], check=True)
@@ -436,9 +442,7 @@ def _install_systemd(port):
 
 def _uninstall_systemd(quiet=False):
     _require_systemctl()
-    context = _systemd_manager_context()
-    path = systemd_path(context)
-    _validate_service_target(path, context[1], context[0])
+    _context, path = _systemd_service_location()
     subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
     if path.exists():
         path.unlink()

@@ -4,7 +4,7 @@ import webbrowser
 import pytest
 
 from hihive import cli as cli_module
-from hihive import paths
+from hihive import paths, service
 from hihive.cli import HiHiveCLI, Exit
 
 
@@ -143,6 +143,18 @@ def test_open_prints_ssh_tunnel_and_login_url_in_headless_linux(tmp_path, monkey
     assert "http://localhost:4789/login#token=" in output
     assert "grants full hi-hive access" in output
     assert "do not paste it into logs or issues" in output
+
+
+def test_service_installed_machine_query_uses_exit_status_only(monkeypatch, capsys):
+    monkeypatch.setattr(service, "installed", lambda: True)
+    cli_module.main(["service", "installed"])
+    assert capsys.readouterr().out == ""
+
+    monkeypatch.setattr(service, "installed", lambda: False)
+    with pytest.raises(SystemExit) as missing:
+        cli_module.main(["service", "installed"])
+    assert missing.value.code == 3
+    assert capsys.readouterr().out == ""
 
 
 def test_open_not_running_prints_start_choices(monkeypatch, capsys):

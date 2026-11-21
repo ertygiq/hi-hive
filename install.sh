@@ -367,6 +367,21 @@ service_possible() {
   fi
 }
 
+query_existing_service() {
+  service_command=$1
+  if "$service_command" service installed; then
+    service_query_status=0
+  else
+    service_query_status=$?
+  fi
+  case "$service_query_status" in
+    0) EXISTING_SERVICE=1 ;;
+    3) EXISTING_SERVICE=0 ;;
+    *) die 'could not determine whether the manager-visible hi-hive service is installed' ;;
+  esac
+  SERVICE_QUERIED=1
+}
+
 main() {
 set -eu
 
@@ -524,6 +539,7 @@ fi
 RUN_BACKGROUND=0
 FOREGROUND_RUNNING=0
 EXISTING_SERVICE=0
+SERVICE_QUERIED=0
 SERVICE_SKIPPED=0
 SERVICE_POSSIBLE=0
 if service_possible; then SERVICE_POSSIBLE=1; fi
@@ -546,15 +562,6 @@ if [ "$FRESH" -eq 1 ]; then
   elif [ "$SERVICE_POSSIBLE" -eq 1 ]; then ask_run_mode
   else
     say "Runs         only while '$DISPLAY_COMMAND serve' runs (no background service is available here)"
-  fi
-else
-  if [ -f "$HOME/Library/LaunchAgents/com.hihive.plist" ] || [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/com.hihive.service" ]; then
-    EXISTING_SERVICE=1
-  fi
-  if [ "$INSTALL_SERVICE" -eq 1 ] && [ "$SERVICE_POSSIBLE" -eq 1 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
-    RUN_BACKGROUND=1
-  elif [ "$INSTALL_SERVICE" -eq 0 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
-    SERVICE_SKIPPED=1
   fi
 fi
 if [ "$PLAIN" -eq 1 ] && [ "$FRESH" -eq 1 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
@@ -596,6 +603,7 @@ else
   [ -x "$CANDIDATE" ] || die 'candidate installation did not create hihive'
   "$CANDIDATE" --version >/dev/null
   if [ "$FRESH" -eq 0 ]; then
+    query_existing_service "$CANDIDATE"
     "$CANDIDATE" setup-coding-agents --offer --plain >/dev/null
   fi
   candidate_python=$candidate_tools/hi-hive/bin/python
@@ -633,6 +641,14 @@ else
         || warn 'Automatic package restore also failed; user data was not changed.'
     fi
     die "uv did not install hihive in $TOOL_BIN"
+  fi
+fi
+if [ "$FRESH" -eq 0 ] && [ "$SERVICE_QUERIED" -eq 0 ]; then query_existing_service "$HIHIVE"; fi
+if [ "$FRESH" -eq 0 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
+  if [ "$INSTALL_SERVICE" -eq 1 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
+    RUN_BACKGROUND=1
+  else
+    SERVICE_SKIPPED=1
   fi
 fi
 write_record "$COMMIT"
@@ -708,7 +724,11 @@ if [ "$RUN_BACKGROUND" -eq 1 ] && [ "$SERVICE_OK" -eq 1 ]; then
   fi
 else
   if [ "$SERVICE_SKIPPED" -eq 1 ]; then
-    say 'result        the new version is installed; the existing background service was not restarted because of --no-service.'
+    if [ "$INSTALL_SERVICE" -eq 0 ]; then
+      say 'result        the new version is installed; the existing background service was not restarted because of --no-service.'
+    else
+      say 'result        the new version is installed; the existing background service was not restarted because no service manager is available.'
+    fi
     say "To load the new version in that service: $DISPLAY_COMMAND service restart"
     say "Or remove the service first:            $DISPLAY_COMMAND service uninstall"
   elif [ "$FOREGROUND_RUNNING" -eq 1 ]; then

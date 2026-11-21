@@ -867,6 +867,11 @@ def main(argv=None):
             elif action == "available":
                 if not service.available():
                     raise SystemExit(1)
+            elif action == "installed":
+                if len(argv) != 2:
+                    raise SystemExit("Usage: hihive service installed")
+                if not service.installed():
+                    raise SystemExit(3)
             else:
                 raise SystemExit("Usage: hihive service install [--port N] | uninstall | status | restart")
         else:

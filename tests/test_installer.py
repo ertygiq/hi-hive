@@ -56,7 +56,10 @@ printf 'hihive %s\\n' "$*" >> "$HIHIVE_TEST_LOG"
 case "${{1:-}}" in
   --version) echo 'hi-hive 0.2.0';;
   setup-coding-agents) : ;;
-  service) exit "${{HIVE_FAKE_SERVICE_EXIT:-0}}" ;;
+  service)
+    if [ "${{2:-}}" = installed ]; then exit "${{HIVE_FAKE_SERVICE_INSTALLED_EXIT:-3}}"; fi
+    exit "${{HIVE_FAKE_SERVICE_EXIT:-0}}"
+    ;;
   health) exit "${{HIVE_FAKE_HEALTH_EXIT:-1}}" ;;
   open) : ;;
 esac
@@ -324,6 +327,7 @@ def test_service_health_failure_rolls_package_record_back_and_keeps_data(tmp_pat
     unit.write_text("old unit\n")
     mocks = Path(env["PATH"].split(":", 1)[0])
     executable(mocks / "systemctl", "exit 0\n")
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "0"
     env["HIVE_FAKE_SERVICE_EXIT"] = "1"
 
     update = subprocess.run(["dash", str(INSTALLER), "--plain"], env=env,
@@ -336,6 +340,43 @@ def test_service_health_failure_rolls_package_record_back_and_keeps_data(tmp_pat
     assert "Restoring the previous package" in update.stderr
 
 
+def test_rerun_uses_machine_service_query_to_restart_existing_service_on_requested_port(tmp_path):
+    result, home, _bin_dir, log, env = run_installer(tmp_path)
+    assert result.returncode == 0
+    (home / ".hihive").mkdir()
+    (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "systemctl", "exit 0\n")
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "0"
+    log.write_text("")
+
+    rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--repair", "--port", "4876"], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == 0, rerun.stderr
+    commands = log.read_text()
+    assert "hihive service installed" in commands
+    assert "hihive service install --port 4876" in commands
+    assert "running in the background on port 4876" in rerun.stdout
+
+
+def test_malformed_manager_service_query_fails_without_guessing_run_mode(tmp_path):
+    result, home, _bin_dir, log, env = run_installer(tmp_path)
+    assert result.returncode == 0
+    (home / ".hihive").mkdir()
+    (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "2"
+    log.write_text("")
+
+    rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--repair"], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == 1
+    assert "could not determine whether the manager-visible hi-hive service is installed" in rerun.stderr
+    assert "hihive service install --port" not in log.read_text()
+    assert "previous version in a terminal" not in rerun.stdout
+
+
 def test_no_service_wins_on_rerun_even_when_a_service_unit_exists(tmp_path):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
@@ -346,13 +387,15 @@ def test_no_service_wins_on_rerun_even_when_a_service_unit_exists(tmp_path):
     unit.write_text("existing unit\n")
     mocks = Path(env["PATH"].split(":", 1)[0])
     executable(mocks / "systemctl", "exit 0\n")
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "0"
     log.write_text("")
 
     rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", "--repair"], env=env,
                            capture_output=True, text=True, timeout=30)
 
     assert rerun.returncode == 0, rerun.stderr
-    assert "hihive service install" not in log.read_text()
+    assert "hihive service installed" in log.read_text()
+    assert "hihive service install --port" not in log.read_text()
     assert "existing background service was not restarted because of --no-service" in rerun.stdout
     assert "hihive service restart" in rerun.stdout
 
