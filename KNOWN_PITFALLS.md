@@ -1,5 +1,9 @@
 # Things not to break
 
+- **Never put backticks inside double-quoted shell messages.** Bash executes backticks as command substitution, even inside double quotes.
+  An agent sending a review message with backticks around `hihive service uninstall` accidentally executed that command and stopped Hive and its agents.
+  Pass message text as a literal argument without shell interpretation, or use safe shell quoting such as a single-quoted heredoc.
+
 - **Isolate child environments.** Variables set by Hive's own runtime (formerly Ruby/Bundler, now uv/virtualenv) leaked into agents and broke tools they launched.
   Remove them in `child_process_env` before starting agents or output actions.
 - **Clear inherited Pi session environment variables.** When Hive inherits `PI_SESSION_ID` and `PI_SESSION_FILE` from a parent Pi process, remove them before launching new agents so they don't inherit the parent Pi session's identity.
