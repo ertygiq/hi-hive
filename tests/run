@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-uv run pytest -q "$@"
+if [[ "${1:-}" == --help ]]; then
+  printf '%s\n' 'Runs Python tests with 4 workers (live smoke: serial), then UI tests.' \
+    'For deterministic tests, pass -n 0 for serial or -n N to choose a worker count.'
+  uv run pytest --help
+  exit 0
+fi
+# Keep live harnesses serial; deterministic tests use a bounded worker count.
+# Pass -n 0 (or another -n value) to override the deterministic default.
+if [[ "${HIVE_LIVE_SMOKE:-0}" == 1 ]]; then
+  uv run pytest -q "$@" -n 0
+else
+  uv run pytest -q -n 4 "$@"
+fi
 node --test tests/ui_live_test.js tests/test_installer_ui.js
