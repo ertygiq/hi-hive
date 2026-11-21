@@ -728,6 +728,18 @@ function renderResultGroups(topLevel, childrenByParent) {
   return html;
 }
 
+function resultHarnessHtml(harnessId) {
+  const harness = harnessById(harnessId);
+  if (!harness || !harness.name) return '';
+  const name = String(harness.name);
+  const title = esc(name).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const swatch = TASK_COLORS.find(color => color.id === harness.color)?.swatch;
+  const icon = (harness.icon || '').trim();
+  const glyph = icon && icon !== '◆' ? `<span class="harness-glyph" aria-hidden="true">${esc(icon)}</span>`
+    : swatch ? `<span class="harness-dot" style="--harness-accent:${swatch}" aria-hidden="true"></span>` : '';
+  return `<span class="harness-name" title="Harness: ${title}">${glyph}<span class="harness-name-text">${esc(name)}</span></span>`;
+}
+
 function messageCountHtml(count) {
   if (!Number.isSafeInteger(count) || count <= 0) return '';
   const label = `${count} ${count === 1 ? 'message' : 'messages'} after the initial prompt`;
@@ -735,8 +747,8 @@ function messageCountHtml(count) {
 }
 
 function renderResultCard(t, depth, childrenByParent) {
-  const icon = t.status === 'completed' ? '✓' : t.status === 'failed' ? '✗' : '⊘';
-  const statusClass = `status-${t.status}`;
+  const status = t.status === 'failed' ? ['✗', 'Failed'] : t.status === 'cancelled' ? ['⊘', 'Cancelled'] : null;
+  const statusIcon = status ? `<span class="result-status status-${t.status}" title="${status[1]}" aria-label="${status[1]}">${status[0]}</span>` : '';
   const duration = t.started_at && t.completed_at
     ? formatDuration(new Date(t.started_at), new Date(t.completed_at))
     : '';
@@ -750,11 +762,10 @@ function renderResultCard(t, depth, childrenByParent) {
   const hasChildren = children.length > 0;
   const isCollapsed = hasChildren && collapsedForks.has(t.id);
   const forkPrefix = depth > 0 ? '<span class="fork-tree-prefix">└─</span>' : '';
-  const indentStyle = depth > 0 ? `style="margin-left:${depth * 16}px"` : '';
-  const toggle = hasChildren
-    ? `<button class="fork-toggle" onclick="event.stopPropagation();toggleForkCollapse('${t.id}')" title="${isCollapsed ? 'Show forks' : 'Hide forks'}" aria-label="${isCollapsed ? 'Show forks' : 'Hide forks'}">${isCollapsed ? '▶' : '▼'}</button>`
-    : '<span class="fork-toggle-spacer"></span>';
-  const forksLabel = hasChildren ? `<span title="forks">⑂ ${children.length}${isCollapsed ? ' hidden' : ''}</span>` : '';
+  const actionCount = 3 + (hasChildren ? 0 : 1) + (['failed', 'cancelled'].includes(t.status) ? 1 : 0);
+  const indentStyle = `style="${depth > 0 ? `margin-left:${depth * 16}px;` : ''}--action-space:${actionCount * 28 + (actionCount - 1) * 2 + 4}px"`;
+  const forkAction = isCollapsed ? 'Show forks' : 'Hide forks';
+  const forksLabel = hasChildren ? `<button class="fork-count" aria-expanded="${!isCollapsed}" title="${forkAction}" aria-label="${forkAction}" onclick="event.stopPropagation();toggleForkCollapse('${t.id}')">⑂ ${children.length} <span class="fork-chevron" aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span></button>` : '';
   const activityHtml = backgroundActivityHtml(t);
   const waitingClass = t.chat_pending || activityHtml ? ' awaiting-reply' : '';
   const unreadClass = unreadReplies.ids.has(t.id) ? ' unread-reply-card' : '';
@@ -764,11 +775,10 @@ function renderResultCard(t, depth, childrenByParent) {
          ${indentStyle} data-task-id="${t.id}" tabindex="0"
          onclick="selectTask('${t.id}')" onkeydown="cardKeydown(event, '${t.id}')">
       <div class="label">
-        ${forkPrefix}${toggle}${colorDot(t.color)}<span class="status-badge ${statusClass}">${icon}</span>
-        ${esc(t.label)}
+        ${forkPrefix}${colorDot(t.color)}${statusIcon}<span class="result-title">${esc(t.label)}</span>
       </div>
       <div class="meta">
-        ${harnessBadgeHtml(t.harness)}
+        ${resultHarnessHtml(t.harness)}
         ${duration ? `<span>${duration}</span>` : ''}
         ${costHtml(t)}
         ${t.has_review ? '<span>reviewed</span>' : ''}
