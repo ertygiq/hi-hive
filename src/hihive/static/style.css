@@ -780,6 +780,16 @@ main {
   align-items: center;
   gap: 6px;
 }
+.chat-timestamp {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.chat-message:hover .chat-timestamp,
+.chat-message:focus-within .chat-timestamp,
+.chat-role.show-timestamp .chat-timestamp { opacity: 1; }
 .chat-message .chat-cancel-btn {
   font-size: 12px;
   padding: 2px 6px;

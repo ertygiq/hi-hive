@@ -918,6 +918,25 @@ function chatRoleLabel(m) {
   return CHAT_ROLE_LABELS[m.role] || esc(m.role);
 }
 
+function messageTimestampHtml(value, now = new Date()) {
+  if (typeof value !== 'string' || !value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const today = sameYear && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  const options = { hour: 'numeric', minute: '2-digit' };
+  if (!today) Object.assign(options, { month: 'short', day: 'numeric' });
+  if (!sameYear) options.year = 'numeric';
+  const text = new Intl.DateTimeFormat(undefined, options).format(date);
+  const title = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'medium' }).format(date);
+  const attr = text => esc(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return `<time class="chat-timestamp" datetime="${attr(value)}" title="${attr(title)}">${esc(text)}</time>`;
+}
+
+function toggleMessageTimestamp(event) {
+  if (window.matchMedia?.('(hover: none)').matches) event.currentTarget.classList.toggle('show-timestamp');
+}
+
 function renderDetail(task) {
   // The Session button needs a session viewer (claude-code-lens); hide it until one is configured.
   document.getElementById('detail-session-btn').style.display = configCache?.session_viewer_url ? '' : 'none';
@@ -1047,7 +1066,7 @@ function renderDetail(task) {
           const statusSuffix = isPending ? ' (sending...)' : (isCancelled ? ' (cancelled)' : '');
           return `
             <div class="chat-message ${m.role}${isCancelled ? ' cancelled' : ''}">
-              <div class="chat-role">${chatRoleLabel(m)}</div>
+              <div class="chat-role" onclick="toggleMessageTimestamp(event)">${chatRoleLabel(m)}${messageTimestampHtml(m.timestamp)}</div>
               <div class="chat-content${isMarkdown ? ' rendered-output' : ''}${isPending ? ' pending' : ''}">${content}${statusSuffix}</div>
               ${m.error ? `<div class="error-block" role="alert">${esc(m.error)}</div>` : ''}
             </div>

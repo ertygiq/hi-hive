@@ -66,6 +66,54 @@ test('marking and unmarking Done refresh the board without an error', async () =
   assert.equal(polls, 2);
 });
 
+test('message timestamps use local date rules and include full title', () => {
+  const { context } = client();
+  const now = new Date(2026, 6, 10, 12);
+  for (const [date, options] of [
+    [new Date(2026, 6, 10, 9, 8, 7), { hour: 'numeric', minute: '2-digit' }],
+    [new Date(2026, 6, 9, 9, 8, 7), { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' }],
+    [new Date(2025, 6, 9, 9, 8, 7), { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric', year: 'numeric' }]
+  ]) {
+    context.value = date.toISOString(); context.now = now;
+    const html = vm.runInContext('messageTimestampHtml(value, now)', context);
+    assert.ok(html.includes(new Intl.DateTimeFormat(undefined, options).format(date)));
+    assert.ok(html.includes(new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'medium' }).format(date)));
+    assert.match(html, /<time class="chat-timestamp" datetime="[^"]+" title="[^"]+">/);
+  }
+  assert.equal(vm.runInContext('messageTimestampHtml(null)', context), '');
+  assert.equal(vm.runInContext("messageTimestampHtml('not a date')", context), '');
+  context.Intl = { DateTimeFormat: function () { return { format: () => '<bad "quoted">' }; } };
+  const escaped = vm.runInContext("messageTimestampHtml('2026-01-01T00:00:00Z')", context);
+  assert.match(escaped, /title="&lt;bad &quot;quoted&quot;&gt;"/);
+  assert.doesNotMatch(escaped, /<bad/);
+});
+
+test('message timestamps preserve space and toggle only from role rows on hoverless devices', () => {
+  const { context, document } = client();
+  context.task = { id: 'task', status: 'completed', messages: [
+    { role: 'assistant', kind: 'initial', content: 'answer', timestamp: '2026-01-01T00:00:00Z' },
+    { role: 'user', kind: 'follow_up', content: 'no date' }
+  ] };
+  vm.runInContext('renderDetail(task)', context);
+  const html = document.getElementById('detail-body').innerHTML;
+  assert.match(html, /class="chat-role" onclick="toggleMessageTimestamp\(event\)"/);
+  assert.equal((html.match(/class="chat-timestamp"/g) || []).length, 1);
+  assert.doesNotMatch(html, /class="chat-content[^\"]*" onclick=/);
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.chat-timestamp\s*\{[^}]*opacity:\s*0;[^}]*transition:\s*opacity 0\.15s/s);
+  assert.match(css, /\.chat-message:hover \.chat-timestamp/);
+  assert.match(css, /\.chat-message:focus-within \.chat-timestamp/);
+  assert.doesNotMatch(css.match(/\.chat-timestamp\s*\{[^}]*\}/s)[0], /display:\s*none|visibility:\s*hidden/);
+  let toggles = 0;
+  context.event = { currentTarget: { classList: { toggle(name) { assert.equal(name, 'show-timestamp'); toggles++; } } } };
+  context.matchMedia = () => ({ matches: false });
+  vm.runInContext('toggleMessageTimestamp(event)', context);
+  assert.equal(toggles, 0);
+  context.matchMedia = () => ({ matches: true });
+  vm.runInContext('toggleMessageTimestamp(event); toggleMessageTimestamp(event)', context);
+  assert.equal(toggles, 2);
+});
+
 test('reply Stop sends the visible input and state, preserving drafts and handling stale and failed requests', async () => {
   for (const response of [200, 409, 500]) {
     const { context, document } = client();
