@@ -207,7 +207,7 @@ def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
     ("GET", "", None), ("DELETE", "", None), ("POST", "/fork", {"prompt": "x"}), ("POST", "/cancel", {}),
     ("POST", "/continue", {}), ("POST", "/retry", {}), ("POST", "/done", {}),
     ("POST", "/label", {"label": "x"}), ("POST", "/chat", {"message": "x"}),
-    ("POST", "/chat/cancel", {"msg_id": None})])
+    ("POST", "/chat/cancel", {"msg_id": None}), ("POST", "/stop-work", {"kind": "background", "token": "x"})])
 def test_an_agent_token_cannot_use_any_task_route_on_another_projects_task(api, setup, method, path, body):
     """Each task route (behind show, wait, followup, cancel, retry, fork) must check the task's project."""
     other = setup.pool.add_task("other", project_id=setup.main)

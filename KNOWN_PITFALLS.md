@@ -16,6 +16,8 @@
   The delay reduced message loss in testing, but does not guarantee delivery.
 - **Don't automatically resend messages after a lost connection.** The agent may already have received and acted on them, so resending could repeat the work.
   Reuse the original message ID when retrying an HTTP request so Hive recognizes a duplicate submission.
+- **Never automatically retry a stale Stop request against newer activity.** The work the user intended to stop may have ended before the request arrives, and an automatic retry could stop unrelated work that started later.
+  Refresh the visible activity and require another deliberate Stop click.
 - **Don't close Claude just because it finished replying.** Background commands and Monitor can still be running; check for that work before closing an idle process.
   Hive previously rejected background-completion replies because they weren't tied to a user message; display those replies too.
 - **Show actual failures without filling chat with debug details.** Errors previously left follow-ups pending or appeared only in the browser's network tab.

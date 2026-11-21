@@ -123,21 +123,26 @@
         <span class="status-badge status-pill" id="detail-status"></span>
         <span class="done-tag" id="detail-done-tag" style="display:none" title="Marked as done">✓ done</span>
         <span id="detail-background-activity" style="display:none" aria-live="polite"></span>
+        <button class="icon-btn chat-stop-btn" id="detail-background-stop-btn" title="Stop background work" aria-label="Stop background work" onclick="stopWork('background')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
       </div>
       <button class="small" id="detail-continue-btn" onclick="continueTask(selectedTaskId)" style="display:none">▶ Continue</button>
       <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
     </div>
   </div>
-  <div class="detail-body" id="detail-body"></div>
+  <div class="detail-scroll-region">
+    <div class="detail-body" id="detail-body"></div>
+    <button class="chat-jump-latest" id="chat-jump-latest" type="button" onclick="jumpToLatest()" style="display:none">↓ Jump to latest</button>
+  </div>
   <div class="chat-typing" id="chat-typing" role="status" style="display:none">
     <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-    Agent is replying
+    <span id="chat-typing-label">Agent is replying</span>
+    <button class="icon-btn chat-stop-btn" id="chat-stop-btn" title="Stop reply" aria-label="Stop reply" onclick="stopWork('reply')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
   </div>
   <div class="chat-input-area" id="chat-area" style="display:none">
     <textarea id="chat-input" placeholder="Send a message to this session..." rows="1" aria-label="Message to this session"
       oninput="resizeChatInput(this)"
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
-    <button class="primary" onclick="sendChat()">Send</button>
+    <button id="chat-send-btn" class="primary" onclick="sendChat()">Send</button>
   </div>
 </aside>
 </div>

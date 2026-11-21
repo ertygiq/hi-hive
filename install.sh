@@ -85,6 +85,8 @@ require_safe_user_directory() {
 
 require_safe_destination_parent() {
   safe_parent=$1
+  case "$safe_parent" in /*) ;; *) die "destination path must be absolute: $safe_parent" ;; esac
+  case "/$safe_parent/" in */../*|*/./*) die "destination path must not contain dot components: $safe_parent" ;; esac
   case "$safe_parent" in
     "$HOME"|"$HOME"/*)
       while [ "$safe_parent" != "$HOME" ]; do
@@ -96,12 +98,23 @@ require_safe_destination_parent() {
       require_safe_user_directory "$HOME" 'HOME'
       ;;
     *)
-      while [ ! -e "$safe_parent" ] && [ ! -L "$safe_parent" ]; do
+      while :; do
+        if [ -e "$safe_parent" ] || [ -L "$safe_parent" ]; then
+          [ -d "$safe_parent" ] && [ ! -L "$safe_parent" ] || die "destination ancestor must be a real directory: $safe_parent"
+          external_uid=$(ls -dn "$safe_parent" 2>/dev/null | awk '{print $3}')
+          external_mode=$(LC_ALL=C ls -ld "$safe_parent" 2>/dev/null | cut -c1-10)
+          external_writes=$(printf '%s' "$external_mode" | cut -c6,9)
+          external_sticky=$(printf '%s' "$external_mode" | cut -c10)
+          [ "$external_uid" = "$(id -u)" ] || [ "$external_uid" = 0 ] || die "destination ancestor must be owned by the current user or root: $safe_parent"
+          case "$external_writes" in
+            *w*) [ "$external_uid" = 0 ] && [ "$external_sticky" = t ] || die "destination ancestor must not be group/world-writable: $safe_parent" ;;
+          esac
+        fi
+        [ "$safe_parent" != / ] || break
         next_parent=$(dirname -- "$safe_parent")
-        [ "$next_parent" != "$safe_parent" ] || break
+        [ "$next_parent" != "$safe_parent" ] || die "cannot traverse destination path: $safe_parent"
         safe_parent=$next_parent
       done
-      require_safe_user_directory "$safe_parent" 'destination ancestor'
       ;;
   esac
 }
@@ -465,7 +478,6 @@ command -v id >/dev/null 2>&1 || die 'id is required'
 case "$HOME" in /*) ;; *) die 'HOME must be an absolute path' ;; esac
 require_safe_user_directory "$HOME" 'HOME'
 if [ -n "${HIVE_HOME:-}" ]; then case "$HIVE_HOME" in /*) ;; *) die 'HIVE_HOME must be an absolute path' ;; esac; fi
-if [ -n "${XDG_STATE_HOME:-}" ]; then case "$XDG_STATE_HOME" in /*) ;; *) die 'XDG_STATE_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_BIN_HOME:-}" ]; then case "$XDG_BIN_HOME" in /*) ;; *) die 'XDG_BIN_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_DATA_HOME:-}" ]; then case "$XDG_DATA_HOME" in /*) ;; *) die 'XDG_DATA_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then case "$XDG_CONFIG_HOME" in /*) ;; *) die 'XDG_CONFIG_HOME must be an absolute path' ;; esac; fi
@@ -494,12 +506,14 @@ esac
 
 
 
-state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive
+# The install record lives with Hive data.
+HIVE_DIR=${HIVE_HOME:-$HOME/.hihive}
+state_dir=$HIVE_DIR
 record_file=$state_dir/install.json
-[ ! -L "$state_dir" ] || die "install state directory must not be a symbolic link: $state_dir"
 require_safe_destination_parent "$state_dir"
-if [ -e "$state_dir" ]; then require_safe_user_directory "$state_dir" 'install state directory'; fi
+if [ -e "$state_dir" ]; then require_safe_user_directory "$state_dir" 'hi-hive data directory'; fi
 require_safe_regular_file "$record_file" 'install record'
+
 
 
 
@@ -527,7 +541,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   if [ -x "$HIHIVE" ]; then "$HIHIVE" service uninstall 2>/dev/null || true; fi
   "$UV" tool uninstall hi-hive >/dev/null 2>&1 || true
   remove_path_block
-  rm -f -- "$record_file"
+  require_safe_destination_parent "$state_dir"
+  require_safe_regular_file "$record_file" 'install record'
+  rm -f -- "$record_file" || die "could not remove install record: $record_file"
   say 'Removed the hi-hive tool and installer-managed service/PATH entry.'
   say "Your data in ${HIVE_HOME:-$HOME/.hihive} was kept."
   exit 0
@@ -673,6 +689,8 @@ else
       warn "Restoring the previously recorded package main@$OLD_COMMIT."
       "$UV" tool install --force --python 3.14 --no-config --no-progress "$REPOSITORY/archive/$OLD_COMMIT.tar.gz" \
         || warn 'Automatic package restore also failed; user data was not changed.'
+    elif [ "$FRESH" -eq 0 ]; then
+      warn 'No previous commit was recorded, so the previous package cannot be restored automatically.'
     fi
     die 'hi-hive was not updated'
   fi
@@ -745,6 +763,8 @@ if [ "$RUN_BACKGROUND" -eq 1 ]; then
       else
         warn 'Automatic package rollback failed; user data and the failed service remain stopped.'
       fi
+    elif [ "$FRESH" -eq 0 ] && [ -z "$OLD_COMMIT" ]; then
+      warn 'No previous commit was recorded, so the previous package cannot be restored automatically.'
     fi
     if [ "$ROLLBACK_SERVICE_OK" -eq 0 ]; then
       warn 'Run it in a terminal instead:'

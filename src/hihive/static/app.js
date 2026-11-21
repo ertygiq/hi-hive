@@ -68,14 +68,18 @@ function chatWaitingHtml(t) {
 // Messenger-style status line above the chat input. It sits outside the chat
 // scroll area, so it never covers messages. A reader at the end of the chat stays
 // there when the line appears and makes the chat area shorter.
+function detailAtBottom(body) {
+  return body.scrollHeight - body.scrollTop - body.clientHeight <= 32;
+}
+
 function showChatTyping(visible) {
   const typing = document.getElementById('chat-typing');
   const display = visible ? 'flex' : 'none';
   if (typing.style.display === display) return;
   const body = document.getElementById('detail-body');
-  const atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 2;
+  const atEnd = detailPinned;
   typing.style.display = display;
-  if (atEnd) body.scrollTop = body.scrollHeight;
+  if (atEnd) scrollDetailToBottom();
 }
 
 // Background work is separate from an unanswered user input and from an idle
@@ -630,7 +634,6 @@ function renderWorkers() {
           <span class="status-badge ${statusClass}">${statusText}</span>
           ${harnessBadgeHtml(t.harness)}
           ${costHtml(t)}
-          <span>${formatBytes(t.output_length || 0)} output</span>
           ${chatWaitingHtml(t)}
           ${backgroundActivityHtml(t)}
         </div>
@@ -822,10 +825,65 @@ function applyDetailWidth() {
 // between tasks but not a page reload. Saved when the panel shows other content.
 const detailScrollPositions = new Map();
 let detailRenderedKey = null;
+let detailPinned = true;
+let detailHasNewContent = false;
+let detailExpectedScroll = null;
+let detailResizeObserver = null;
+
+function updateJumpToLatest() {
+  const button = document.getElementById('chat-jump-latest');
+  button.style.display = detailRenderedKey?.endsWith(':output') && !detailPinned && detailHasNewContent ? '' : 'none';
+}
+
+function setDetailScroll(top) {
+  const body = document.getElementById('detail-body');
+  body.scrollTop = top;
+  detailExpectedScroll = body.scrollTop;
+}
+
+function scrollDetailToBottom() {
+  setDetailScroll(document.getElementById('detail-body').scrollHeight);
+}
+
+function onDetailScroll() {
+  const body = document.getElementById('detail-body');
+  if (detailExpectedScroll !== null && Math.abs(body.scrollTop - detailExpectedScroll) < 1) {
+    detailExpectedScroll = null;
+    return;
+  }
+  detailExpectedScroll = null;
+  if (!detailRenderedKey?.endsWith(':output')) return;
+  detailPinned = detailAtBottom(body);
+  if (detailPinned) detailHasNewContent = false;
+  updateJumpToLatest();
+}
+
+function jumpToLatest() {
+  detailPinned = true;
+  detailHasNewContent = false;
+  scrollDetailToBottom();
+  updateJumpToLatest();
+}
+
+function onDetailResize() {
+  if (detailRenderedKey?.endsWith(':output') && detailPinned) scrollDetailToBottom();
+}
+
+function observeDetailSize() {
+  if (!detailResizeObserver) return;
+  const body = document.getElementById('detail-body');
+  detailResizeObserver.disconnect();
+  detailResizeObserver.observe(body);
+  if (body.firstElementChild) detailResizeObserver.observe(body.firstElementChild);
+}
 
 function rememberDetailScroll() {
   if (detailRenderedKey) {
-    detailScrollPositions.set(detailRenderedKey, document.getElementById('detail-body').scrollTop);
+    const body = document.getElementById('detail-body');
+    detailScrollPositions.set(detailRenderedKey, {
+      top: body.scrollTop, atBottom: detailPinned, hasNewContent: detailHasNewContent,
+      html: body.innerHTML,
+    });
   }
 }
 
@@ -858,6 +916,25 @@ const CHAT_ROLE_LABELS = { user: 'User', assistant: 'Assistant', system: 'System
 function chatRoleLabel(m) {
   if (m.kind === 'review') return m.role === 'user' ? 'Self-review prompt' : 'Self-review response';
   return CHAT_ROLE_LABELS[m.role] || esc(m.role);
+}
+
+function messageTimestampHtml(value, now = new Date()) {
+  if (typeof value !== 'string' || !value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const today = sameYear && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  const options = { hour: 'numeric', minute: '2-digit' };
+  if (!today) Object.assign(options, { month: 'short', day: 'numeric' });
+  if (!sameYear) options.year = 'numeric';
+  const text = new Intl.DateTimeFormat(undefined, options).format(date);
+  const title = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'medium' }).format(date);
+  const attr = text => esc(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return `<time class="chat-timestamp" datetime="${attr(value)}" title="${attr(title)}">${esc(text)}</time>`;
+}
+
+function toggleMessageTimestamp(event) {
+  if (window.matchMedia?.('(hover: none)').matches) event.currentTarget.classList.toggle('show-timestamp');
 }
 
 function renderDetail(task) {
@@ -898,8 +975,32 @@ function renderDetail(task) {
   activityEl.innerHTML = activityHtml;
   activityEl.style.display = activityHtml ? 'inline-flex' : 'none';
 
+  const replyActive = task.activity_kind === 'reply' && ['starting', 'active'].includes(task.runner_state);
+  const outstanding = (task.messages || []).find(m => m.role === 'user' && m.settled === false);
+  const showReplyStop = replyActive && Boolean(outstanding);
   const cancelBtn = document.getElementById('detail-cancel-btn');
-  cancelBtn.style.display = ['queued', 'running', 'reviewing'].includes(task.status) ? 'inline-block' : 'none';
+  cancelBtn.style.display = !showReplyStop && ['queued', 'running', 'reviewing'].includes(task.status) ? 'inline-block' : 'none';
+  if (!['starting', 'active', 'idle', 'closing'].includes(task.runner_state)) stoppingWork.delete(task.id);
+  const stopping = stoppingWork.get(task.id) || null;
+  const closing = task.runner_state === 'closing';
+  const backgroundStop = task.runner_state === 'idle' && (task.background_activity?.task_count || 0) > 0;
+  const replyBtn = document.getElementById('chat-stop-btn');
+  const backgroundBtn = document.getElementById('detail-background-stop-btn');
+  const hideWithFocus = (button, visible) => {
+    if (!visible && document.activeElement === button) document.getElementById('chat-input').focus();
+    button.style.display = visible ? 'inline-flex' : 'none';
+    button.disabled = Boolean(stopping);
+  };
+  hideWithFocus(replyBtn, showReplyStop || stopping === 'reply');
+  hideWithFocus(backgroundBtn, backgroundStop || stopping === 'background');
+  const count = task.background_activity?.task_count || 0;
+  const replyTitle = count ? `Stop reply and ${count} background task${count === 1 ? '' : 's'}` : 'Stop reply';
+  replyBtn.title = replyTitle;
+  replyBtn.setAttribute('aria-label', replyTitle);
+  document.getElementById('chat-typing-label').textContent = stopping === 'reply' ? 'Stopping…' : 'Agent is replying';
+  const sendBtn = document.getElementById('chat-send-btn');
+  sendBtn.disabled = Boolean(stopping || closing);
+  sendBtn.title = stopping || closing ? `Wait until ${stopping === 'background' ? 'background work' : 'the reply'} stops` : '';
 
   const continueBtn = document.getElementById('detail-continue-btn');
   continueBtn.style.display = ['failed', 'cancelled'].includes(task.status) ? 'inline-block' : 'none';
@@ -912,6 +1013,14 @@ function renderDetail(task) {
   doneBtn.textContent = task.done ? 'Mark not done' : 'Mark done';
   document.getElementById('detail-done-tag').style.display = task.done ? 'inline' : 'none';
 
+  const body = document.getElementById('detail-body');
+  const renderedKey = `${task.id}:${currentDetailTab}`;
+  const switched = renderedKey !== detailRenderedKey;
+  if (switched) rememberDetailScroll();
+  const previousTop = body.scrollTop;
+  const followBottom = !switched && currentDetailTab === 'output' && detailPinned;
+  const oldHtml = switched ? null : body.innerHTML;
+
   const canChat = ['running', 'reviewing', 'completed', 'failed'].includes(task.status);
   document.getElementById('chat-area').style.display =
     (currentDetailTab === 'output' && canChat) ? 'flex' : 'none';
@@ -922,12 +1031,9 @@ function renderDetail(task) {
     tab.setAttribute('aria-selected', String(active));
   });
 
-  const body = document.getElementById('detail-body');
-  const renderedKey = `${task.id}:${currentDetailTab}`;
-  const switched = renderedKey !== detailRenderedKey;
-  if (switched) rememberDetailScroll();
-  showChatTyping(currentDetailTab === 'output'
-    && Boolean(task.chat_pending || task.background_activity?.preparing_reply));
+  showChatTyping(currentDetailTab === 'output' && (stopping === 'reply' ||
+    (task.activity_kind === 'reply' && replyActive) ||
+    (task.activity_kind === 'review' && Boolean(task.chat_pending || task.background_activity?.preparing_reply))));
 
   switch (currentDetailTab) {
     case 'output': {
@@ -957,13 +1063,10 @@ function renderDetail(task) {
           const isCancelled = m.delivery === 'cancelled';
           const isMarkdown = m.role === 'assistant' && typeof marked !== 'undefined';
           const content = isMarkdown ? renderMarkdownSafely(m.content) : esc(m.content);
-          const cancelBtn = (isPending && m.id)
-            ? `<button class="icon-btn small chat-cancel-btn" onclick="cancelChatMessage('${task.id}','${m.id}')" title="Cancel this follow-up">✕</button>`
-            : '';
           const statusSuffix = isPending ? ' (sending...)' : (isCancelled ? ' (cancelled)' : '');
           return `
             <div class="chat-message ${m.role}${isCancelled ? ' cancelled' : ''}">
-              <div class="chat-role">${chatRoleLabel(m)}${cancelBtn}</div>
+              <div class="chat-role" onclick="toggleMessageTimestamp(event)">${chatRoleLabel(m)}${messageTimestampHtml(m.timestamp)}</div>
               <div class="chat-content${isMarkdown ? ' rendered-output' : ''}${isPending ? ' pending' : ''}">${content}${statusSuffix}</div>
               ${m.error ? `<div class="error-block" role="alert">${esc(m.error)}</div>` : ''}
             </div>
@@ -971,7 +1074,9 @@ function renderDetail(task) {
         }).join('');
       }
 
-      body.innerHTML = html;
+      const wrappedHtml = `<div class="chat-history">${html}</div>`;
+      if (!switched && !detailPinned && oldHtml !== wrappedHtml) detailHasNewContent = true;
+      body.innerHTML = wrappedHtml;
       displayedConversation = task;
       markDisplayedRepliesRead(task);
       break;
@@ -984,9 +1089,18 @@ function renderDetail(task) {
   }
 
   if (switched) {
-    body.scrollTop = detailScrollPositions.get(renderedKey) || 0;
+    const saved = detailScrollPositions.get(renderedKey);
+    detailPinned = currentDetailTab === 'output' && (saved ? saved.atBottom : true);
+    detailHasNewContent = saved?.hasNewContent || Boolean(saved && currentDetailTab === 'output'
+      && !detailPinned && saved.html !== body.innerHTML);
+    setDetailScroll(saved ? (detailPinned ? body.scrollHeight : saved.top)
+      : (detailPinned ? body.scrollHeight : 0));
     detailRenderedKey = renderedKey;
+  } else {
+    setDetailScroll(followBottom ? body.scrollHeight : previousTop);
   }
+  observeDetailSize();
+  updateJumpToLatest();
 }
 
 function switchDetailTab(tab) {
@@ -1249,9 +1363,37 @@ async function toggleDone(id) {
   poll();
 }
 
-async function cancelChatMessage(taskId, msgId) {
-  const error = await postJson(`/api/tasks/${taskId}/chat/cancel`, { msg_id: msgId || null });
-  if (error) showMessage(error, 'Follow-up not cancelled');
+const stoppingWork = new Map();
+
+async function stopWork(kind) {
+  const task = displayedConversation;
+  const message = (task?.messages || []).find(m => m.role === 'user' && m.settled === false);
+  if (!task || !task.stop_token || stoppingWork.has(task.id) || (kind === 'reply' && !message)) return;
+  stoppingWork.set(task.id, kind);
+  renderDetail(task);
+  try {
+    const res = await fetch(`/api/tasks/${task.id}/stop-work`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, token: task.stop_token, msg_id: message?.id || null })
+    });
+    if (!res.ok) {
+      stoppingWork.delete(task.id);
+      if (res.status === 409) {
+        const latest = await fetch(`/api/tasks/${task.id}`);
+        if (!latest.ok) throw new Error('Could not refresh the current activity.');
+        const current = await latest.json();
+        if (selectedTaskId === task.id) renderDetail(current);
+      } else {
+        const error = await res.json().catch(() => ({}));
+        showMessage(error.error || 'The stop request failed.', kind === 'reply' ? 'Could not stop the reply' : 'Could not stop background work');
+        if (selectedTaskId === task.id) renderDetail(task);
+      }
+    }
+  } catch (error) {
+    stoppingWork.delete(task.id);
+    showMessage('Could not refresh or contact Hive. Check the task before trying again.', kind === 'reply' ? 'Could not stop the reply' : 'Could not stop background work');
+    if (selectedTaskId === task.id) renderDetail(task);
+  }
   poll();
 }
 
@@ -1259,6 +1401,9 @@ let uncertainChatRequest = null;
 
 function resizeChatInput(input = document.getElementById('chat-input')) {
   if (!input) return;
+  const body = document.getElementById('detail-body');
+  const previousTop = body.scrollTop;
+  const atBottom = detailPinned;
   const borderHeight = Math.max(0, (input.offsetHeight || 0) - (input.clientHeight || 0));
   input.style.height = '0px';
   const naturalHeight = input.scrollHeight + borderHeight;
@@ -1266,18 +1411,20 @@ function resizeChatInput(input = document.getElementById('chat-input')) {
   const maxHeight = Math.min(240, viewportHeight * 0.35);
   input.style.height = `${Math.min(naturalHeight, maxHeight)}px`;
   input.style.overflowY = naturalHeight > maxHeight ? 'auto' : 'hidden';
+  setDetailScroll(atBottom ? body.scrollHeight : previousTop);
 }
 
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const message = input.value.trim();
-  if (!message || !selectedTaskId) return;
+  if (!message || !selectedTaskId || stoppingWork.has(selectedTaskId) || displayedConversation?.runner_state === 'closing') return;
 
   const taskId = selectedTaskId;
   const request = uncertainChatRequest?.taskId === taskId && uncertainChatRequest.message === message
     ? uncertainChatRequest : { taskId, message, message_id: crypto.randomUUID() };
   input.value = '';
   resizeChatInput(input);
+  jumpToLatest();
   let res;
   try {
     res = await fetch(`/api/tasks/${taskId}/chat`, {
@@ -2517,11 +2664,6 @@ function formatDuration(start, end) {
   return `${h}h ${m % 60}m`;
 }
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
 
 function updateWorkerElapsedTimes() {
   document.querySelectorAll('.worker-card[data-started-at]').forEach(card => {
@@ -2540,7 +2682,13 @@ setInterval(() => {
 
 // --- Init ---
 initResize();
-document.getElementById('detail-body').addEventListener('click', event => {
+const detailBody = document.getElementById('detail-body');
+detailBody.addEventListener('scroll', onDetailScroll);
+if (typeof ResizeObserver !== 'undefined') {
+  detailResizeObserver = new ResizeObserver(onDetailResize);
+  observeDetailSize();
+}
+detailBody.addEventListener('click', event => {
   const button = event.target.closest('button.output-action');
   if (button) runOutputAction(button);
 });

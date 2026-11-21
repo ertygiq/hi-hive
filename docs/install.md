@@ -77,6 +77,13 @@ Plain reruns report newly found harnesses but never add them.
 The installer validates ports from 1 through 65535.
 It uses private temporary directories and removes them on success, failure, or interruption.
 
+### Install record
+
+The installer keeps `install.json` in `~/.hihive`, or in `HIVE_HOME` if set.
+It uses the record to identify the installed commit and restore that commit if an update fails.
+Uninstall removes the record but keeps your Hive data.
+Use the same `HIVE_HOME` when installing, updating, uninstalling, and checking the version.
+
 ## PATH changes
 
 The installer uses the tool-bin path reported by `uv tool dir --bin`.
@@ -108,7 +115,9 @@ Existing settings, projects, task data, logs, and user edits are preserved.
 Existing harness entries are never removed, renamed, reordered, or changed automatically.
 An interactive rerun may offer to add a harness for a newly detected supported Claude Code or Pi command; plain reruns do not change harness settings.
 Custom commands remain configured and are not executed by detection.
-If a background service fails its authenticated health check during an update, the installer stops that service, restores the previous package and saved configuration state, and reports any rollback failure.
+If a background service fails its authenticated health check during an update, the installer stops that service and tries to restore the previous package and saved configuration state.
+Package rollback requires a recorded previous commit.
+The installer reports when the previous commit is unavailable or rollback fails.
 If hi-hive is running in a terminal during an update, the installer leaves that process alone and tells you to stop it before starting the new version.
 
 ## Run in a terminal instead of the background

@@ -9,7 +9,7 @@ function client(storage = new Map()) {
   const listeners = new Map();
   const element = () => ({ style: {}, value: '', textContent: '', innerHTML: '', scrollHeight: 34,
     offsetHeight: 36, clientHeight: 34,
-    classList: { add() {}, remove() {}, toggle() {} }, querySelectorAll() { return []; } });
+    classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, focus() {}, querySelectorAll() { return []; } });
   const document = {
     visibilityState: 'visible',
     documentElement: { clientHeight: 800 },
@@ -64,6 +64,106 @@ test('marking and unmarking Done refresh the board without an error', async () =
     await vm.runInContext("toggleDone('task')", context);
   }
   assert.equal(polls, 2);
+});
+
+test('message timestamps use local date rules and include full title', () => {
+  const { context } = client();
+  const now = new Date(2026, 6, 10, 12);
+  for (const [date, options] of [
+    [new Date(2026, 6, 10, 9, 8, 7), { hour: 'numeric', minute: '2-digit' }],
+    [new Date(2026, 6, 9, 9, 8, 7), { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' }],
+    [new Date(2025, 6, 9, 9, 8, 7), { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric', year: 'numeric' }]
+  ]) {
+    context.value = date.toISOString(); context.now = now;
+    const html = vm.runInContext('messageTimestampHtml(value, now)', context);
+    assert.ok(html.includes(new Intl.DateTimeFormat(undefined, options).format(date)));
+    assert.ok(html.includes(new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'medium' }).format(date)));
+    assert.match(html, /<time class="chat-timestamp" datetime="[^"]+" title="[^"]+">/);
+  }
+  assert.equal(vm.runInContext('messageTimestampHtml(null)', context), '');
+  assert.equal(vm.runInContext("messageTimestampHtml('not a date')", context), '');
+  context.Intl = { DateTimeFormat: function () { return { format: () => '<bad "quoted">' }; } };
+  const escaped = vm.runInContext("messageTimestampHtml('2026-01-01T00:00:00Z')", context);
+  assert.match(escaped, /title="&lt;bad &quot;quoted&quot;&gt;"/);
+  assert.doesNotMatch(escaped, /<bad/);
+});
+
+test('message timestamps preserve space and toggle only from role rows on hoverless devices', () => {
+  const { context, document } = client();
+  context.task = { id: 'task', status: 'completed', messages: [
+    { role: 'assistant', kind: 'initial', content: 'answer', timestamp: '2026-01-01T00:00:00Z' },
+    { role: 'user', kind: 'follow_up', content: 'no date' }
+  ] };
+  vm.runInContext('renderDetail(task)', context);
+  const html = document.getElementById('detail-body').innerHTML;
+  assert.match(html, /class="chat-role" onclick="toggleMessageTimestamp\(event\)"/);
+  assert.equal((html.match(/class="chat-timestamp"/g) || []).length, 1);
+  assert.doesNotMatch(html, /class="chat-content[^\"]*" onclick=/);
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.chat-timestamp\s*\{[^}]*opacity:\s*0;[^}]*transition:\s*opacity 0\.15s/s);
+  assert.match(css, /\.chat-message:hover \.chat-timestamp/);
+  assert.match(css, /\.chat-message:focus-within \.chat-timestamp/);
+  assert.doesNotMatch(css.match(/\.chat-timestamp\s*\{[^}]*\}/s)[0], /display:\s*none|visibility:\s*hidden/);
+  let toggles = 0;
+  context.event = { currentTarget: { classList: { toggle(name) { assert.equal(name, 'show-timestamp'); toggles++; } } } };
+  context.matchMedia = () => ({ matches: false });
+  vm.runInContext('toggleMessageTimestamp(event)', context);
+  assert.equal(toggles, 0);
+  context.matchMedia = () => ({ matches: true });
+  vm.runInContext('toggleMessageTimestamp(event); toggleMessageTimestamp(event)', context);
+  assert.equal(toggles, 2);
+});
+
+test('reply Stop sends the visible input and state, preserving drafts and handling stale and failed requests', async () => {
+  for (const response of [200, 409, 500]) {
+    const { context, document } = client();
+    context.task = { id: 'task', status: 'running', activity_kind: 'reply', runner_state: 'active', stop_token: 'token',
+      messages: [{ id: 'input-id', role: 'user', kind: 'follow_up', content: 'hello', settled: false }] };
+    vm.runInContext('renderDetail(task)', context);
+    assert.equal(document.getElementById('chat-stop-btn').style.display, 'inline-flex');
+    document.getElementById('chat-input').value = 'draft';
+    const dialogs = []; context.showMessage = (...args) => dialogs.push(args);
+    let request;
+    context.fetch = async (url, options) => {
+      if (!options) return { ok: true, json: async () => ({ ...context.task, runner_state: 'idle', messages: [] }) };
+      request = { url, body: JSON.parse(options.body) };
+      return { ok: response === 200, status: response, json: async () => ({ error: 'problem' }) };
+    };
+    await vm.runInContext("stopWork('reply')", context);
+    assert.equal(request.url, '/api/tasks/task/stop-work');
+    assert.equal(request.body.msg_id, 'input-id');
+    assert.equal(request.body.token, 'token');
+    assert.equal(document.getElementById('chat-input').value, 'draft');
+    assert.equal(dialogs.length, response === 500 ? 1 : 0);
+    assert.equal(document.getElementById('chat-send-btn').disabled, response === 200);
+  }
+});
+
+test('Send has visible disabled styling during stop', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /#chat-send-btn:disabled\s*\{[^}]*opacity:\s*0\.5;[^}]*cursor:\s*default;/);
+});
+
+test('original work has no stop or typing line, idle background has only background stop', () => {
+  const { context, document } = client();
+  context.task = { id: 'task', status: 'running', activity_kind: 'original', runner_state: 'active', chat_pending: true,
+    background_activity: { task_count: 2 }, messages: [{ id: 'id', role: 'user', settled: false }] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(document.getElementById('chat-stop-btn').style.display, 'none');
+  assert.equal(document.getElementById('chat-typing').style.display, 'none');
+  assert.equal(document.getElementById('detail-background-stop-btn').style.display, 'none');
+  context.task = { ...context.task, activity_kind: 'reply', runner_state: 'idle', status: 'completed', messages: [] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(document.getElementById('detail-background-stop-btn').style.display, 'inline-flex');
+});
+
+test('active task cards do not show output byte counts', () => {
+  const { context, document } = client();
+  context.snapshot = { workers: [{ id: 'task', label: 'Task', status: 'running', output_length: 2048, output_tail: 'Hello' }], running_total: 1 };
+  vm.runInContext('state = snapshot; renderWorkers()', context);
+  const html = document.getElementById('workers-list').innerHTML;
+  assert.match(html, /Hello/);
+  assert.doesNotMatch(html, /2\.0KB|2048B| output<\/span>/);
 });
 
 const unreadKey = 'hive-unread-follow-up-replies';
@@ -407,16 +507,16 @@ test('typing line shows outside the chat only while a reply is on its way', () =
   const body = document.getElementById('detail-body');
   const messages = [{ role: 'user', kind: 'follow_up', content: 'FOLLOW_UP', delivery: 'accepted' }];
   for (const [fields, display] of [
-    [{ chat_pending: true }, 'flex'],
-    [{ background_activity: { task_count: 0, preparing_reply: true } }, 'flex'],
-    [{ background_activity: { task_count: 1, preparing_reply: false } }, 'none'],
-    [{ chat_pending: false }, 'none']
+    [{ activity_kind: 'original', runner_state: 'active', chat_pending: true }, 'none'],
+    [{ activity_kind: 'reply', runner_state: 'active', chat_pending: true }, 'flex'],
+    [{ activity_kind: 'review', chat_pending: true }, 'flex'],
+    [{ activity_kind: 'reply', runner_state: 'idle', background_activity: { task_count: 1 } }, 'none']
   ]) {
     context.task = { id: 'task', status: 'completed', label: 'Task', messages, ...fields };
     vm.runInContext("currentDetailTab = 'output'; renderDetail(task)", context);
     assert.equal(typing.style.display, display);
   }
-  context.task = { id: 'task', status: 'completed', label: 'Task', messages, chat_pending: true };
+  context.task = { id: 'task', status: 'completed', label: 'Task', messages, activity_kind: 'reply', runner_state: 'active', chat_pending: true };
   vm.runInContext("currentDetailTab = 'prompt'; renderDetail(task)", context);
   assert.equal(typing.style.display, 'none');
 
@@ -424,7 +524,8 @@ test('typing line shows outside the chat only while a reply is on its way', () =
   for (const [scrollTop, expected] of [[500, 900], [100, 100]]) {
     Object.assign(body, { scrollHeight: 900, clientHeight: 400, scrollTop });
     typing.style.display = 'none';
-    vm.runInContext('showChatTyping(true)', context);
+    context.pinned = scrollTop === 500;
+    vm.runInContext('detailPinned = pinned; showChatTyping(true)', context);
     assert.equal(body.scrollTop, expected);
   }
 });
@@ -529,23 +630,82 @@ test('project deletion requires the exact case-sensitive project name', () => {
 test('detail scroll position is kept per task and tab while switching', () => {
   const { context, document } = client();
   const body = document.getElementById('detail-body');
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 0 });
   const show = (id, tab) => {
     context.shownTask = { id, status: 'completed', messages: [] };
     vm.runInContext(`currentDetailTab = '${tab}'; renderDetail(shownTask)`, context);
   };
   show('a', 'output');
   body.scrollTop = 300;
+  vm.runInContext('onDetailScroll()', context);
   show('a', 'output');
   assert.equal(body.scrollTop, 300, 'a refresh of the same task keeps the position');
   show('b', 'output');
-  assert.equal(body.scrollTop, 0, 'a task opened for the first time starts at the top');
+  assert.equal(body.scrollTop, 1000, 'a task opened for the first time follows the bottom');
   body.scrollTop = 120;
+  vm.runInContext('onDetailScroll()', context);
   show('a', 'prompt');
   assert.equal(body.scrollTop, 0, 'each tab has its own position');
   show('a', 'output');
   assert.equal(body.scrollTop, 300);
   show('b', 'output');
   assert.equal(body.scrollTop, 120);
+});
+
+test('chat follows new output only when already at the bottom', () => {
+  const { context, document } = client();
+  const body = document.getElementById('detail-body');
+  let html = '';
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 0 });
+  Object.defineProperty(body, 'innerHTML', {
+    get() { return html; },
+    set(value) { html = value; body.scrollHeight += 200; body.scrollTop = 0; }
+  });
+  context.task = { id: 'task', status: 'completed', messages: [] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(body.scrollTop, 1200, 'first open goes to the bottom');
+  body.scrollTop = 800; // browser-clamped bottom
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(body.scrollTop, 1400, 'new output follows the bottom');
+  body.scrollTop = 200;
+  vm.runInContext('onDetailScroll()', context);
+  context.task.messages = [{ role: 'assistant', content: 'new reply' }];
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(body.scrollTop, 200, 'reading older output keeps its position');
+  assert.equal(document.getElementById('chat-jump-latest').style.display, '');
+  vm.runInContext('jumpToLatest()', context);
+  assert.equal(body.scrollTop, 1600);
+  assert.equal(document.getElementById('chat-jump-latest').style.display, 'none');
+});
+
+test('delayed content growth follows only while pinned', () => {
+  const { context, document } = client();
+  const body = document.getElementById('detail-body');
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 });
+  vm.runInContext("detailRenderedKey = 'task:output'; detailPinned = true", context);
+  body.scrollHeight = 1200;
+  vm.runInContext('onDetailResize()', context);
+  assert.equal(body.scrollTop, 1200);
+  body.scrollTop = 100;
+  vm.runInContext('onDetailScroll()', context);
+  body.scrollHeight = 1400;
+  vm.runInContext('onDetailResize()', context);
+  assert.equal(body.scrollTop, 100);
+});
+
+test('resizing the composer preserves the chat position or follows its bottom', () => {
+  const { context, document } = client();
+  const body = document.getElementById('detail-body');
+  const input = document.getElementById('chat-input');
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 });
+  Object.defineProperty(input.style, 'height', {
+    set() { body.scrollTop = 50; }, configurable: true
+  });
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(body.scrollTop, 1000, 'bottom remains visible when composer changes size');
+  body.scrollTop = 200;
+  vm.runInContext("detailRenderedKey = 'task:output'; onDetailScroll(); resizeChatInput()", context);
+  assert.equal(body.scrollTop, 200, 'older output stays in place');
 });
 
 test('dropdown changes ask before closing editors but not action dialogs', () => {

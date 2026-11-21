@@ -509,6 +509,18 @@ main {
 }
 .menu button:hover { background: var(--border); }
 
+.detail-scroll-region {
+  display: flex;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.chat-jump-latest {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 1;
+}
 .detail-body {
   flex: 1;
   overflow-y: auto;
@@ -768,6 +780,16 @@ main {
   align-items: center;
   gap: 6px;
 }
+.chat-timestamp {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.chat-message:hover .chat-timestamp,
+.chat-message:focus-within .chat-timestamp,
+.chat-role.show-timestamp .chat-timestamp { opacity: 1; }
 .chat-message .chat-cancel-btn {
   font-size: 12px;
   padding: 2px 6px;
@@ -805,6 +827,13 @@ main {
   font-size: 12px;
   flex-shrink: 0;
 }
+.stop-icon { display: inline-block; width: 8px; height: 8px; border-radius: 1px; background: currentColor; }
+button.icon-btn.chat-stop-btn { font-size: 12px; padding: 3px 6px; line-height: 1; display: inline-flex; align-items: center; }
+button.icon-btn.chat-stop-btn:disabled { opacity: 0.5; cursor: default; }
+#chat-send-btn:disabled { opacity: 0.5; cursor: default; }
+.chat-typing .chat-stop-btn { margin-left: 2px; }
+#detail-background-stop-btn { margin-left: -4px; }
+#detail-background-activity { font-size: 12px; }
 .typing-dots {
   display: inline-flex;
   gap: 3px;

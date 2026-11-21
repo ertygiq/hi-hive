@@ -725,6 +725,10 @@ class PoolManager:
             runner = task.get("runner")
             if runner and runner.state == "closing":
                 return "runner_closing"
+            if runner and runner.state == "exited":
+                # Exit can race the first drain. Apply final delivery events before resuming.
+                self._poll_live_runners()
+                runner = task.get("runner")
             # Board placement belongs to the finished task, not subsequent chat turns.
             if task["status"] in ("completed", "failed") and not task.get("result_placement"):
                 task["result_placement"] = {"status": task["status"], "completed_at": iso(task.get("completed_at"))}
@@ -761,6 +765,30 @@ class PoolManager:
             task["cancel_requested"] = True
             task["status"] = "cancelled"
             task["completed_at"] = now()
+            self._bump_version()
+            return True
+
+    def stop_conversation_work(self, task_id, token, kind, message_id=None):
+        with self._lock:
+            self._poll_live_runners()
+            task = self._tasks.get(task_id)
+            runner = task and task.get("runner")
+            if not runner or not isinstance(token, str) or not token:
+                return False
+            if kind == "reply":
+                if task.get("runner_kind") != "chat" or not message_id or not any(
+                        m["id"] == message_id for m in tm.outstanding(task)):
+                    return False
+            elif kind != "background":
+                return False
+            if not runner.stop_if_current(token, kind, message_id):
+                return False
+            if kind == "reply":
+                task["cancel_requested"] = True
+                task["stop_reply_requested"] = True
+                placement = task.get("result_placement") or {}
+                task["status"] = placement.get("status", "completed")
+                task["completed_at"] = parse_time(placement.get("completed_at")) if placement.get("completed_at") else now()
             self._bump_version()
             return True
 
@@ -949,6 +977,7 @@ class PoolManager:
         follow_up_replies = [utc_micro(m["timestamp"]) for m in messages
                              if m["role"] == "assistant" and m["kind"] == "follow_up" and m.get("timestamp")]
         last_answer = next((m for m in reversed(messages) if m["role"] == "assistant"), {})
+        snapshot = runner.stop_snapshot() if runner else {"state": "exited", "background_activity": dict(IDLE_BACKGROUND), "stop_token": None}
         data = {
             "id": task["id"],
             "project_id": task["project_id"],
@@ -956,8 +985,10 @@ class PoolManager:
             "label": task.get("label"),
             "status": task["status"],
             "session_id": task.get("session_id"),
-            "runner_state": runner.state if runner else "exited",
-            "background_activity": runner.background_activity() if runner else dict(IDLE_BACKGROUND),
+            "runner_state": snapshot["state"],
+            "background_activity": snapshot["background_activity"],
+            "stop_token": snapshot["stop_token"],
+            "activity_kind": {"chat": "reply", "review": "review"}.get(task.get("runner_kind"), "original"),
             "exit_status": task.get("exit_status"),
             "started_at": iso(task.get("started_at")),
             "completed_at": iso(task.get("completed_at")),
@@ -1059,6 +1090,7 @@ class PoolManager:
             task["completed_at"] = None
             task["failure_details"] = None
             task["cancel_requested"] = False
+            task["stop_reply_requested"] = False
             receipt = self._record_live_input(task, runner, message, message_id or str(uuid.uuid4()),
                                               "follow_up" if kind == "chat" else kind)
             runner.start()
@@ -1148,7 +1180,10 @@ class PoolManager:
             # The canonical message owns content and ordering; events update delivery only.
             for key in ("settled", "harness_accepted", "written", "error", "result_id"):
                 if key in data:
-                    entry[key] = data[key]
+                    if key == "error" and task.get("stop_reply_requested") and data[key] == "Conversation run stopped":
+                        entry.pop("error", None)
+                    else:
+                        entry[key] = data[key]
             if data.get("status"):
                 entry["delivery"] = data["status"]
         elif kind == "output":
