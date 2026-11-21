@@ -18,7 +18,8 @@ Usage: install.sh [options]
   --no-modify-path      Do not add uv's tool-bin directory to shell startup
   --no-service          Do not install a background service
   --port PORT           Server port (default: 4567)
-  --force, --repair     Reinstall even when the recorded commit is current
+  --repair              Reinstall even when the recorded commit is current
+  --force               Reinstall and allow replacing an editable development install
   --uninstall           Remove the service, tool, installer PATH block and record
   --help                Show this help
 
@@ -178,6 +179,29 @@ uv_compatible() {
   major=$(printf '%s' "$version" | cut -d. -f1)
   minor=$(printf '%s' "$version" | cut -d. -f2)
   [ "$major" -gt 0 ] || [ "$minor" -ge 7 ]
+}
+
+editable_install_source() {
+  tool_root=$("$UV" tool dir 2>/dev/null || true)
+  case "$tool_root" in /*) ;; *) return 1 ;; esac
+  tool_python=$tool_root/hi-hive/bin/python
+  [ -x "$tool_python" ] || return 1
+  "$tool_python" -c '
+import json
+from importlib.metadata import distribution
+from urllib.parse import unquote, urlparse
+
+try:
+    direct = json.loads(distribution("hi-hive").read_text("direct_url.json") or "{}")
+except Exception:
+    raise SystemExit(1)
+if not direct.get("dir_info", {}).get("editable"):
+    raise SystemExit(1)
+source = urlparse(direct.get("url", ""))
+if source.scheme != "file":
+    raise SystemExit(1)
+print(unquote(source.path))
+' 2>/dev/null
 }
 
 sha256_file() {
@@ -400,6 +424,7 @@ PLAIN=0
 MODIFY_PATH=1
 INSTALL_SERVICE=1
 FORCE=0
+REPLACE_EDITABLE=0
 UNINSTALL=0
 PORT=4567
 TMP_DIR=
@@ -419,7 +444,8 @@ while [ "$#" -gt 0 ]; do
     --plain) PLAIN=1 ;;
     --no-modify-path) MODIFY_PATH=0 ;;
     --no-service) INSTALL_SERVICE=0 ;;
-    --force|--repair) FORCE=1 ;;
+    --repair) FORCE=1 ;;
+    --force) FORCE=1; REPLACE_EDITABLE=1 ;;
     --uninstall) UNINSTALL=1 ;;
     --port)
       shift
@@ -525,6 +551,15 @@ else
 fi
 validate_tool_bin
 validate_install_paths
+if [ -n "$UV" ]; then
+  EDITABLE_SOURCE=$(editable_install_source || true)
+  if [ -n "$EDITABLE_SOURCE" ] && [ "$REPLACE_EDITABLE" -eq 0 ]; then
+    die "hi-hive is installed from a local checkout ($EDITABLE_SOURCE), probably for development.
+The installer will not replace it. Nothing was changed.
+To update the checkout: git -C '$EDITABLE_SOURCE' pull
+To replace it with main: rerun with --force."
+  fi
+fi
 DISPLAY_COMMAND=hihive
 PATH_WAS_MISSING=0
 if ! path_contains "$TOOL_BIN"; then
@@ -722,12 +757,15 @@ say ''
 say 'Result'
 if [ "$RUN_BACKGROUND" -eq 1 ] && [ "$SERVICE_OK" -eq 1 ]; then
   say "result        hi-hive is running in the background on port $PORT."
-  if [ "$PLAIN" -eq 0 ] && [ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && ask_yes 'Open hi-hive in your browser now? This also logs the browser in.'; then
+  if [ "$FRESH" -eq 1 ] && [ "$PLAIN" -eq 0 ] && [ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && ask_yes 'Open hi-hive in your browser now? This also logs the browser in.'; then
     "$HIHIVE" open || true
   elif [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
     say "On this server: $DISPLAY_COMMAND open"
     say 'It prints an ssh command for your computer and a private login link to open there.'
-    say 'Logging out stops a systemd user service unless lingering is enabled separately; the installer never enables lingering.'
+    if [ "$FRESH" -eq 1 ] && [ "$OS" = linux ]; then
+      say 'It may stop when you log out of this server. To keep it running, see:'
+      say 'https://github.com/ertygiq/hi-hive/blob/main/docs/setup.md#background-service'
+    fi
   else
     say "Open it later: $DISPLAY_COMMAND open"
   fi

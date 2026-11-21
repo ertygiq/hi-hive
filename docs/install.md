@@ -67,7 +67,8 @@ Plain reruns report newly found harnesses but never add them.
 --no-modify-path      Do not edit shell startup files
 --no-service          Install without a background service
 --port PORT           Use another server port
---force, --repair     Reinstall even when the recorded commit is current
+--repair              Reinstall even when the recorded commit is current
+--force               Reinstall and allow replacing an editable development install
 --uninstall           Remove the service, tool, PATH block, and install record
 --help                Show installer help
 ```
@@ -98,6 +99,7 @@ Run the same one-line command again to check `main`.
 The installer compares the newly resolved exact commit SHA with its recorded SHA.
 If the SHA is unchanged and the command exists, it skips package installation.
 Use `--repair` or `--force` to reinstall the same SHA.
+If the current uv tool is linked to a local editable checkout, the installer refuses to replace it unless `--force` is explicit and reports the checkout path.
 
 Before an update, the installer copies only `config.json` and `data/state.json` into a timestamped folder under the hi-hive home directory.
 It never backs up or prints the login token.

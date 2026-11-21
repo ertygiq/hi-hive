@@ -45,6 +45,7 @@ printf 'curl\\n' >> "{log}"
     executable(mocks / "uv", f'''printf 'uv %s\\n' "$*" >> "{log}"
 if [ "${{1:-}}" = --version ]; then echo 'uv 0.10.0'; exit 0; fi
 if [ "${{1:-}} ${{2:-}} ${{3:-}}" = 'tool dir --bin' ]; then echo '{bin_dir}'; exit 0; fi
+if [ "${{1:-}} ${{2:-}}" = 'tool dir' ]; then echo '{home}/.local/share/uv/tools'; exit 0; fi
 if [ "${{1:-}} ${{2:-}}" = 'tool install' ]; then
   if [ -z "${{UV_TOOL_BIN_DIR:-}}" ] && [ "${{HIVE_FAKE_FINAL_INSTALL_FAIL:-0}}" = 1 ]; then exit 42; fi
   target_bin=${{UV_TOOL_BIN_DIR:-{bin_dir}}}
@@ -71,6 +72,7 @@ SH
 case "$*" in
   *platform.python_version*) echo 3.14.7;;
   *sys.executable*) printf '%s\\n' "$0";;
+  *direct_url.json*) [ -z "${{HIVE_FAKE_EDITABLE_SOURCE:-}}" ] || printf '%s\\n' "$HIVE_FAKE_EDITABLE_SOURCE";;
 esac
 SH
   chmod +x "$target_tools/hi-hive/bin/python"
@@ -94,6 +96,44 @@ def run_installer(tmp_path, *args, **options):
     result = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", *args],
                             env=env, capture_output=True, text=True, timeout=30)
     return result, home, bin_dir, log, env
+
+
+def test_ssh_logout_guidance_is_linux_only_and_first_install_only(tmp_path):
+    home, _bin_dir, _log, env = installer_environment(tmp_path)
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "systemctl", "exit 0\n")
+    env["SSH_CONNECTION"] = "client server"
+
+    fresh = subprocess.run(["dash", str(INSTALLER), "--plain"], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert fresh.returncode == 0, fresh.stderr
+    assert "It may stop when you log out of this server" in fresh.stdout
+    assert "docs/setup.md#background-service" in fresh.stdout
+
+    (home / ".hihive").mkdir()
+    (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "0"
+    rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--repair"], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert "It may stop when you log out of this server" not in rerun.stdout
+
+
+def test_ssh_logout_guidance_does_not_mention_systemd_on_macos(tmp_path):
+    _home, _bin_dir, _log, env = installer_environment(tmp_path)
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "uname", 'case "${1:-}" in -s) echo Darwin;; -m) echo x86_64;; *) echo Darwin;; esac\n')
+    executable(mocks / "launchctl", "exit 0\n")
+    env["SSH_CONNECTION"] = "client server"
+
+    result = subprocess.run(["dash", str(INSTALLER), "--plain"], env=env,
+                            capture_output=True, text=True, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "systemd" not in result.stdout
+    assert "It may stop when you log out" not in result.stdout
 
 
 def test_install_documentation_explains_curl_pipe_trust_boundary():
@@ -160,6 +200,28 @@ def test_missing_uv_refuses_to_overwrite_unowned_standard_bin_files(tmp_path, ex
     assert occupied.read_bytes() == before
     assert not (bin_dir / "hihive").exists()
     assert not (home / ".profile").exists()
+
+
+@pytest.mark.parametrize(("flag", "expected_status"), [("--repair", 1), ("--force", 0)])
+def test_editable_install_requires_explicit_force_to_replace(tmp_path, flag, expected_status):
+    result, home, _bin_dir, log, env = run_installer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    checkout = home / "development checkout"
+    checkout.mkdir()
+    env["HIVE_FAKE_EDITABLE_SOURCE"] = str(checkout)
+    log.write_text("")
+
+    rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", flag], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == expected_status, rerun.stderr
+    if flag == "--repair":
+        assert f"installed from a local checkout ({checkout})" in rerun.stderr
+        assert "The installer will not replace it. Nothing was changed." in rerun.stderr
+        assert "rerun with --force" in rerun.stderr
+        assert "tool install" not in log.read_text()
+    else:
+        assert "tool install" in log.read_text()
 
 
 def test_missing_uv_downloads_fixed_verified_standard_uv_to_normal_user_bin(tmp_path):

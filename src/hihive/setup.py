@@ -84,7 +84,7 @@ def _record(agent):
     spec = AGENTS[agent["id"]]
     return {
         "id": agent["id"], "name": spec["name"], "icon": spec["icon"], "color": spec["color"],
-        "type": agent["id"], "command": agent["path"], "args": list(spec["args"]),
+        "type": agent["id"], "command": spec["command"], "args": list(spec["args"]),
         **({"sessions_dir": None} if agent["id"] == "pi" else {}),
     }
 

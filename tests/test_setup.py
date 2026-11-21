@@ -53,7 +53,7 @@ def test_fresh_config_adds_only_supported_detected_agents_and_prefers_claude(tmp
     assert result["added"] == ["claude-code", "pi"]
     assert [item["type"] for item in config["harnesses"]] == ["claude-code", "pi"]
     assert config["default_harness"] == "claude-code"
-    assert config["harnesses"][0]["command"] == "/login/bin/claude"
+    assert config["harnesses"][0]["command"] == "claude"
 
 
 @pytest.mark.parametrize("versions, expected_default", [({}, None), ({"pi": "0.87.1"}, "pi")])
