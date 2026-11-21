@@ -100,15 +100,7 @@ def installer_record_file() -> Path:
     directory = installer_state_dir()
     _validate_installer_directory(directory)
     record = directory / "install.json"
-    present = _validate_installer_record(record)
-    legacy_dir = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "hi-hive"
-    if legacy_dir != directory and (legacy_dir.exists() or legacy_dir.is_symlink()):
-        _validate_installer_directory(legacy_dir)
-        legacy = legacy_dir / "install.json"
-        if _validate_installer_record(legacy):
-            if present:
-                raise OSError(f"Conflicting installer records: {record} and {legacy}")
-            return legacy
+    _validate_installer_record(record)
     return record
 
 

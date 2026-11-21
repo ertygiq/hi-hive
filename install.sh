@@ -163,19 +163,11 @@ write_record() {
   chmod 600 "$RECORD_TMP"
   mv -f "$RECORD_TMP" "$record_file"
   RECORD_TMP=
-  if [ "$legacy_present" -eq 1 ]; then
-    require_safe_destination_parent "$legacy_dir"
-    require_safe_regular_file "$legacy_record" 'legacy install record'
-    rm -f -- "$legacy_record" || die "could not remove migrated legacy install record: $legacy_record"
-    legacy_present=0
-  fi
 }
 
 read_record_commit() {
-  read_file=$record_file
-  [ "$legacy_present" -eq 0 ] || read_file=$legacy_record
-  [ -f "$read_file" ] || return 0
-  sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$read_file" | head -n 1 | tr 'A-F' 'a-f'
+  [ -f "$record_file" ] || return 0
+  sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$record_file" | head -n 1 | tr 'A-F' 'a-f'
 }
 
 find_uv() {
@@ -486,10 +478,6 @@ command -v id >/dev/null 2>&1 || die 'id is required'
 case "$HOME" in /*) ;; *) die 'HOME must be an absolute path' ;; esac
 require_safe_user_directory "$HOME" 'HOME'
 if [ -n "${HIVE_HOME:-}" ]; then case "$HIVE_HOME" in /*) ;; *) die 'HIVE_HOME must be an absolute path' ;; esac; fi
-if [ -n "${XDG_STATE_HOME:-}" ]; then
-  case "$XDG_STATE_HOME" in /*) ;; *) die 'XDG_STATE_HOME must be an absolute path' ;; esac
-  case "/$XDG_STATE_HOME/" in */../*|*/./*) die 'XDG_STATE_HOME must not contain dot components' ;; esac
-fi
 if [ -n "${XDG_BIN_HOME:-}" ]; then case "$XDG_BIN_HOME" in /*) ;; *) die 'XDG_BIN_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_DATA_HOME:-}" ]; then case "$XDG_DATA_HOME" in /*) ;; *) die 'XDG_DATA_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then case "$XDG_CONFIG_HOME" in /*) ;; *) die 'XDG_CONFIG_HOME must be an absolute path' ;; esac; fi
@@ -518,26 +506,14 @@ esac
 
 
 
-# New records live with Hive data. A visible legacy directory is checked before
-# reading its record, even when the new record already exists.
+# The install record lives with Hive data.
 HIVE_DIR=${HIVE_HOME:-$HOME/.hihive}
 state_dir=$HIVE_DIR
 record_file=$state_dir/install.json
 require_safe_destination_parent "$state_dir"
 if [ -e "$state_dir" ]; then require_safe_user_directory "$state_dir" 'hi-hive data directory'; fi
 require_safe_regular_file "$record_file" 'install record'
-legacy_dir=${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive
-legacy_record=$legacy_dir/install.json
-legacy_present=0
-if [ "$legacy_dir" != "$state_dir" ] && { [ -e "$legacy_dir" ] || [ -L "$legacy_dir" ]; }; then
-  require_safe_destination_parent "$legacy_dir"
-  require_safe_user_directory "$legacy_dir" 'legacy install state directory'
-  require_safe_regular_file "$legacy_record" 'legacy install record'
-  if [ -e "$legacy_record" ]; then legacy_present=1; fi
-fi
-if [ "$legacy_present" -eq 1 ] && [ -e "$record_file" ]; then
-  die "conflicting install records: $record_file and $legacy_record; inspect and remove the unwanted record before retrying"
-fi
+
 
 
 
@@ -568,11 +544,6 @@ if [ "$UNINSTALL" -eq 1 ]; then
   require_safe_destination_parent "$state_dir"
   require_safe_regular_file "$record_file" 'install record'
   rm -f -- "$record_file" || die "could not remove install record: $record_file"
-  if [ "$legacy_present" -eq 1 ]; then
-    require_safe_destination_parent "$legacy_dir"
-    require_safe_regular_file "$legacy_record" 'legacy install record'
-    rm -f -- "$legacy_record" || die "could not remove legacy install record: $legacy_record"
-  fi
   say 'Removed the hi-hive tool and installer-managed service/PATH entry.'
   say "Your data in ${HIVE_HOME:-$HOME/.hihive} was kept."
   exit 0
@@ -718,6 +689,8 @@ else
       warn "Restoring the previously recorded package main@$OLD_COMMIT."
       "$UV" tool install --force --python 3.14 --no-config --no-progress "$REPOSITORY/archive/$OLD_COMMIT.tar.gz" \
         || warn 'Automatic package restore also failed; user data was not changed.'
+    elif [ "$FRESH" -eq 0 ]; then
+      warn 'No previous commit was recorded, so the previous package cannot be restored automatically.'
     fi
     die 'hi-hive was not updated'
   fi
@@ -790,6 +763,8 @@ if [ "$RUN_BACKGROUND" -eq 1 ]; then
       else
         warn 'Automatic package rollback failed; user data and the failed service remain stopped.'
       fi
+    elif [ "$FRESH" -eq 0 ] && [ -z "$OLD_COMMIT" ]; then
+      warn 'No previous commit was recorded, so the previous package cannot be restored automatically.'
     fi
     if [ "$ROLLBACK_SERVICE_OK" -eq 0 ]; then
       warn 'Run it in a terminal instead:'

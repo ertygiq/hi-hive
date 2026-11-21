@@ -257,20 +257,14 @@ def test_version_includes_recorded_main_commit(tmp_path, monkeypatch, capsys):
     assert f"main@{'a' * 40}" in output
 
 
-def test_version_omits_untrusted_or_conflicting_records(tmp_path, monkeypatch, capsys):
+def test_version_omits_untrusted_record(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("HIVE_HOME", raising=False)
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     canonical = tmp_path / ".hihive"
     canonical.mkdir(mode=0o700)
-    (canonical / "install.json").write_text(json.dumps({"commit": "a" * 40}))
-    legacy = tmp_path / ".local/state/hi-hive"
-    legacy.mkdir(parents=True)
-    (legacy / "install.json").write_text(json.dumps({"commit": "b" * 40}))
-    HiHiveCLI().run(["--version"])
-    assert "main@" not in capsys.readouterr().out
-    (legacy / "install.json").unlink()
-    legacy.parent.chmod(0o775)
+    record = canonical / "install.json"
+    record.write_text(json.dumps({"commit": "a" * 40}))
+    record.chmod(0o666)
     HiHiveCLI().run(["--version"])
     assert "main@" not in capsys.readouterr().out
 

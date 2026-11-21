@@ -84,16 +84,6 @@ It uses the record to identify the installed commit and restore that commit if a
 Uninstall removes the record but keeps your Hive data.
 Use the same `HIVE_HOME` when installing, updating, uninstalling, and checking the version.
 
-Older installers kept the record in `${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive`.
-The installer checks that legacy location and moves a trusted record into the Hive data directory after a successful package installation.
-If both records exist, inspect them and remove the unwanted record before retrying.
-If a legacy directory is visible under an unsafe ancestor, the installer refuses to read or remove it.
-Inspect its ownership, permissions, and access control list, then secure the ancestor if appropriate and retry.
-
-A person who can write to an unsafe legacy ancestor can hide the old directory while the installer checks for it.
-In that case the installer cannot find the old record or use it for rollback.
-Changing `XDG_STATE_HOME` can also hide a legacy record, so use the previous setting when updating an older installation.
-
 ## PATH changes
 
 The installer uses the tool-bin path reported by `uv tool dir --bin`.
@@ -125,7 +115,9 @@ Existing settings, projects, task data, logs, and user edits are preserved.
 Existing harness entries are never removed, renamed, reordered, or changed automatically.
 An interactive rerun may offer to add a harness for a newly detected supported Claude Code or Pi command; plain reruns do not change harness settings.
 Custom commands remain configured and are not executed by detection.
-If a background service fails its authenticated health check during an update, the installer stops that service, restores the previous package and saved configuration state, and reports any rollback failure.
+If a background service fails its authenticated health check during an update, the installer stops that service and tries to restore the previous package and saved configuration state.
+Package rollback requires a recorded previous commit.
+The installer reports when the previous commit is unavailable or rollback fails.
 If hi-hive is running in a terminal during an update, the installer leaves that process alone and tells you to stop it before starting the new version.
 
 ## Run in a terminal instead of the background

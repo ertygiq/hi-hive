@@ -373,6 +373,21 @@ def test_failed_final_install_keeps_record_config_and_existing_command(tmp_path)
     assert "final package install failed" in update.stderr
 
 
+def test_failed_update_without_record_does_not_claim_package_restoration(tmp_path):
+    home, _, log, env = installer_environment(tmp_path)
+    hive = home / ".hihive"
+    hive.mkdir()
+    (hive / "config.json").write_text('{"harnesses":[]}')
+    env["HIVE_FAKE_FINAL_INSTALL_FAIL"] = "1"
+    result = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1
+    assert "No previous commit was recorded" in result.stderr
+    assert "Restoring the previously recorded package" not in result.stderr
+    assert log.read_text().count("uv tool install") == 2
+    assert not (hive / "install.json").exists()
+
+
 def test_fresh_service_failure_records_installed_commit_and_keeps_manual_fallback(tmp_path):
     home, _bin_dir, _log, env = installer_environment(tmp_path)
     mocks = Path(env["PATH"].split(":", 1)[0])
@@ -594,7 +609,7 @@ def test_unsafe_user_writable_destinations_are_rejected_without_changes(tmp_path
         if unsafe == "home":
             home.chmod(0o777)
         elif unsafe == "state":
-            state = home / ".state/hi-hive"
+            state = home / ".hihive"
             state.mkdir(parents=True)
             state.chmod(0o777)
         elif unsafe == "tool-bin":
@@ -638,87 +653,20 @@ def test_group_writable_default_state_without_legacy_installs_and_uninstalls(tmp
     assert token.read_text() == "KEEP"
 
 
-def test_unsafe_visible_legacy_directory_refuses_install_and_later_conflict(tmp_path):
+def test_installer_ignores_xdg_state_home(tmp_path):
     home, _, _, env = installer_environment(tmp_path)
-    env.pop("XDG_STATE_HOME")
-    state = home / ".local/state"
-    state.mkdir()
-    state.chmod(0o775)
-    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
-    assert subprocess.run(args, env=env, capture_output=True, text=True, timeout=30).returncode == 0
-    (state / "hi-hive").mkdir()
-    conflict = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
-    assert conflict.returncode == 1
-    assert str(state) in conflict.stderr
-    assert (home / ".hihive/install.json").exists()
-
-
-@pytest.mark.parametrize("unsafe", ["group-writable", "symlink", "broken-symlink"])
-def test_visible_unsafe_legacy_ancestor_is_rejected_without_writes(tmp_path, unsafe):
-    home, bin_dir, log, env = installer_environment(tmp_path)
-    env.pop("XDG_STATE_HOME")
-    state = home / ".local/state"
-    if unsafe == "broken-symlink":
-        state.mkdir()
-        (state / "hi-hive").symlink_to(home / "missing")
-    elif unsafe == "symlink":
-        target = home / "legacy-target"
-        (target / "hi-hive").mkdir(parents=True)
-        state.symlink_to(target, target_is_directory=True)
-    else:
-        (state / "hi-hive").mkdir(parents=True)
-        state.chmod(0o775)
-    result = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"], env=env,
-                            capture_output=True, text=True, timeout=30)
-    assert result.returncode == 1
-    assert not (home / ".hihive").exists()
-    assert not (bin_dir / "hihive").exists()
-    assert not log.exists()
-
-
-def test_safe_legacy_record_migrates_and_conflicts_fail_closed(tmp_path):
-    home, _, _, env = installer_environment(tmp_path)
-    legacy = home / ".state/hi-hive"
-    legacy.mkdir(parents=True)
-    record = legacy / "install.json"
-    record.write_text(json.dumps({"commit": "b" * 40}))
-    record.chmod(0o600)
+    other = home / ".state/hi-hive"
+    other.mkdir(parents=True)
+    record = other / "install.json"
+    record.write_text("KEEP")
+    other.chmod(0o777)
     args = ["dash", str(INSTALLER), "--plain", "--no-service"]
     result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert not record.exists()
-    assert json.loads((home / ".hihive/install.json").read_text())["commit"] == SHA
-    record.write_text(json.dumps({"commit": "b" * 40}))
-    conflict = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
-    assert conflict.returncode == 1
-    assert "conflicting install records" in conflict.stderr
-    assert record.exists()
-
-
-def test_interrupted_migration_reports_conflict_until_user_recovers(tmp_path):
-    home, _, _, env = installer_environment(tmp_path)
-    legacy = home / ".state/hi-hive"
-    legacy.mkdir(parents=True)
-    record = legacy / "install.json"
-    record.write_text(json.dumps({"commit": "b" * 40}))
-    mocks = Path(env["PATH"].split(":", 1)[0])
-    executable(mocks / "rm", f'''case "$*" in *"{record}"*) exit 1;; esac
-exec /bin/rm "$@"
-''')
-    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
-    failed = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
-    assert failed.returncode == 1
-    assert "could not remove migrated" in failed.stderr
-    canonical = home / ".hihive/install.json"
-    assert canonical.exists() and record.exists()
-    conflict = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
-    assert conflict.returncode == 1
-    assert "conflicting install records" in conflict.stderr
-    canonical.unlink()
-    (mocks / "rm").unlink()
-    recovered = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
-    assert recovered.returncode == 0, recovered.stderr
-    assert canonical.exists() and not record.exists()
+    assert record.read_text() == "KEEP"
+    removed = subprocess.run(args + ["--uninstall"], env=env, capture_output=True, text=True, timeout=30)
+    assert removed.returncode == 0, removed.stderr
+    assert record.read_text() == "KEEP"
 
 
 def test_custom_hive_home_holds_record_and_preserves_data_on_uninstall(tmp_path):
@@ -751,8 +699,7 @@ exec /bin/rm "$@"
     assert record.exists()
 
 
-@pytest.mark.parametrize("variable,value", [("HIVE_HOME", "relative"), ("HIVE_HOME", "/tmp/../bad"),
-                                              ("XDG_STATE_HOME", "relative"), ("XDG_STATE_HOME", "/tmp/../bad")])
+@pytest.mark.parametrize("variable,value", [("HIVE_HOME", "relative"), ("HIVE_HOME", "/tmp/../bad")])
 def test_installer_rejects_relative_and_dotdot_paths(tmp_path, variable, value):
     _, _, _, env = installer_environment(tmp_path)
     env[variable] = value
@@ -764,7 +711,7 @@ def test_installer_rejects_relative_and_dotdot_paths(tmp_path, variable, value):
 
 def test_install_record_symlink_is_rejected_without_changing_target(tmp_path):
     home, bin_dir, _log, env = installer_environment(tmp_path)
-    state = home / ".state/hi-hive"
+    state = home / ".hihive"
     state.mkdir(parents=True)
     victim = home / "victim"
     victim.write_text("KEEP\n")
