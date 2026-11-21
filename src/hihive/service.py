@@ -404,7 +404,7 @@ def _systemd_unit(port):
         environment.append(f"HIVE_HOME={os.environ['HIVE_HOME']}")
     lines = [
         "[Unit]",
-        "Description=hi-hive coding agent orchestrator",
+        "Description=hi-hive harness orchestrator",
         "",
         "[Service]",
         "Type=simple",

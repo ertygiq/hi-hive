@@ -51,13 +51,13 @@ In an interactive terminal, the installer asks only when a choice is needed.
 
 - If uv's tool-bin directory is absent from `PATH`, adding a marked reversible profile block defaults to yes.
 - When a background service is available, background mode defaults to the recommended choice.
-- On a rerun, a newly found supported coding-agent type is offered without changing current agent settings.
+- On a rerun, a newly found supported harness type is offered without changing current harness settings.
 - After a background service passes health checks on a desktop, opening the browser defaults to yes.
 
 When output is not a terminal, or with `--plain`, the installer asks no questions.
 It adds the PATH block and selects background mode when available unless `--no-modify-path` or `--no-service` is set.
 It never opens a browser in plain mode.
-Plain reruns report newly found coding agents but never add them.
+Plain reruns report newly found harnesses but never add them.
 
 ## Flags
 
@@ -102,8 +102,8 @@ Use `--repair` or `--force` to reinstall the same SHA.
 Before an update, the installer copies only `config.json` and `data/state.json` into a timestamped folder under the hi-hive home directory.
 It never backs up or prints the login token.
 Existing settings, projects, task data, logs, and user edits are preserved.
-Existing coding-agent entries are never removed, renamed, reordered, or changed automatically.
-An interactive rerun may offer to add a newly detected supported Claude Code or Pi command; plain reruns do not change coding-agent settings.
+Existing harness entries are never removed, renamed, reordered, or changed automatically.
+An interactive rerun may offer to add a harness for a newly detected supported Claude Code or Pi command; plain reruns do not change harness settings.
 Custom commands remain configured and are not executed by detection.
 If a background service fails its authenticated health check during an update, the installer stops that service, restores the previous package and saved configuration state, and reports any rollback failure.
 If hi-hive is running in a terminal during an update, the installer leaves that process alone and tells you to stop it before starting the new version.
@@ -141,7 +141,7 @@ If you prefer to manage uv and the service yourself:
 
 ```sh
 uv tool install --python 3.14 git+https://github.com/ertygiq/hi-hive
-hihive setup-coding-agents --fresh
+hihive setup-harnesses --fresh
 hihive service install
 hihive open
 ```

@@ -1,4 +1,4 @@
-"""First-install detection and configuration of supported coding agents."""
+"""First-install detection and configuration of supported harnesses."""
 
 import json
 import os
@@ -122,7 +122,7 @@ def configure_detected_agents(mode, accepted=None, shell=None):
         except (OSError, ValueError) as error:
             raise ValueError(f"Cannot read existing settings at {config_path}: {error}") from None
         if not isinstance(config, dict) or not isinstance(config.get("harnesses", []), list):
-            raise ValueError(f"Existing settings at {config_path} have an invalid coding-agent list")
+            raise ValueError(f"Existing settings at {config_path} have an invalid harness list")
 
     custom_types = {item.get("type") for item in config.get("harnesses", []) if isinstance(item, dict)
                     and Path(str(item.get("command") or "")).name != AGENTS.get(item.get("type"), {}).get("command")}

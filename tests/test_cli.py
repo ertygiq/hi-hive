@@ -216,7 +216,7 @@ def test_start_with_no_coding_agent_gives_onboarding_guidance(capsys):
         client.cmd_start(["-p", "hello"])
 
     error = capsys.readouterr().err
-    assert "No coding agent is set up yet" in error
+    assert "No harness is set up yet" in error
     assert "Claude Code 2.1.283+" in error
     assert "Pi 0.87.1+" in error
 

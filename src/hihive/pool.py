@@ -1355,7 +1355,7 @@ class PoolManager:
         return str(uuid.uuid4()) if adapter_for(self._find_harness(harness_id)["type"]).preassign_session_id() else None
 
     def _validate_harnesses(self):
-        """Validate configured coding agents; an empty first-start config is allowed."""
+        """Validate configured harnesses; an empty first-start config is allowed."""
         _validate_harness_names(self._harnesses)
 
     # --- Task cost ---

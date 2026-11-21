@@ -6,14 +6,14 @@ Use the [one-line installer](install.md), or install manually with uv:
 
 ```bash
 uv tool install --python 3.14 git+https://github.com/ertygiq/hi-hive
-hihive setup-coding-agents --fresh
+hihive setup-harnesses --fresh
 ```
 
 This installs the `hihive` command and `hih`, the same command with a shorter name.
 Use Claude Code 2.1.283 or newer, or Pi 0.87.1 or newer.
 The setup command detects only supported commands already installed in the login-shell environment and does not check authentication.
-A configuration with no coding agents is valid, so hi-hive can start before Claude Code or Pi is installed, but it cannot run tasks yet.
-Rerun the installer after installing a supported coding agent, or add it manually in Settings.
+A configuration with no harnesses is valid, so hi-hive can start before Claude Code or Pi is installed, but it cannot run tasks yet.
+Rerun the installer after installing Claude Code or Pi, or add a harness manually in Settings.
 
 ## Background service
 
@@ -79,7 +79,7 @@ See [adr/0002-local-authentication.md](adr/0002-local-authentication.md) for why
 hi-hive keeps its settings in `~/.hihive/config.json` and its tasks in `~/.hihive/data/`.
 Set `HIVE_HOME` to use another folder.
 On first start, hi-hive creates `config.json` from the defaults, and a first project named "My project" that uses the `work_dir` from `config.json` as its working directory.
-Configure coding agents, projects, and templates in the settings panel (gear icon).
+Configure harnesses, projects, and templates in the settings panel (gear icon).
 
 ## Development
 

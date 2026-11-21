@@ -532,19 +532,19 @@ function render() {
   renderWorkers();
   renderResults();
   renderPausedBanner();
-  renderCodingAgentOnboarding();
+  renderHarnessOnboarding();
 
   if (selectedTaskId) {
     refreshDetail();
   }
 }
 
-function renderCodingAgentOnboarding() {
+function renderHarnessOnboarding() {
   const empty = (configCache?.harnesses || []).length === 0;
-  document.getElementById('coding-agent-onboarding').style.display = empty ? 'flex' : 'none';
+  document.getElementById('harness-onboarding').style.display = empty ? 'flex' : 'none';
   document.querySelectorAll('.header-controls button.primary, .header-controls button:nth-child(2)').forEach(button => {
     button.disabled = empty;
-    button.title = empty ? 'Add a supported coding agent in Settings first' : '';
+    button.title = empty ? 'Add a supported harness in Settings first' : '';
   });
 }
 
@@ -1311,7 +1311,7 @@ async function sendChat() {
 async function openAddTask() {
   await loadConfig();
   if ((configCache?.harnesses || []).length === 0) {
-    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Coding agents.', 'No coding agent');
+    showMessage('No harness is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add a harness in Settings > All projects > Harnesses.', 'No harness');
     return;
   }
   document.getElementById('add-label').value = '';
@@ -1399,7 +1399,7 @@ function updateBatchSubmitLabel() {
 async function openBatchAdd() {
   await loadConfig();
   if ((configCache?.harnesses || []).length === 0) {
-    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Coding agents.', 'No coding agent');
+    showMessage('No harness is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add a harness in Settings > All projects > Harnesses.', 'No harness');
     return;
   }
   const select = document.getElementById('batch-template');
@@ -1830,7 +1830,7 @@ async function saveSettings() {
   }
   if (harnessesLocal.length > 0 && editedProjectHarnesses().length === 0) {
     switchSettingsTab('project');
-    showMessage('This project would have no coding agent. Turn on shared coding agents, or select this project for one under "All projects".', 'Settings not saved');
+    showMessage('This project would have no harness. Turn on shared harnesses, or select this project for one under "All projects".', 'Settings not saved');
     return;
   }
   applyProjectForm();
@@ -1875,7 +1875,7 @@ function availabilityTagHtml(item) {
 function renderHarnessesList() {
   const list = document.getElementById('harnesses-list');
   if (harnessesLocal.length === 0) {
-    list.innerHTML = '<div class="empty">No coding agents configured. Add Claude Code or Pi after installing it on this computer.</div>';
+    list.innerHTML = '<div class="empty">No harnesses configured. Add a harness for Claude Code or Pi after installing it on this computer.</div>';
     return;
   }
   list.innerHTML = harnessesLocal.map(h => `
@@ -1950,7 +1950,7 @@ function readHarnessAvailability() {
 
 function addHarnessForm() {
   editingHarnessId = null;
-  document.getElementById('harness-modal-title').textContent = 'Add coding agent';
+  document.getElementById('harness-modal-title').textContent = 'Add harness';
   document.getElementById('harness-name').value = '';
   document.getElementById('harness-icon').value = '◆';
   document.getElementById('harness-command').value = '';
@@ -1966,7 +1966,7 @@ function editHarness(id) {
   const h = harnessesLocal.find(x => x.id === id);
   if (!h) return;
   editingHarnessId = id;
-  document.getElementById('harness-modal-title').textContent = 'Edit coding agent';
+  document.getElementById('harness-modal-title').textContent = 'Edit harness';
   document.getElementById('harness-name').value = h.name || '';
   document.getElementById('harness-icon').value = h.icon || '◆';
   document.getElementById('harness-command').value = h.command || '';
@@ -2006,7 +2006,7 @@ function saveHarness() {
 }
 
 async function deleteHarness(id) {
-  if (!await showConfirm('Delete this coding agent configuration?')) return;
+  if (!await showConfirm('Delete this harness?')) return;
   harnessesLocal = harnessesLocal.filter(h => h.id !== id);
   renderHarnessesList();
 }

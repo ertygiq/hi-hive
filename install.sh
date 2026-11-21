@@ -607,7 +607,7 @@ else
   "$CANDIDATE" --version >/dev/null
   if [ "$FRESH" -eq 0 ]; then
     if [ "$SERVICE_POSSIBLE" -eq 1 ]; then query_existing_service "$CANDIDATE"; fi
-    "$CANDIDATE" setup-coding-agents --offer --plain >/dev/null
+    "$CANDIDATE" setup-harnesses --offer --plain >/dev/null
   fi
   candidate_python=$candidate_tools/hi-hive/bin/python
   [ -x "$candidate_python" ] || die 'candidate installation has no Python interpreter'
@@ -664,15 +664,15 @@ say ''
 say 'Configuration and readiness'
 if [ "$FRESH" -eq 1 ]; then
   if [ "$PLAIN" -eq 1 ]; then
-    "$HIHIVE" setup-coding-agents --fresh --plain
+    "$HIHIVE" setup-harnesses --fresh --plain
   else
-    "$HIHIVE" setup-coding-agents --fresh
+    "$HIHIVE" setup-harnesses --fresh
   fi
 else
   if [ "$PLAIN" -eq 1 ]; then
-    "$HIHIVE" setup-coding-agents --offer --plain
+    "$HIHIVE" setup-harnesses --offer --plain
   else
-    "$HIHIVE" setup-coding-agents --offer
+    "$HIHIVE" setup-harnesses --offer
   fi
 fi
 if [ "$FRESH" -eq 0 ] && [ "$RUN_BACKGROUND" -eq 0 ] && "$HIHIVE" health >/dev/null 2>&1; then

@@ -120,7 +120,7 @@ button:focus-visible, select:focus-visible, a:focus-visible, .task-card:focus-vi
   outline-offset: 2px;
 }
 
-.coding-agent-onboarding {
+.harness-onboarding {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -130,8 +130,8 @@ button:focus-visible, select:focus-visible, a:focus-visible, .task-card:focus-vi
   background: rgba(210, 153, 34, 0.09);
   color: var(--text);
 }
-.coding-agent-onboarding strong { color: var(--warning); }
-.coding-agent-onboarding button { white-space: nowrap; }
+.harness-onboarding strong { color: var(--warning); }
+.harness-onboarding button { white-space: nowrap; }
 
 /* Main layout: board on the left, task detail on the right */
 .workspace {

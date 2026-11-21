@@ -1,6 +1,6 @@
 # hi-hive
 
-A web UI and CLI for running coding agents (Claude Code, Pi) in parallel: batch tasks, review results, and follow up with agents, all from one place.
+A web UI and CLI for running Claude Code and Pi harnesses in parallel: batch tasks, review results, and follow up with agents, all from one place.
 
 
 

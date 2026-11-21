@@ -15,11 +15,11 @@ from urllib.parse import quote, urlencode, urlsplit
 from . import paths
 
 FINISHED = ("completed", "failed", "cancelled")
-NO_CODING_AGENT = ("No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, "
-                   "then run the installer again, or add it in Settings > All projects > Coding agents.")
+NO_HARNESS = ("No harness is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, "
+              "then run the installer again, or add a harness in Settings > All projects > Harnesses.")
 
 USAGE = """\
-CLI for hi-hive - parallel task runner for coding agents (Claude Code, Pi).
+CLI for hi-hive - parallel task runner using Claude Code and Pi harnesses.
 
 Usage: hihive [--project NAME] <command> [args]
        hihive --version
@@ -194,7 +194,7 @@ class HiHiveCLI:
         label = self.take_named_arg(args, "--label")
         project = self.project()
         if not project["harnesses"]:
-            self.die(NO_CODING_AGENT)
+            self.die(NO_HARNESS)
         harness = self.resolve_harness_name(self.take_named_arg(args, "--harness"), project["harnesses"])
         if "-p" in args:
             index = args.index("-p")
@@ -785,7 +785,7 @@ def setup_coding_agents(args):
     plain = _remove(args, "--plain")
     yes = _remove(args, "--yes")
     if args or fresh == offer:
-        raise SystemExit("Usage: hihive setup-coding-agents (--fresh | --offer) [--plain] [--yes]")
+        raise SystemExit("Usage: hihive setup-harnesses (--fresh | --offer) [--plain] [--yes]")
     try:
         result = configure_detected_agents("fresh") if fresh else None
         preview = configure_detected_agents("existing", accepted=[]) if not fresh else None
@@ -811,7 +811,7 @@ def setup_coding_agents(args):
             result = configure_detected_agents("existing", accepted=accepted)
         except (OSError, ValueError) as error:
             raise SystemExit(str(error)) from None
-    puts("Coding agents   On this computer                                     In hi-hive")
+    puts("Harnesses       On this computer                                     In hi-hive")
     for agent in result["detected"]:
         puts(_coding_agent_line(agent, result))
     puts("  hi-hive does not install these or check that you are logged in.")
@@ -824,16 +824,16 @@ def setup_coding_agents(args):
     environment_error = next((agent.get("environment_error") for agent in result["detected"]
                               if agent.get("environment_error")), None)
     if environment_error:
-        puts(f"  Coding agents could not be checked because the login-shell environment failed: {environment_error}")
+        puts(f"  Harnesses could not be checked because the login-shell environment failed: {environment_error}")
     if not result["configured_types"]:
         usable_declined = [agent["name"] for agent in result["detected"] if agent["status"] == "usable"]
         if environment_error:
-            puts("  hi-hive has no coding agent yet, so it cannot run tasks. Fix the login shell, then run this installer again.")
+            puts("  hi-hive has no harness yet, so it cannot run tasks. Fix the login shell, then run this installer again.")
         elif usable_declined:
-            puts("  hi-hive has no coding agent yet, so it cannot run tasks. "
-                 f"Run this installer again to add {' or '.join(usable_declined)}.")
+            puts("  hi-hive has no harness yet, so it cannot run tasks. "
+                 f"Run this installer again to add a harness for {' or '.join(usable_declined)}.")
         else:
-            puts("  hi-hive has no coding agent yet, so it cannot run tasks. "
+            puts("  hi-hive has no harness yet, so it cannot run tasks. "
                  "Install Claude Code 2.1.283+ or Pi 0.87.1+, then run this installer again.")
     if plain and not fresh:
         for agent in unconfigured_usable(result):
@@ -859,7 +859,7 @@ def main(argv=None):
             if len(argv) != 1:
                 raise SystemExit("Usage: hihive health")
             health()
-        elif argv and argv[0] == "setup-coding-agents":
+        elif argv and argv[0] == "setup-harnesses":
             setup_coding_agents(argv[1:])
         elif argv and argv[0] == "service":
             from . import service

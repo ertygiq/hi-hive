@@ -55,7 +55,7 @@ if [ "${{1:-}} ${{2:-}}" = 'tool install' ]; then
 printf 'hihive %s\\n' "$*" >> "$HIHIVE_TEST_LOG"
 case "${{1:-}}" in
   --version) echo 'hi-hive 0.2.0';;
-  setup-coding-agents) : ;;
+  setup-harnesses) : ;;
   service)
     if [ "${{2:-}}" = installed ]; then exit "${{HIVE_FAKE_SERVICE_INSTALLED_EXIT:-3}}"; fi
     exit "${{HIVE_FAKE_SERVICE_EXIT:-0}}"
