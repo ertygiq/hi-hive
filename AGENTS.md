@@ -14,6 +14,9 @@ In user-facing text, call a configured way to start Claude Code or Pi a **harnes
 
 ## Testing
 
+During implementation, run focused tests for the changes; run the full suite once the batch is ready, not after every small edit.
+Let Ubuntu CI run in the background; wait for it only before merging or when investigating a CI failure.
+
 Run `./tests/run` for the deterministic Python and UI tests.
 Real-harness tests are skipped unless `HIVE_LIVE_SMOKE=1` is set.
 
