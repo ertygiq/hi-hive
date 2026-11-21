@@ -100,38 +100,40 @@
     <div class="detail-title-row">
       <h3 id="detail-title">—</h3>
       <div class="menu-wrap">
-        <button class="small" id="detail-menu-btn" onclick="toggleDetailMenu()" aria-haspopup="menu"
+        <button class="icon-btn" id="detail-menu-btn" onclick="toggleDetailMenu()" onkeydown="detailMenuTriggerKey(event)" aria-haspopup="menu"
                 aria-expanded="false" aria-controls="detail-menu" title="More actions" aria-label="More actions">⋯</button>
-        <div class="menu hidden" id="detail-menu" role="menu">
+        <div class="menu hidden" id="detail-menu" role="menu" onkeydown="detailMenuKey(event)">
           <button role="menuitem" id="detail-done-btn" onclick="closeDetailMenu();toggleDone(selectedTaskId)">Mark done</button>
           <button role="menuitem" id="detail-fork-btn" onclick="closeDetailMenu();openForkTask(selectedTaskId)">Fork…</button>
           <button role="menuitem" id="copy-task-id-btn" onclick="copyTaskId()">Copy task ID</button>
+          <button role="menuitem" id="copy-session-id-btn" onclick="copySessionId()">Copy session ID</button>
         </div>
       </div>
       <button class="icon-btn" onclick="closeDetail()" title="Close (Esc)" aria-label="Close task detail">✕</button>
     </div>
     <div class="detail-toolbar">
       <div class="detail-tabs" id="detail-tabs" role="tablist">
-        <button class="detail-tab active" role="tab" onclick="switchDetailTab('output')">Output</button>
-        <button class="detail-tab" role="tab" onclick="switchDetailTab('prompt')">Prompt</button>
+        <button class="detail-tab active" role="tab" aria-selected="true" aria-controls="detail-body" tabindex="0" onclick="switchDetailTab('output')" onkeydown="detailTabKey(event)">Output</button>
+        <button class="detail-tab" role="tab" aria-selected="false" aria-controls="detail-body" tabindex="-1" onclick="switchDetailTab('prompt')" onkeydown="detailTabKey(event)">Prompt</button>
       </div>
-      <button class="small" id="detail-session-btn" onclick="openSession()">Session</button>
-      <button class="small" id="copy-session-id-btn" onclick="copySessionId()">Copy session ID</button>
-      <div class="detail-meta">
+      <div class="detail-toolbar-right">
+        <div class="detail-meta">
         <span id="detail-harness" style="display:none"></span>
-        <span id="detail-cost" style="display:none"></span>
         <span class="detail-template-badge" id="detail-template" style="display:none"></span>
-        <span class="status-badge status-pill" id="detail-status"></span>
-        <span class="done-tag" id="detail-done-tag" style="display:none" title="Marked as done">✓ done</span>
+        <span id="detail-cost" style="display:none"></span>
+        <span id="detail-status"></span>
+        <span class="done-tag" id="detail-done-tag" style="display:none" title="Marked as done">✓ Done</span>
         <span id="detail-background-activity" style="display:none" aria-live="polite"></span>
         <button class="icon-btn chat-stop-btn" id="detail-background-stop-btn" title="Stop background work" aria-label="Stop background work" onclick="stopWork('background')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
+        </div>
+        <button class="text-btn" id="detail-session-btn" onclick="openSession()">Open session</button>
+        <button class="small" id="detail-continue-btn" onclick="continueTask(selectedTaskId)" style="display:none">▶ Continue</button>
+        <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
       </div>
-      <button class="small" id="detail-continue-btn" onclick="continueTask(selectedTaskId)" style="display:none">▶ Continue</button>
-      <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
     </div>
   </div>
   <div class="detail-scroll-region">
-    <div class="detail-body" id="detail-body"></div>
+    <div class="detail-body" id="detail-body" role="tabpanel"></div>
     <button class="chat-jump-latest" id="chat-jump-latest" type="button" onclick="jumpToLatest()" style="display:none">↓ Jump to latest</button>
   </div>
   <div class="chat-typing" id="chat-typing" role="status" style="display:none">

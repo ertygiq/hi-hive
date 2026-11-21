@@ -66,6 +66,107 @@ test('marking and unmarking Done refresh the board without an error', async () =
   assert.equal(polls, 2);
 });
 
+test('detail toolbar shows plain configured metadata and only available session actions', () => {
+  const { context, document } = client();
+  context.config = { harnesses: [{ id: 'h', name: 'Long Harness', color: 'rose' }],
+    templates: [{ id: 't', name: 'Long Template' }], session_viewer_url: 'https://example.test' };
+  context.task = { id: 'task', status: 'completed', harness: 'h', template_id: 't', session_id: 'session',
+    background_activity: { task_count: 2 }, messages: [] };
+  vm.runInContext('configCache = config; renderDetail(task)', context);
+  assert.match(document.getElementById('detail-harness').innerHTML, /Long Harness/);
+  assert.doesNotMatch(document.getElementById('detail-harness').innerHTML, /harness-badge/);
+  assert.equal(document.getElementById('detail-template').title, 'Template: Long Template');
+  assert.equal(document.getElementById('detail-status').style.display, 'none');
+  assert.equal(document.getElementById('detail-session-btn').style.display, '');
+  assert.equal(document.getElementById('copy-session-id-btn').style.display, '');
+  assert.match(document.getElementById('detail-background-activity').innerHTML, /reply-state is-active/);
+  context.task = { ...context.task, status: 'failed', session_id: null, background_activity: { preparing_reply: true } };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(document.getElementById('detail-status').textContent, 'Failed');
+  assert.equal(document.getElementById('detail-status').className, 'status-failed');
+  assert.equal(document.getElementById('detail-session-btn').style.display, 'none');
+  assert.equal(document.getElementById('copy-session-id-btn').style.display, 'none');
+  assert.equal(document.getElementById('detail-background-activity').style.display, 'none');
+  context.task.session_id = 'session'; context.config.session_viewer_url = '';
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(document.getElementById('detail-session-btn').style.display, 'none');
+  assert.equal(document.getElementById('copy-session-id-btn').style.display, '');
+  for (const status of ['queued', 'running', 'reviewing', 'failed', 'cancelled']) {
+    context.task.status = status;
+    vm.runInContext('renderDetail(task)', context);
+    assert.equal(document.getElementById('detail-status').textContent, status[0].toUpperCase() + status.slice(1));
+    assert.equal(document.getElementById('detail-status').style.display, '');
+  }
+});
+
+test('copy session ID closes its menu after confirmation', async () => {
+  const { context, document } = client();
+  context.task = { id: 'task', status: 'completed', session_id: 'session-id', messages: [] };
+  vm.runInContext('renderDetail(task)', context);
+  let copied, delay, callback, closed = false;
+  context.navigator = { clipboard: { writeText(value) { copied = value; return Promise.resolve(); } } };
+  context.setTimeout = (fn, ms) => { callback = fn; delay = ms; };
+  context.closeDetailMenu = () => { closed = true; };
+  vm.runInContext('copySessionId()', context);
+  await Promise.resolve();
+  assert.equal(copied, 'session-id');
+  assert.equal(document.getElementById('copy-session-id-btn').textContent, 'Copied');
+  assert.equal(delay, 800);
+  callback();
+  assert.equal(closed, true);
+  assert.equal(document.getElementById('copy-session-id-btn').textContent, 'Copy session ID');
+});
+
+test('detail tabs use roving focus and menu navigation follows keyboard conventions', () => {
+  const { context, document } = client();
+  const tabs = ['Output', 'Prompt'].map(textContent => ({ textContent, focus() { document.activeElement = this; } }));
+  document.querySelectorAll = selector => selector === '.detail-tab' ? tabs : [];
+  context.refreshDetail = () => {};
+  context.event = { key: 'ArrowRight', currentTarget: tabs[0], preventDefault() {} };
+  vm.runInContext('detailTabKey(event)', context);
+  assert.equal(document.activeElement, tabs[1]);
+  assert.equal(vm.runInContext('currentDetailTab', context), 'prompt');
+  context.event = { key: 'Home', currentTarget: tabs[1], preventDefault() {} };
+  vm.runInContext('detailTabKey(event)', context);
+  assert.equal(document.activeElement, tabs[0]);
+  assert.equal(vm.runInContext('currentDetailTab', context), 'output');
+  const items = [0, 1, 2].map(() => ({ offsetParent: {}, focus() { document.activeElement = this; } }));
+  const menu = document.getElementById('detail-menu');
+  let hidden = true;
+  menu.classList = { contains() { return hidden; }, toggle(_name, value) { hidden = value; }, add() { hidden = true; } };
+  menu.querySelectorAll = () => items;
+  const trigger = document.getElementById('detail-menu-btn');
+  trigger.focus = () => { document.activeElement = trigger; };
+  vm.runInContext('toggleDetailMenu()', context);
+  assert.equal(document.activeElement, items[0]);
+  context.event = { key: 'ArrowUp', preventDefault() {}, stopPropagation() {} };
+  vm.runInContext('detailMenuKey(event)', context);
+  assert.equal(document.activeElement, items[2]);
+  context.event.key = 'Home'; vm.runInContext('detailMenuKey(event)', context);
+  assert.equal(document.activeElement, items[0]);
+  context.event.key = 'End'; vm.runInContext('detailMenuKey(event)', context);
+  assert.equal(document.activeElement, items[2]);
+  context.event.key = 'Escape'; vm.runInContext('detailMenuKey(event)', context);
+  assert.equal(document.activeElement, trigger);
+  assert.equal(hidden, true);
+});
+
+test('detail markup and CSS cover narrow layouts, tabs, and message styling', () => {
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(html, /id="detail-menu-btn"[^>]*aria-haspopup="menu"/);
+  assert.match(html, /role="tab" aria-selected="true" aria-controls="detail-body" tabindex="0"/);
+  assert.match(html, /role="tab" aria-selected="false" aria-controls="detail-body" tabindex="-1"/);
+  assert.match(html, /id="detail-body" role="tabpanel"/);
+  assert.ok(html.indexOf('id="copy-task-id-btn"') < html.indexOf('id="copy-session-id-btn"'));
+  assert.match(html, /class="text-btn" id="detail-session-btn"[^>]*>Open session/);
+  assert.match(css, /@container \(max-width: 560px\)/);
+  assert.match(css, /\.detail-toolbar-right\s*\{\s*flex-basis:\s*100%;\s*margin-left:\s*0/);
+  assert.match(css, /#detail-template\s*\{\s*display:\s*none !important/);
+  assert.match(css, /\.chat-message\.user\s*\{[^}]*color-mix\(in srgb, var\(--primary\) 6%, transparent\)[^}]*border:\s*none/s);
+  assert.match(css, /\.chat-message\s*\{[^}]*margin:\s*12px 0/s);
+});
+
 test('responsive Results layout clamps widths and caps nested cards', () => {
   const { context } = client();
   for (const [width, expected] of [[899, 535], [900, 536], [1079, 715], [1080, 416], [1440, 776]]) {
@@ -494,8 +595,12 @@ test('background activity badges update cards and details without promoting resu
     const detail = document.getElementById('detail-background-activity');
     if (label) {
       assert.ok(html.includes(label === 'Preparing reply' ? 'Replying' : label));
-      assert.ok(detail.innerHTML.includes(label));
-      assert.equal(detail.style.display, 'inline-flex');
+      if (activity.task_count > 0) {
+        assert.match(detail.innerHTML, /Background work/);
+        assert.equal(detail.style.display, 'inline-flex');
+      } else {
+        assert.equal(detail.style.display, 'none');
+      }
       assert.ok(html.includes('awaiting-reply'));
     } else {
       assert.ok(!html.includes('background-activity'));
