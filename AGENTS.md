@@ -9,6 +9,9 @@ Ask the user before adding them.
 Before writing or editing user-facing documentation, read [DOCUMENTATION_GUIDELINES.md](DOCUMENTATION_GUIDELINES.md).
 Update that file when the project's documentation audience, structure, or level-of-detail decisions change.
 
+Use the domain language in [CONTEXT.md](CONTEXT.md).
+In user-facing text, call a configured way to start Claude Code or Pi a **harness**, never a coding agent.
+
 ## Testing
 
 Run `./tests/run` for the deterministic Python and UI tests.

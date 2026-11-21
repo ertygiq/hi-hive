@@ -1,9 +1,10 @@
+import json
 import webbrowser
 
 import pytest
 
 from hihive import cli as cli_module
-from hihive import paths
+from hihive import paths, service
 from hihive.cli import HiHiveCLI, Exit
 
 
@@ -152,6 +153,7 @@ def test_open_prints_ssh_tunnel_and_login_url_in_headless_linux(tmp_path, monkey
     monkeypatch.setattr(webbrowser, "open", lambda _url: pytest.fail("headless Linux must not try a browser"))
     paths.ensure_token()
     paths.server_lock_file().write_text("4789\n")
+    monkeypatch.setattr(HiHiveCLI, "probe_health", lambda self: True)
 
     HiHiveCLI().cmd_open()
 
@@ -160,6 +162,97 @@ def test_open_prints_ssh_tunnel_and_login_url_in_headless_linux(tmp_path, monkey
     assert "http://localhost:4789/login#token=" in output
     assert "grants full hi-hive access" in output
     assert "do not paste it into logs or issues" in output
+
+
+def test_service_installed_machine_query_uses_exit_status_only(monkeypatch, capsys):
+    monkeypatch.setattr(service, "installed", lambda: True)
+    cli_module.main(["service", "installed"])
+    assert capsys.readouterr().out == ""
+
+    monkeypatch.setattr(service, "installed", lambda: False)
+    with pytest.raises(SystemExit) as missing:
+        cli_module.main(["service", "installed"])
+    assert missing.value.code == 3
+    assert capsys.readouterr().out == ""
+
+
+def test_open_not_running_prints_start_choices(monkeypatch, capsys):
+    monkeypatch.delenv("HIVE_TOKEN", raising=False)
+    monkeypatch.setattr(HiHiveCLI, "probe_health", lambda self: False)
+    client = HiHiveCLI()
+    client.token = "token"
+
+    with pytest.raises(Exit):
+        client.cmd_open()
+
+    error = capsys.readouterr().err
+    assert "hi-hive is not running" in error
+    assert "hihive serve" in error
+    assert "hihive service install" in error
+
+
+def test_open_desktop_reports_success_without_printing_token(monkeypatch, capsys):
+    monkeypatch.delenv("HIVE_TOKEN", raising=False)
+    client = HiHiveCLI()
+    client.token = "SECRET_TOKEN"
+    monkeypatch.setattr(client, "probe_health", lambda: True)
+    monkeypatch.setattr(webbrowser, "open", lambda _url: True)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    client.cmd_open()
+
+    output = capsys.readouterr().out
+    assert "Opened http://localhost:" in output
+    assert "SECRET_TOKEN" not in output
+
+
+def test_start_with_no_coding_agent_gives_onboarding_guidance(capsys):
+    client = FakeCLI([])
+    client._project = {"id": "project", "name": "My project", "harnesses": [], "templates": []}
+
+    with pytest.raises(Exit):
+        client.cmd_start(["-p", "hello"])
+
+    error = capsys.readouterr().err
+    assert "No harness is set up yet" in error
+    assert "Claude Code 2.1.283+" in error
+    assert "Pi 0.87.1+" in error
+
+
+def test_first_serve_detects_agents_before_start_and_prints_terminal_guidance(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HIVE_HOME", str(tmp_path))
+    monkeypatch.delenv("HIVE_TOKEN", raising=False)
+    calls = []
+
+    def setup(args):
+        calls.append(args)
+        paths.ensure_config(paths.config_file())
+
+    monkeypatch.setattr(cli_module, "setup_coding_agents", setup)
+    monkeypatch.setattr("uvicorn.run", lambda *_args, **_kwargs: None)
+
+    cli_module.serve(["--port", "4789"])
+
+    assert calls == [["--fresh", "--plain"]]
+    output = capsys.readouterr().out
+    assert "hi-hive is running on http://localhost:4789" in output
+    assert "Closing it or pressing Ctrl-C stops hi-hive" in output
+    assert "hihive open" in output
+    assert "hihive service install" in output
+
+
+def test_version_includes_recorded_main_commit(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    paths.installer_state_dir().mkdir(parents=True)
+    paths.installer_record_file().write_text(json.dumps({"commit": "a" * 40}))
+
+    HiHiveCLI().run(["--version"])
+
+    output = capsys.readouterr().out
+    assert "hi-hive 0.2.0" in output
+    assert f"main@{'a' * 40}" in output
 
 
 def test_show_prints_only_roles_and_content_not_delivery_or_kind(capsys):

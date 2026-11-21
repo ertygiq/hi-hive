@@ -2,14 +2,18 @@
 
 ## Install
 
-Install from GitHub:
+Use the [one-line installer](install.md), or install manually with uv:
 
 ```bash
-uv tool install git+https://github.com/ertygiq/hi-hive
+uv tool install --python 3.14 git+https://github.com/ertygiq/hi-hive
+hihive setup-harnesses --fresh
 ```
 
 This installs the `hihive` command and `hih`, the same command with a shorter name.
 Use Claude Code 2.1.283 or newer, or Pi 0.87.1 or newer.
+The setup command detects only supported commands already installed in the login-shell environment and does not check authentication.
+A configuration with no harnesses is valid, so hi-hive can start before Claude Code or Pi is installed, but it cannot run tasks yet.
+Rerun the installer after installing Claude Code or Pi, or add a harness manually in Settings.
 
 ## Background service
 

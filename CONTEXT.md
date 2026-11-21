@@ -9,6 +9,11 @@ A group of tasks, templates, and review sections with its own working directory 
 Every task belongs to exactly one project.
 _Avoid_: Workspace, which is easy to confuse with the working directory.
 
+**Harness**:
+A named configuration that tells Hive how to start Claude Code, Pi, or another supported command.
+Use _harness_ in all user-facing UI, CLI, and documentation text.
+_Avoid_: Coding agent, agent setup, or runner when referring to this configuration.
+
 **Shared harness**:
 A harness available in all projects ("Available in: All projects"), unless a project turned off "Use shared harnesses".
 
