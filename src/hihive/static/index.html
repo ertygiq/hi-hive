@@ -82,7 +82,7 @@
         </div>
       </div>
       <div class="results-search-row">
-        <input type="text" id="results-search" class="results-search" placeholder="Search prompts & labels…"
+        <input type="text" id="results-search" class="results-search" placeholder="Search…"
                aria-label="Search results" oninput="onResultsSearchInput()">
         <button id="results-deep-search" class="filter-toggle" onclick="onDeepSearchToggle()"
                 aria-pressed="false" title="Also search model responses and user follow-ups">Full text</button>
@@ -91,6 +91,7 @@
     <div class="task-list" id="results-list"></div>
   </section>
 </main>
+<div id="result-card-menu-container" class="result-card-menu-container hidden" onclick="event.stopPropagation()" onkeydown="resultMenuKey(event)"><div class="menu result-card-menu" role="menu" aria-label="Task actions"></div></div>
 
 <!-- Detail Panel -->
 <div class="resize-handle" id="resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize detail panel"></div>
