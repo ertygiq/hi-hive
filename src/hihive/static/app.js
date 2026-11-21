@@ -1050,7 +1050,8 @@ function toggleMessageTimestamp(event) {
 
 function renderDetail(task) {
   // The Session button needs a session viewer (claude-code-lens); hide it until one is configured.
-  document.getElementById('detail-session-btn').style.display = configCache?.session_viewer_url ? '' : 'none';
+  document.getElementById('detail-session-btn').style.display = configCache?.session_viewer_url && task.session_id ? '' : 'none';
+  document.getElementById('copy-session-id-btn').style.display = task.session_id ? '' : 'none';
   const label = task.label || '';
   const titleEl = document.getElementById('detail-title');
   if (task.parent_task_id) {
@@ -1066,12 +1067,13 @@ function renderDetail(task) {
   const tmplEl = document.getElementById('detail-template');
   if (tmpl) {
     tmplEl.textContent = tmpl.name;
+    tmplEl.title = `Template: ${tmpl.name}`;
     tmplEl.style.display = 'inline-block';
   } else {
     tmplEl.style.display = 'none';
   }
   const harnessEl = document.getElementById('detail-harness');
-  const harnessHtml = harnessBadgeHtml(task.harness);
+  const harnessHtml = resultHarnessHtml(task.harness);
   harnessEl.innerHTML = harnessHtml;
   harnessEl.style.display = harnessHtml ? 'inline-flex' : 'none';
   const costEl = document.getElementById('detail-cost');
@@ -1079,10 +1081,12 @@ function renderDetail(task) {
   costEl.innerHTML = costHtmlStr;
   costEl.style.display = costHtmlStr ? 'inline-flex' : 'none';
   const statusEl = document.getElementById('detail-status');
-  statusEl.textContent = task.status;
-  statusEl.className = `status-badge status-pill status-${task.status}`;
+  statusEl.textContent = task.status ? task.status[0].toUpperCase() + task.status.slice(1) : '';
+  statusEl.className = `status-${task.status}`;
+  statusEl.style.display = task.status === 'completed' ? 'none' : '';
   const activityEl = document.getElementById('detail-background-activity');
-  const activityHtml = backgroundActivityHtml(task);
+  const activityHtml = task.background_activity?.task_count > 0
+    ? '<span class="reply-state is-active" title="Background tasks are still running"><span class="state-dot" aria-hidden="true"></span>Background work</span>' : '';
   activityEl.innerHTML = activityHtml;
   activityEl.style.display = activityHtml ? 'inline-flex' : 'none';
 
@@ -1140,6 +1144,7 @@ function renderDetail(task) {
     const active = tab.textContent.toLowerCase() === currentDetailTab;
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
   });
 
   showChatTyping(currentDetailTab === 'output' && (stopping === 'reply' ||
@@ -1219,12 +1224,52 @@ function switchDetailTab(tab) {
   refreshDetail();
 }
 
-function toggleDetailMenu() {
+function detailTabKey(event) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = [...document.querySelectorAll('.detail-tab')];
+  const index = tabs.indexOf(event.currentTarget);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 :
+    (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next]?.focus();
+  if (tabs[next]) switchDetailTab(tabs[next].textContent.toLowerCase());
+}
+
+function detailMenuItems() {
+  return [...document.getElementById('detail-menu').querySelectorAll('[role="menuitem"]')].filter(item => item.offsetParent);
+}
+
+function toggleDetailMenu(last = false) {
   const menu = document.getElementById('detail-menu');
   const opening = menu.classList.contains('hidden');
   menu.classList.toggle('hidden', !opening);
   document.getElementById('detail-menu-btn').setAttribute('aria-expanded', String(opening));
-  if (opening) [...menu.querySelectorAll('button')].find(b => b.offsetParent)?.focus();
+  if (opening) {
+    const items = detailMenuItems();
+    (last ? items.at(-1) : items[0])?.focus();
+  }
+}
+
+function detailMenuTriggerKey(event) {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  if (!detailMenuOpen()) toggleDetailMenu(event.key === 'ArrowUp');
+}
+
+function detailMenuKey(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault(); event.stopPropagation(); closeDetailMenu();
+    document.getElementById('detail-menu-btn').focus();
+    return;
+  }
+  if (event.key === 'Tab') { closeDetailMenu(); document.getElementById('detail-menu-btn').focus(); return; }
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const items = detailMenuItems();
+  const index = items.indexOf(document.activeElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 :
+    (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+  items[next]?.focus();
 }
 
 function closeDetailMenu() {
@@ -1256,12 +1301,12 @@ const sessionFrames = new Map();
 
 function copySessionId() {
   if (!selectedTaskId) return;
-  const task = findTask(selectedTaskId);
-  if (!task) return;
+  const task = displayedConversation?.id === selectedTaskId ? displayedConversation : findTask(selectedTaskId);
+  if (!task?.session_id) return;
   navigator.clipboard.writeText(task.session_id).then(() => {
     const btn = document.getElementById('copy-session-id-btn');
     btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = 'Copy session ID'; }, 1500);
+    setTimeout(() => { closeDetailMenu(); btn.textContent = 'Copy session ID'; }, 800);
   });
 }
 
