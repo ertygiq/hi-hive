@@ -542,6 +542,7 @@ def test_linux_status_restart_and_uninstall_use_systemctl_user(service_home, mon
 
 def test_macos_install_keeps_launchd_and_marks_the_supervisor(service_home, monkeypatch):
     monkeypatch.setattr(service.sys, "platform", "darwin")
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(service, "_launchd_bootout", lambda: None)
     calls = []
     monkeypatch.setattr(service.subprocess, "run",

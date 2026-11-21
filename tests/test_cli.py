@@ -199,6 +199,7 @@ def test_open_desktop_reports_success_without_printing_token(monkeypatch, capsys
     monkeypatch.setattr(webbrowser, "open", lambda _url: True)
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
     monkeypatch.delenv("SSH_TTY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
 
     client.cmd_open()
 
