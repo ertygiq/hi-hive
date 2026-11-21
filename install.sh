@@ -85,6 +85,8 @@ require_safe_user_directory() {
 
 require_safe_destination_parent() {
   safe_parent=$1
+  case "$safe_parent" in /*) ;; *) die "destination path must be absolute: $safe_parent" ;; esac
+  case "/$safe_parent/" in */../*|*/./*) die "destination path must not contain dot components: $safe_parent" ;; esac
   case "$safe_parent" in
     "$HOME"|"$HOME"/*)
       while [ "$safe_parent" != "$HOME" ]; do
@@ -96,12 +98,23 @@ require_safe_destination_parent() {
       require_safe_user_directory "$HOME" 'HOME'
       ;;
     *)
-      while [ ! -e "$safe_parent" ] && [ ! -L "$safe_parent" ]; do
+      while :; do
+        if [ -e "$safe_parent" ] || [ -L "$safe_parent" ]; then
+          [ -d "$safe_parent" ] && [ ! -L "$safe_parent" ] || die "destination ancestor must be a real directory: $safe_parent"
+          external_uid=$(ls -dn "$safe_parent" 2>/dev/null | awk '{print $3}')
+          external_mode=$(LC_ALL=C ls -ld "$safe_parent" 2>/dev/null | cut -c1-10)
+          external_writes=$(printf '%s' "$external_mode" | cut -c6,9)
+          external_sticky=$(printf '%s' "$external_mode" | cut -c10)
+          [ "$external_uid" = "$(id -u)" ] || [ "$external_uid" = 0 ] || die "destination ancestor must be owned by the current user or root: $safe_parent"
+          case "$external_writes" in
+            *w*) [ "$external_uid" = 0 ] && [ "$external_sticky" = t ] || die "destination ancestor must not be group/world-writable: $safe_parent" ;;
+          esac
+        fi
+        [ "$safe_parent" != / ] || break
         next_parent=$(dirname -- "$safe_parent")
-        [ "$next_parent" != "$safe_parent" ] || break
+        [ "$next_parent" != "$safe_parent" ] || die "cannot traverse destination path: $safe_parent"
         safe_parent=$next_parent
       done
-      require_safe_user_directory "$safe_parent" 'destination ancestor'
       ;;
   esac
 }
@@ -150,11 +163,19 @@ write_record() {
   chmod 600 "$RECORD_TMP"
   mv -f "$RECORD_TMP" "$record_file"
   RECORD_TMP=
+  if [ "$legacy_present" -eq 1 ]; then
+    require_safe_destination_parent "$legacy_dir"
+    require_safe_regular_file "$legacy_record" 'legacy install record'
+    rm -f -- "$legacy_record" || die "could not remove migrated legacy install record: $legacy_record"
+    legacy_present=0
+  fi
 }
 
 read_record_commit() {
-  [ -f "$record_file" ] || return 0
-  sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$record_file" | head -n 1 | tr 'A-F' 'a-f'
+  read_file=$record_file
+  [ "$legacy_present" -eq 0 ] || read_file=$legacy_record
+  [ -f "$read_file" ] || return 0
+  sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$read_file" | head -n 1 | tr 'A-F' 'a-f'
 }
 
 find_uv() {
@@ -465,7 +486,10 @@ command -v id >/dev/null 2>&1 || die 'id is required'
 case "$HOME" in /*) ;; *) die 'HOME must be an absolute path' ;; esac
 require_safe_user_directory "$HOME" 'HOME'
 if [ -n "${HIVE_HOME:-}" ]; then case "$HIVE_HOME" in /*) ;; *) die 'HIVE_HOME must be an absolute path' ;; esac; fi
-if [ -n "${XDG_STATE_HOME:-}" ]; then case "$XDG_STATE_HOME" in /*) ;; *) die 'XDG_STATE_HOME must be an absolute path' ;; esac; fi
+if [ -n "${XDG_STATE_HOME:-}" ]; then
+  case "$XDG_STATE_HOME" in /*) ;; *) die 'XDG_STATE_HOME must be an absolute path' ;; esac
+  case "/$XDG_STATE_HOME/" in */../*|*/./*) die 'XDG_STATE_HOME must not contain dot components' ;; esac
+fi
 if [ -n "${XDG_BIN_HOME:-}" ]; then case "$XDG_BIN_HOME" in /*) ;; *) die 'XDG_BIN_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_DATA_HOME:-}" ]; then case "$XDG_DATA_HOME" in /*) ;; *) die 'XDG_DATA_HOME must be an absolute path' ;; esac; fi
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then case "$XDG_CONFIG_HOME" in /*) ;; *) die 'XDG_CONFIG_HOME must be an absolute path' ;; esac; fi
@@ -494,12 +518,26 @@ esac
 
 
 
-state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive
+# New records live with Hive data. A visible legacy directory is checked before
+# reading its record, even when the new record already exists.
+HIVE_DIR=${HIVE_HOME:-$HOME/.hihive}
+state_dir=$HIVE_DIR
 record_file=$state_dir/install.json
-[ ! -L "$state_dir" ] || die "install state directory must not be a symbolic link: $state_dir"
 require_safe_destination_parent "$state_dir"
-if [ -e "$state_dir" ]; then require_safe_user_directory "$state_dir" 'install state directory'; fi
+if [ -e "$state_dir" ]; then require_safe_user_directory "$state_dir" 'hi-hive data directory'; fi
 require_safe_regular_file "$record_file" 'install record'
+legacy_dir=${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive
+legacy_record=$legacy_dir/install.json
+legacy_present=0
+if [ "$legacy_dir" != "$state_dir" ] && { [ -e "$legacy_dir" ] || [ -L "$legacy_dir" ]; }; then
+  require_safe_destination_parent "$legacy_dir"
+  require_safe_user_directory "$legacy_dir" 'legacy install state directory'
+  require_safe_regular_file "$legacy_record" 'legacy install record'
+  if [ -e "$legacy_record" ]; then legacy_present=1; fi
+fi
+if [ "$legacy_present" -eq 1 ] && [ -e "$record_file" ]; then
+  die "conflicting install records: $record_file and $legacy_record; inspect and remove the unwanted record before retrying"
+fi
 
 
 
@@ -527,7 +565,14 @@ if [ "$UNINSTALL" -eq 1 ]; then
   if [ -x "$HIHIVE" ]; then "$HIHIVE" service uninstall 2>/dev/null || true; fi
   "$UV" tool uninstall hi-hive >/dev/null 2>&1 || true
   remove_path_block
-  rm -f -- "$record_file"
+  require_safe_destination_parent "$state_dir"
+  require_safe_regular_file "$record_file" 'install record'
+  rm -f -- "$record_file" || die "could not remove install record: $record_file"
+  if [ "$legacy_present" -eq 1 ]; then
+    require_safe_destination_parent "$legacy_dir"
+    require_safe_regular_file "$legacy_record" 'legacy install record'
+    rm -f -- "$legacy_record" || die "could not remove legacy install record: $legacy_record"
+  fi
   say 'Removed the hi-hive tool and installer-managed service/PATH entry.'
   say "Your data in ${HIVE_HOME:-$HOME/.hihive} was kept."
   exit 0

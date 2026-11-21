@@ -111,7 +111,7 @@ def test_ssh_logout_guidance_is_linux_only_and_first_install_only(tmp_path):
     assert "It may stop when you log out of this server" in fresh.stdout
     assert "docs/setup.md#background-service" in fresh.stdout
 
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "0"
     rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--repair"], env=env,
@@ -272,7 +272,7 @@ chmod +x "$dest/uv-x86_64-unknown-linux-gnu/uv"
     assert "curl" in log.read_text()
     assert not list((tmp_path / "tmp").iterdir())
 
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"], env=env,
@@ -308,7 +308,7 @@ def test_plain_fresh_install_uses_exact_sha_python_314_and_reversible_path_block
     assert "Python       selected 3.14.7" in result.stdout
     assert "default yes" in result.stdout
     assert (bin_dir / "hihive").exists()
-    record = json.loads((home / ".state/hi-hive/install.json").read_text())
+    record = json.loads((home / ".hihive/install.json").read_text())
     assert record["commit"] == SHA
     profile = (home / ".profile").read_text()
     assert profile.count("# >>> hi-hive installer PATH >>>") == 1
@@ -321,7 +321,7 @@ def test_plain_fresh_install_uses_exact_sha_python_314_and_reversible_path_block
 def test_same_sha_rerun_skips_package_install_and_does_not_duplicate_profile(tmp_path):
     result, home, bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     before = log.read_text().count("uv tool install")
 
@@ -337,7 +337,7 @@ def test_same_sha_rerun_skips_package_install_and_does_not_duplicate_profile(tmp
 def test_force_reinstalls_same_sha(tmp_path):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     before = log.read_text().count("uv tool install")
 
@@ -352,12 +352,12 @@ def test_failed_final_install_keeps_record_config_and_existing_command(tmp_path)
     result, home, bin_dir, _log, env = run_installer(tmp_path)
     assert result.returncode == 0
     old_sha = "b" * 40
-    record = home / ".state/hi-hive/install.json"
+    record = home / ".hihive/install.json"
     state = json.loads(record.read_text())
     state["commit"] = old_sha
     record.write_text(json.dumps(state))
     hive = home / ".hihive"
-    hive.mkdir()
+    hive.mkdir(exist_ok=True)
     config = hive / "config.json"
     config.write_text('{"marker":"keep","harnesses":[]}\n')
     before_command = (bin_dir / "hihive").read_bytes()
@@ -383,7 +383,7 @@ def test_fresh_service_failure_records_installed_commit_and_keeps_manual_fallbac
                              capture_output=True, text=True, timeout=30)
 
     assert install.returncode == 1
-    record = json.loads((home / ".state/hi-hive/install.json").read_text())
+    record = json.loads((home / ".hihive/install.json").read_text())
     assert record["commit"] == SHA
     assert "Run it in a terminal instead" in install.stderr
 
@@ -392,12 +392,12 @@ def test_service_health_failure_rolls_package_record_back_and_keeps_data(tmp_pat
     result, home, _bin_dir, _log, env = run_installer(tmp_path)
     assert result.returncode == 0
     old_sha = "b" * 40
-    record = home / ".state/hi-hive/install.json"
+    record = home / ".hihive/install.json"
     state = json.loads(record.read_text())
     state["commit"] = old_sha
     record.write_text(json.dumps(state))
     hive = home / ".hihive"
-    hive.mkdir()
+    hive.mkdir(exist_ok=True)
     (hive / "config.json").write_text('{"harnesses":[]}\n')
     (hive / "token").write_text("SECRET_TOKEN\n")
     unit = home / ".config/systemd/user/com.hihive.service"
@@ -421,7 +421,7 @@ def test_service_health_failure_rolls_package_record_back_and_keeps_data(tmp_pat
 def test_rerun_uses_machine_service_query_to_restart_existing_service_on_requested_port(tmp_path):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     mocks = Path(env["PATH"].split(":", 1)[0])
     executable(mocks / "systemctl", "exit 0\n")
@@ -441,7 +441,7 @@ def test_rerun_uses_machine_service_query_to_restart_existing_service_on_request
 def test_malformed_manager_service_query_fails_without_guessing_run_mode(tmp_path):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     mocks = Path(env["PATH"].split(":", 1)[0])
     executable(mocks / "systemctl", "exit 0\n")
@@ -460,7 +460,7 @@ def test_malformed_manager_service_query_fails_without_guessing_run_mode(tmp_pat
 def test_no_service_wins_on_rerun_even_when_a_service_unit_exists(tmp_path):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     unit = home / ".config/systemd/user/com.hihive.service"
     unit.parent.mkdir(parents=True)
@@ -484,7 +484,7 @@ def test_no_service_wins_on_rerun_even_when_a_service_unit_exists(tmp_path):
 def test_rerun_continues_in_terminal_mode_when_systemd_user_manager_is_unavailable(tmp_path, no_service):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "2"
     log.write_text("")
@@ -503,7 +503,7 @@ def test_rerun_continues_in_terminal_mode_when_systemd_user_manager_is_unavailab
 def test_unavailable_manager_uses_neutral_guidance_for_running_process(tmp_path):
     result, home, _bin_dir, log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     env["HIVE_FAKE_HEALTH_EXIT"] = "0"
     log.write_text("")
@@ -521,7 +521,7 @@ def test_unavailable_manager_uses_neutral_guidance_for_running_process(tmp_path)
 def test_available_manager_and_absent_service_classifies_healthy_server_as_foreground(tmp_path):
     result, home, _bin_dir, _log, env = run_installer(tmp_path)
     assert result.returncode == 0
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
     mocks = Path(env["PATH"].split(":", 1)[0])
     executable(mocks / "systemctl", "exit 0\n")
@@ -549,7 +549,7 @@ def test_partial_profile_marker_is_refused_without_touching_user_text(tmp_path):
     assert result.returncode == 0
     profile = home / ".profile"
     profile.write_text("user text\n# >>> hi-hive installer PATH >>>\nuser edit\n")
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
 
     rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", "--repair"], env=env,
@@ -565,7 +565,7 @@ def test_modified_complete_profile_block_is_refused(tmp_path):
     assert result.returncode == 0
     profile = home / ".profile"
     profile.write_text(profile.read_text().replace("export PATH=", "echo changed; export PATH="))
-    (home / ".hihive").mkdir()
+    (home / ".hihive").mkdir(exist_ok=True)
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
 
     rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", "--repair"], env=env,
@@ -618,6 +618,150 @@ def test_unsafe_user_writable_destinations_are_rejected_without_changes(tmp_path
             assert "curl" not in log.read_text()
 
 
+def test_group_writable_default_state_without_legacy_installs_and_uninstalls(tmp_path):
+    home, _, _, env = installer_environment(tmp_path)
+    env.pop("XDG_STATE_HOME")
+    state = home / ".local/state"
+    state.mkdir(mode=0o775)
+    state.chmod(0o775)
+    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    record = home / ".hihive/install.json"
+    assert json.loads(record.read_text())["commit"] == SHA
+    assert stat.S_IMODE(state.stat().st_mode) == 0o775
+    token = home / ".hihive/token"
+    token.write_text("KEEP")
+    removed = subprocess.run(args + ["--uninstall"], env=env, capture_output=True, text=True, timeout=30)
+    assert removed.returncode == 0, removed.stderr
+    assert not record.exists()
+    assert token.read_text() == "KEEP"
+
+
+def test_unsafe_visible_legacy_directory_refuses_install_and_later_conflict(tmp_path):
+    home, _, _, env = installer_environment(tmp_path)
+    env.pop("XDG_STATE_HOME")
+    state = home / ".local/state"
+    state.mkdir()
+    state.chmod(0o775)
+    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
+    assert subprocess.run(args, env=env, capture_output=True, text=True, timeout=30).returncode == 0
+    (state / "hi-hive").mkdir()
+    conflict = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert conflict.returncode == 1
+    assert str(state) in conflict.stderr
+    assert (home / ".hihive/install.json").exists()
+
+
+@pytest.mark.parametrize("unsafe", ["group-writable", "symlink", "broken-symlink"])
+def test_visible_unsafe_legacy_ancestor_is_rejected_without_writes(tmp_path, unsafe):
+    home, bin_dir, log, env = installer_environment(tmp_path)
+    env.pop("XDG_STATE_HOME")
+    state = home / ".local/state"
+    if unsafe == "broken-symlink":
+        state.mkdir()
+        (state / "hi-hive").symlink_to(home / "missing")
+    elif unsafe == "symlink":
+        target = home / "legacy-target"
+        (target / "hi-hive").mkdir(parents=True)
+        state.symlink_to(target, target_is_directory=True)
+    else:
+        (state / "hi-hive").mkdir(parents=True)
+        state.chmod(0o775)
+    result = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"], env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1
+    assert not (home / ".hihive").exists()
+    assert not (bin_dir / "hihive").exists()
+    assert not log.exists()
+
+
+def test_safe_legacy_record_migrates_and_conflicts_fail_closed(tmp_path):
+    home, _, _, env = installer_environment(tmp_path)
+    legacy = home / ".state/hi-hive"
+    legacy.mkdir(parents=True)
+    record = legacy / "install.json"
+    record.write_text(json.dumps({"commit": "b" * 40}))
+    record.chmod(0o600)
+    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert not record.exists()
+    assert json.loads((home / ".hihive/install.json").read_text())["commit"] == SHA
+    record.write_text(json.dumps({"commit": "b" * 40}))
+    conflict = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert conflict.returncode == 1
+    assert "conflicting install records" in conflict.stderr
+    assert record.exists()
+
+
+def test_interrupted_migration_reports_conflict_until_user_recovers(tmp_path):
+    home, _, _, env = installer_environment(tmp_path)
+    legacy = home / ".state/hi-hive"
+    legacy.mkdir(parents=True)
+    record = legacy / "install.json"
+    record.write_text(json.dumps({"commit": "b" * 40}))
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "rm", f'''case "$*" in *"{record}"*) exit 1;; esac
+exec /bin/rm "$@"
+''')
+    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
+    failed = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert failed.returncode == 1
+    assert "could not remove migrated" in failed.stderr
+    canonical = home / ".hihive/install.json"
+    assert canonical.exists() and record.exists()
+    conflict = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert conflict.returncode == 1
+    assert "conflicting install records" in conflict.stderr
+    canonical.unlink()
+    (mocks / "rm").unlink()
+    recovered = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert recovered.returncode == 0, recovered.stderr
+    assert canonical.exists() and not record.exists()
+
+
+def test_custom_hive_home_holds_record_and_preserves_data_on_uninstall(tmp_path):
+    home, _, _, env = installer_environment(tmp_path)
+    hive = home / "custom-hive"
+    env["HIVE_HOME"] = str(hive)
+    args = ["dash", str(INSTALLER), "--plain", "--no-service"]
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert (hive / "install.json").exists()
+    (hive / "token").write_text("KEEP")
+    removed = subprocess.run(args + ["--uninstall"], env=env, capture_output=True, text=True, timeout=30)
+    assert removed.returncode == 0, removed.stderr
+    assert not (hive / "install.json").exists()
+    assert (hive / "token").read_text() == "KEEP"
+
+
+def test_uninstall_reports_record_deletion_failure(tmp_path):
+    result, home, _, _, env = run_installer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    record = home / ".hihive/install.json"
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "rm", f'''case "$*" in *"{record}"*) exit 1;; esac
+exec /bin/rm "$@"
+''')
+    removed = subprocess.run(["dash", str(INSTALLER), "--plain", "--uninstall"],
+                             env=env, capture_output=True, text=True, timeout=30)
+    assert removed.returncode == 1
+    assert "could not remove install record" in removed.stderr
+    assert record.exists()
+
+
+@pytest.mark.parametrize("variable,value", [("HIVE_HOME", "relative"), ("HIVE_HOME", "/tmp/../bad"),
+                                              ("XDG_STATE_HOME", "relative"), ("XDG_STATE_HOME", "/tmp/../bad")])
+def test_installer_rejects_relative_and_dotdot_paths(tmp_path, variable, value):
+    _, _, _, env = installer_environment(tmp_path)
+    env[variable] = value
+    result = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"], env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1
+    assert "absolute" in result.stderr or "dot components" in result.stderr
+
+
 def test_install_record_symlink_is_rejected_without_changing_target(tmp_path):
     home, bin_dir, _log, env = installer_environment(tmp_path)
     state = home / ".state/hi-hive"
@@ -638,7 +782,7 @@ def test_install_record_symlink_is_rejected_without_changing_target(tmp_path):
 def test_install_record_is_private_and_atomic_temp_is_removed(tmp_path):
     result, home, _bin_dir, _log, _env = run_installer(tmp_path)
     assert result.returncode == 0, result.stderr
-    state = home / ".state/hi-hive"
+    state = home / ".hihive"
     record = state / "install.json"
 
     assert record.stat().st_mode & 0o777 == 0o600

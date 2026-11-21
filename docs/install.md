@@ -77,6 +77,23 @@ Plain reruns report newly found harnesses but never add them.
 The installer validates ports from 1 through 65535.
 It uses private temporary directories and removes them on success, failure, or interruption.
 
+### Install record
+
+The installer keeps `install.json` in `~/.hihive`, or in `HIVE_HOME` if set.
+It uses the record to identify the installed commit and restore that commit if an update fails.
+Uninstall removes the record but keeps your Hive data.
+Use the same `HIVE_HOME` when installing, updating, uninstalling, and checking the version.
+
+Older installers kept the record in `${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive`.
+The installer checks that legacy location and moves a trusted record into the Hive data directory after a successful package installation.
+If both records exist, inspect them and remove the unwanted record before retrying.
+If a legacy directory is visible under an unsafe ancestor, the installer refuses to read or remove it.
+Inspect its ownership, permissions, and access control list, then secure the ancestor if appropriate and retry.
+
+A person who can write to an unsafe legacy ancestor can hide the old directory while the installer checks for it.
+In that case the installer cannot find the old record or use it for rollback.
+Changing `XDG_STATE_HOME` can also hide a legacy record, so use the previous setting when updating an older installation.
+
 ## PATH changes
 
 The installer uses the tool-bin path reported by `uv tool dir --bin`.

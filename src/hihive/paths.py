@@ -4,6 +4,7 @@ import fcntl
 import os
 import secrets
 import shutil
+import stat
 from pathlib import Path
 
 DEFAULT_PORT = 4567
@@ -58,12 +59,57 @@ def logs_dir() -> Path:
 
 
 def installer_state_dir() -> Path:
-    base = Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser()
-    return base / "hi-hive"
+    return hive_home()
+
+
+def _validate_installer_directory(directory: Path) -> None:
+    home = Path.home()
+    if not directory.is_absolute() or not home.is_absolute() or ".." in directory.parts:
+        raise OSError(f"Installer directory must be an absolute path without '..': {directory}")
+    within_home = directory == home or home in directory.parents
+    anchor = home if within_home else Path(directory.anchor)
+    for current in (directory, *directory.parents):
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if not stat.S_ISDIR(info.st_mode):
+                raise OSError(f"Installer directory must be a real directory: {current}")
+            owner_ok = info.st_uid == os.getuid() or (not within_home and current != directory and info.st_uid == 0)
+            sticky_root = not within_home and current != directory and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if not owner_ok or (info.st_mode & 0o022 and not sticky_root):
+                raise OSError(f"Unsafe installer directory: {current}")
+        if current == anchor:
+            break
+    if not within_home:
+        _validate_installer_directory(home)
+
+
+def _validate_installer_record(record: Path) -> bool:
+    try:
+        info = record.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise OSError(f"Unsafe installer record: {record}")
+    return True
 
 
 def installer_record_file() -> Path:
-    return installer_state_dir() / "install.json"
+    directory = installer_state_dir()
+    _validate_installer_directory(directory)
+    record = directory / "install.json"
+    present = _validate_installer_record(record)
+    legacy_dir = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "hi-hive"
+    if legacy_dir != directory and (legacy_dir.exists() or legacy_dir.is_symlink()):
+        _validate_installer_directory(legacy_dir)
+        legacy = legacy_dir / "install.json"
+        if _validate_installer_record(legacy):
+            if present:
+                raise OSError(f"Conflicting installer records: {record} and {legacy}")
+            return legacy
+    return record
 
 
 def ensure_config(path: Path) -> None:

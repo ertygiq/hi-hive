@@ -244,7 +244,9 @@ def test_first_serve_detects_agents_before_start_and_prints_terminal_guidance(tm
 
 
 def test_version_includes_recorded_main_commit(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HIVE_HOME", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     paths.installer_state_dir().mkdir(parents=True)
     paths.installer_record_file().write_text(json.dumps({"commit": "a" * 40}))
 
@@ -253,6 +255,24 @@ def test_version_includes_recorded_main_commit(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "hi-hive 0.2.0" in output
     assert f"main@{'a' * 40}" in output
+
+
+def test_version_omits_untrusted_or_conflicting_records(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HIVE_HOME", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    canonical = tmp_path / ".hihive"
+    canonical.mkdir(mode=0o700)
+    (canonical / "install.json").write_text(json.dumps({"commit": "a" * 40}))
+    legacy = tmp_path / ".local/state/hi-hive"
+    legacy.mkdir(parents=True)
+    (legacy / "install.json").write_text(json.dumps({"commit": "b" * 40}))
+    HiHiveCLI().run(["--version"])
+    assert "main@" not in capsys.readouterr().out
+    (legacy / "install.json").unlink()
+    legacy.parent.chmod(0o775)
+    HiHiveCLI().run(["--version"])
+    assert "main@" not in capsys.readouterr().out
 
 
 def test_show_prints_only_roles_and_content_not_delivery_or_kind(capsys):
