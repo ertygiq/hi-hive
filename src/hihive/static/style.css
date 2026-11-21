@@ -288,6 +288,14 @@ main {
   gap: 6px;
 }
 
+.message-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.message-count svg { flex-shrink: 0; }
+
 .result-summary {
   margin-top: 7px;
   font-size: 12px;

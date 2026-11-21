@@ -66,6 +66,28 @@ test('marking and unmarking Done refresh the board without an error', async () =
   assert.equal(polls, 2);
 });
 
+test('result cards show accessible outline message counts and plain reviewed text', () => {
+  const { context } = client();
+  for (const count of [1, 2]) {
+    context.task = { id: 'task', label: 'Result', status: 'completed', chat_count: count, has_review: true };
+    const html = vm.runInContext('renderResultCard(task, 0, new Map())', context);
+    const label = `${count} ${count === 1 ? 'message' : 'messages'} after the initial prompt`;
+    assert.ok(html.includes(`title="${label}" aria-label="${label}"`));
+    assert.match(html, /<span>reviewed<\/span>/);
+    assert.match(html, /<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true">/);
+    assert.match(html, /<path d="M2 1\.75h8/);
+    assert.ok(html.indexOf('<span>reviewed</span>') < html.indexOf('class="message-count"'));
+    assert.doesNotMatch(html, /💬|📋/);
+  }
+  for (const count of [0, -1, null, '1" onmouseover="attack', 1.5]) {
+    context.count = count;
+    assert.equal(vm.runInContext('messageCountHtml(count)', context), '');
+  }
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.message-count\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*gap:\s*3px;[^}]*font-variant-numeric:\s*tabular-nums;/s);
+  assert.match(css, /\.message-count svg\s*\{\s*flex-shrink:\s*0;/);
+});
+
 test('message timestamps use local date rules and include full title', () => {
   const { context } = client();
   const now = new Date(2026, 6, 10, 12);

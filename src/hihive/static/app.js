@@ -728,6 +728,12 @@ function renderResultGroups(topLevel, childrenByParent) {
   return html;
 }
 
+function messageCountHtml(count) {
+  if (!Number.isSafeInteger(count) || count <= 0) return '';
+  const label = `${count} ${count === 1 ? 'message' : 'messages'} after the initial prompt`;
+  return `<span class="message-count" title="${label}" aria-label="${label}"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M2 1.75h8c.69 0 1.25.56 1.25 1.25v4.5c0 .69-.56 1.25-1.25 1.25H5.75L3.25 10.75V8.75H2c-.69 0-1.25-.56-1.25-1.25V3c0-.69.56-1.25 1.25-1.25z"/></svg>${count}</span>`;
+}
+
 function renderResultCard(t, depth, childrenByParent) {
   const icon = t.status === 'completed' ? '✓' : t.status === 'failed' ? '✗' : '⊘';
   const statusClass = `status-${t.status}`;
@@ -765,8 +771,8 @@ function renderResultCard(t, depth, childrenByParent) {
         ${harnessBadgeHtml(t.harness)}
         ${duration ? `<span>${duration}</span>` : ''}
         ${costHtml(t)}
-        ${t.has_review ? '<span>📋 reviewed</span>' : ''}
-        ${t.chat_count > 0 ? `<span>💬 ${t.chat_count}</span>` : ''}
+        ${t.has_review ? '<span>reviewed</span>' : ''}
+        ${messageCountHtml(t.chat_count)}
         ${chatWaitingHtml(t)}
         ${activityHtml}
         ${unreadReplyHtml(t)}
