@@ -634,7 +634,6 @@ function renderWorkers() {
           <span class="status-badge ${statusClass}">${statusText}</span>
           ${harnessBadgeHtml(t.harness)}
           ${costHtml(t)}
-          <span>${formatBytes(t.output_length || 0)} output</span>
           ${chatWaitingHtml(t)}
           ${backgroundActivityHtml(t)}
         </div>
@@ -2596,11 +2595,6 @@ function formatDuration(start, end) {
   return `${h}h ${m % 60}m`;
 }
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
 
 function updateWorkerElapsedTimes() {
   document.querySelectorAll('.worker-card[data-started-at]').forEach(card => {

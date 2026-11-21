@@ -66,6 +66,15 @@ test('marking and unmarking Done refresh the board without an error', async () =
   assert.equal(polls, 2);
 });
 
+test('active task cards do not show output byte counts', () => {
+  const { context, document } = client();
+  context.snapshot = { workers: [{ id: 'task', label: 'Task', status: 'running', output_length: 2048, output_tail: 'Hello' }], running_total: 1 };
+  vm.runInContext('state = snapshot; renderWorkers()', context);
+  const html = document.getElementById('workers-list').innerHTML;
+  assert.match(html, /Hello/);
+  assert.doesNotMatch(html, /2\.0KB|2048B| output<\/span>/);
+});
+
 const unreadKey = 'hive-unread-follow-up-replies';
 const replyTime = n => `2026-09-26T12:00:0${n}.000000Z`;
 function unreadSnapshot(c, replyAt, extra = {}) {
