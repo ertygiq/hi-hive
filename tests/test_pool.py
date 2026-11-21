@@ -372,6 +372,85 @@ def test_cancel_stops_initial_and_follow_up_runs_with_all_steering_inputs(p):
         assert not p.pool.cancel_chat(p.task)
 
 
+def test_stop_reply_rejects_stale_tokens_and_resumes_after_reaping(p):
+    original = p.completed_card()
+    receipt = p.pool.send_chat(p.task, "REVIEW_GATE")
+    p.wait(lambda: os.path.exists(p.path("review-started")))
+    detail = p.detail()
+    assert detail["activity_kind"] == "reply"
+    assert not p.pool.stop_conversation_work(p.task, "stale", "reply", receipt["id"])
+    assert not p.pool.stop_conversation_work(p.task, detail["stop_token"], "reply", "wrong")
+    assert p.pool.stop_conversation_work(p.task, detail["stop_token"], "reply", receipt["id"])
+    assert p.detail()["status"] == original["status"]
+    assert all(not answer.get("stopped") for answer in p.answers())
+    assert not p.pool.stop_conversation_work(p.task, detail["stop_token"], "reply", receipt["id"])
+    p.wait(lambda: p.detail()["runner_state"] == "exited")
+    assert not p.find(receipt["id"]).get("error")
+    assert isinstance(p.pool.send_chat(p.task, "AFTER_STOP"), dict)
+    assert not p.pool.stop_conversation_work(p.task, detail["stop_token"], "reply", receipt["id"])
+    p.settle()
+
+
+def test_stop_only_suppresses_expected_stop_reason(p):
+    task = p.internal()
+    receipt = p.pool.send_chat(p.task, "MORE")
+    task["stop_reply_requested"] = True
+    p.pool._apply_runner_event(task, task["runner"], "delivery", {
+        "id": receipt["id"], "error": "Transport lost", "status": "unknown", "settled": True})
+    assert p.find(receipt["id"])["error"] == "Transport lost"
+
+
+def test_stop_rejects_final_delivery_even_before_pool_drains_event(p):
+    p.completed_card()
+    receipt = p.pool.send_chat(p.task, "REVIEW_GATE")
+    p.wait(lambda: os.path.exists(p.path("review-started")))
+    runner = p.internal()["runner"]
+    token = p.detail()["stop_token"]
+    with runner._lock:
+        runner._messages[receipt["id"]]["settled"] = True
+    assert not p.pool.stop_conversation_work(p.task, token, "reply", receipt["id"])
+    assert runner.state != "closing"
+
+
+def test_stop_blocks_send_until_runner_is_reaped(p):
+    p.completed_card()
+    receipt = p.pool.send_chat(p.task, "REVIEW_GATE")
+    p.wait(lambda: os.path.exists(p.path("review-started")))
+    runner = p.internal()["runner"]
+    token = p.detail()["stop_token"]
+    # Simulate a stuck cleanup: the runner remains closing until the test releases it.
+    with runner._lock:
+        runner._state = "closing"
+    assert p.pool.send_chat(p.task, "DURING_CLEANUP") == "runner_closing"
+    assert not p.pool.stop_conversation_work(p.task, token, "reply", receipt["id"])
+
+
+def test_background_stop_is_guarded_and_preserves_finished_status(p):
+    p.pool.stop()
+    p.write_config("claude-code", scenario="background-activity")
+    p.persist = p.path("background-stop-state.json")
+    p.pool = PoolManager(config_file=p.config, persist_file=p.persist)
+    p.pool.start()
+    p.task = p.pool.add_task("BASE")
+    p.settle()
+    p.wait(lambda: p.detail()["background_activity"]["task_count"] == 2)
+    original = p.detail()
+    runner = p.internal()["runner"]
+    assert original["activity_kind"] == "original"
+    assert not p.pool.stop_conversation_work(p.task, "stale", "background")
+    with runner._lock:
+        runner.touch_activity()  # An observed change makes the old snapshot stale.
+    assert not p.pool.stop_conversation_work(p.task, original["stop_token"], "background")
+    fresh = p.detail()["stop_token"]
+    assert p.pool.stop_conversation_work(p.task, fresh, "background")
+    assert not p.pool.stop_conversation_work(p.task, fresh, "background")
+    p.wait(lambda: runner.state == "exited")
+    assert p.detail()["status"] == original["status"]
+    assert isinstance(p.pool.send_chat(p.task, "AFTER_STOP"), dict)
+    assert not p.pool.stop_conversation_work(p.task, original["stop_token"], "background")
+    p.settle()
+
+
 def test_background_badges_update_board_version_without_changing_result_placement(p):
     p.pool.stop()
     p.write_config("claude-code", scenario="background-activity")

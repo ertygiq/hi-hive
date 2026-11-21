@@ -817,6 +817,13 @@ main {
   font-size: 12px;
   flex-shrink: 0;
 }
+.stop-icon { display: inline-block; width: 8px; height: 8px; border-radius: 1px; background: currentColor; }
+button.icon-btn.chat-stop-btn { font-size: 12px; padding: 3px 6px; line-height: 1; display: inline-flex; align-items: center; }
+button.icon-btn.chat-stop-btn:disabled { opacity: 0.5; cursor: default; }
+#chat-send-btn:disabled { opacity: 0.5; cursor: default; }
+.chat-typing .chat-stop-btn { margin-left: 2px; }
+#detail-background-stop-btn { margin-left: -4px; }
+#detail-background-activity { font-size: 12px; }
 .typing-dots {
   display: inline-flex;
   gap: 3px;

@@ -9,7 +9,7 @@ function client(storage = new Map()) {
   const listeners = new Map();
   const element = () => ({ style: {}, value: '', textContent: '', innerHTML: '', scrollHeight: 34,
     offsetHeight: 36, clientHeight: 34,
-    classList: { add() {}, remove() {}, toggle() {} }, querySelectorAll() { return []; } });
+    classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, focus() {}, querySelectorAll() { return []; } });
   const document = {
     visibilityState: 'visible',
     documentElement: { clientHeight: 800 },
@@ -64,6 +64,49 @@ test('marking and unmarking Done refresh the board without an error', async () =
     await vm.runInContext("toggleDone('task')", context);
   }
   assert.equal(polls, 2);
+});
+
+test('reply Stop sends the visible input and state, preserving drafts and handling stale and failed requests', async () => {
+  for (const response of [200, 409, 500]) {
+    const { context, document } = client();
+    context.task = { id: 'task', status: 'running', activity_kind: 'reply', runner_state: 'active', stop_token: 'token',
+      messages: [{ id: 'input-id', role: 'user', kind: 'follow_up', content: 'hello', settled: false }] };
+    vm.runInContext('renderDetail(task)', context);
+    assert.equal(document.getElementById('chat-stop-btn').style.display, 'inline-flex');
+    document.getElementById('chat-input').value = 'draft';
+    const dialogs = []; context.showMessage = (...args) => dialogs.push(args);
+    let request;
+    context.fetch = async (url, options) => {
+      if (!options) return { ok: true, json: async () => ({ ...context.task, runner_state: 'idle', messages: [] }) };
+      request = { url, body: JSON.parse(options.body) };
+      return { ok: response === 200, status: response, json: async () => ({ error: 'problem' }) };
+    };
+    await vm.runInContext("stopWork('reply')", context);
+    assert.equal(request.url, '/api/tasks/task/stop-work');
+    assert.equal(request.body.msg_id, 'input-id');
+    assert.equal(request.body.token, 'token');
+    assert.equal(document.getElementById('chat-input').value, 'draft');
+    assert.equal(dialogs.length, response === 500 ? 1 : 0);
+    assert.equal(document.getElementById('chat-send-btn').disabled, response === 200);
+  }
+});
+
+test('Send has visible disabled styling during stop', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /#chat-send-btn:disabled\s*\{[^}]*opacity:\s*0\.5;[^}]*cursor:\s*default;/);
+});
+
+test('original work has no stop or typing line, idle background has only background stop', () => {
+  const { context, document } = client();
+  context.task = { id: 'task', status: 'running', activity_kind: 'original', runner_state: 'active', chat_pending: true,
+    background_activity: { task_count: 2 }, messages: [{ id: 'id', role: 'user', settled: false }] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(document.getElementById('chat-stop-btn').style.display, 'none');
+  assert.equal(document.getElementById('chat-typing').style.display, 'none');
+  assert.equal(document.getElementById('detail-background-stop-btn').style.display, 'none');
+  context.task = { ...context.task, activity_kind: 'reply', runner_state: 'idle', status: 'completed', messages: [] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(document.getElementById('detail-background-stop-btn').style.display, 'inline-flex');
 });
 
 test('active task cards do not show output byte counts', () => {
@@ -416,16 +459,16 @@ test('typing line shows outside the chat only while a reply is on its way', () =
   const body = document.getElementById('detail-body');
   const messages = [{ role: 'user', kind: 'follow_up', content: 'FOLLOW_UP', delivery: 'accepted' }];
   for (const [fields, display] of [
-    [{ chat_pending: true }, 'flex'],
-    [{ background_activity: { task_count: 0, preparing_reply: true } }, 'flex'],
-    [{ background_activity: { task_count: 1, preparing_reply: false } }, 'none'],
-    [{ chat_pending: false }, 'none']
+    [{ activity_kind: 'original', runner_state: 'active', chat_pending: true }, 'none'],
+    [{ activity_kind: 'reply', runner_state: 'active', chat_pending: true }, 'flex'],
+    [{ activity_kind: 'review', chat_pending: true }, 'flex'],
+    [{ activity_kind: 'reply', runner_state: 'idle', background_activity: { task_count: 1 } }, 'none']
   ]) {
     context.task = { id: 'task', status: 'completed', label: 'Task', messages, ...fields };
     vm.runInContext("currentDetailTab = 'output'; renderDetail(task)", context);
     assert.equal(typing.style.display, display);
   }
-  context.task = { id: 'task', status: 'completed', label: 'Task', messages, chat_pending: true };
+  context.task = { id: 'task', status: 'completed', label: 'Task', messages, activity_kind: 'reply', runner_state: 'active', chat_pending: true };
   vm.runInContext("currentDetailTab = 'prompt'; renderDetail(task)", context);
   assert.equal(typing.style.display, 'none');
 

@@ -956,8 +956,32 @@ function renderDetail(task) {
   activityEl.innerHTML = activityHtml;
   activityEl.style.display = activityHtml ? 'inline-flex' : 'none';
 
+  const replyActive = task.activity_kind === 'reply' && ['starting', 'active'].includes(task.runner_state);
+  const outstanding = (task.messages || []).find(m => m.role === 'user' && m.settled === false);
+  const showReplyStop = replyActive && Boolean(outstanding);
   const cancelBtn = document.getElementById('detail-cancel-btn');
-  cancelBtn.style.display = ['queued', 'running', 'reviewing'].includes(task.status) ? 'inline-block' : 'none';
+  cancelBtn.style.display = !showReplyStop && ['queued', 'running', 'reviewing'].includes(task.status) ? 'inline-block' : 'none';
+  if (!['starting', 'active', 'idle', 'closing'].includes(task.runner_state)) stoppingWork.delete(task.id);
+  const stopping = stoppingWork.get(task.id) || null;
+  const closing = task.runner_state === 'closing';
+  const backgroundStop = task.runner_state === 'idle' && (task.background_activity?.task_count || 0) > 0;
+  const replyBtn = document.getElementById('chat-stop-btn');
+  const backgroundBtn = document.getElementById('detail-background-stop-btn');
+  const hideWithFocus = (button, visible) => {
+    if (!visible && document.activeElement === button) document.getElementById('chat-input').focus();
+    button.style.display = visible ? 'inline-flex' : 'none';
+    button.disabled = Boolean(stopping);
+  };
+  hideWithFocus(replyBtn, showReplyStop || stopping === 'reply');
+  hideWithFocus(backgroundBtn, backgroundStop || stopping === 'background');
+  const count = task.background_activity?.task_count || 0;
+  const replyTitle = count ? `Stop reply and ${count} background task${count === 1 ? '' : 's'}` : 'Stop reply';
+  replyBtn.title = replyTitle;
+  replyBtn.setAttribute('aria-label', replyTitle);
+  document.getElementById('chat-typing-label').textContent = stopping === 'reply' ? 'Stopping…' : 'Agent is replying';
+  const sendBtn = document.getElementById('chat-send-btn');
+  sendBtn.disabled = Boolean(stopping || closing);
+  sendBtn.title = stopping || closing ? `Wait until ${stopping === 'background' ? 'background work' : 'the reply'} stops` : '';
 
   const continueBtn = document.getElementById('detail-continue-btn');
   continueBtn.style.display = ['failed', 'cancelled'].includes(task.status) ? 'inline-block' : 'none';
@@ -988,8 +1012,9 @@ function renderDetail(task) {
     tab.setAttribute('aria-selected', String(active));
   });
 
-  showChatTyping(currentDetailTab === 'output'
-    && Boolean(task.chat_pending || task.background_activity?.preparing_reply));
+  showChatTyping(currentDetailTab === 'output' && (stopping === 'reply' ||
+    (task.activity_kind === 'reply' && replyActive) ||
+    (task.activity_kind === 'review' && Boolean(task.chat_pending || task.background_activity?.preparing_reply))));
 
   switch (currentDetailTab) {
     case 'output': {
@@ -1019,13 +1044,10 @@ function renderDetail(task) {
           const isCancelled = m.delivery === 'cancelled';
           const isMarkdown = m.role === 'assistant' && typeof marked !== 'undefined';
           const content = isMarkdown ? renderMarkdownSafely(m.content) : esc(m.content);
-          const cancelBtn = (isPending && m.id)
-            ? `<button class="icon-btn small chat-cancel-btn" onclick="cancelChatMessage('${task.id}','${m.id}')" title="Cancel this follow-up">✕</button>`
-            : '';
           const statusSuffix = isPending ? ' (sending...)' : (isCancelled ? ' (cancelled)' : '');
           return `
             <div class="chat-message ${m.role}${isCancelled ? ' cancelled' : ''}">
-              <div class="chat-role">${chatRoleLabel(m)}${cancelBtn}</div>
+              <div class="chat-role">${chatRoleLabel(m)}</div>
               <div class="chat-content${isMarkdown ? ' rendered-output' : ''}${isPending ? ' pending' : ''}">${content}${statusSuffix}</div>
               ${m.error ? `<div class="error-block" role="alert">${esc(m.error)}</div>` : ''}
             </div>
@@ -1322,9 +1344,37 @@ async function toggleDone(id) {
   poll();
 }
 
-async function cancelChatMessage(taskId, msgId) {
-  const error = await postJson(`/api/tasks/${taskId}/chat/cancel`, { msg_id: msgId || null });
-  if (error) showMessage(error, 'Follow-up not cancelled');
+const stoppingWork = new Map();
+
+async function stopWork(kind) {
+  const task = displayedConversation;
+  const message = (task?.messages || []).find(m => m.role === 'user' && m.settled === false);
+  if (!task || !task.stop_token || stoppingWork.has(task.id) || (kind === 'reply' && !message)) return;
+  stoppingWork.set(task.id, kind);
+  renderDetail(task);
+  try {
+    const res = await fetch(`/api/tasks/${task.id}/stop-work`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, token: task.stop_token, msg_id: message?.id || null })
+    });
+    if (!res.ok) {
+      stoppingWork.delete(task.id);
+      if (res.status === 409) {
+        const latest = await fetch(`/api/tasks/${task.id}`);
+        if (!latest.ok) throw new Error('Could not refresh the current activity.');
+        const current = await latest.json();
+        if (selectedTaskId === task.id) renderDetail(current);
+      } else {
+        const error = await res.json().catch(() => ({}));
+        showMessage(error.error || 'The stop request failed.', kind === 'reply' ? 'Could not stop the reply' : 'Could not stop background work');
+        if (selectedTaskId === task.id) renderDetail(task);
+      }
+    }
+  } catch (error) {
+    stoppingWork.delete(task.id);
+    showMessage('Could not refresh or contact Hive. Check the task before trying again.', kind === 'reply' ? 'Could not stop the reply' : 'Could not stop background work');
+    if (selectedTaskId === task.id) renderDetail(task);
+  }
   poll();
 }
 
@@ -1348,7 +1398,7 @@ function resizeChatInput(input = document.getElementById('chat-input')) {
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const message = input.value.trim();
-  if (!message || !selectedTaskId) return;
+  if (!message || !selectedTaskId || stoppingWork.has(selectedTaskId) || displayedConversation?.runner_state === 'closing') return;
 
   const taskId = selectedTaskId;
   const request = uncertainChatRequest?.taskId === taskId && uncertainChatRequest.message === message

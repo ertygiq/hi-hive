@@ -56,6 +56,7 @@ class LiveRunner:
         self.receipt_timeout = receipt_timeout
         self.pid = None
         self.activity_version = 0
+        self._stop_id = str(uuid.uuid4())
         self._receipt_deadlines = {}
         self._lock = threading.Lock()
         self._events = queue.SimpleQueue()
@@ -121,6 +122,30 @@ class LiveRunner:
             if self._state in ("closing", "exited"):
                 return dict(IDLE_BACKGROUND)
             return self.protocol.background_activity()
+
+    def stop_snapshot(self):
+        with self._lock:
+            return {"state": self._state,
+                    "background_activity": self.protocol.background_activity() if self._state not in ("closing", "exited") else dict(IDLE_BACKGROUND),
+                    "stop_token": f"{self._stop_id}:{self.activity_version}"}
+
+    def stop_if_current(self, token, kind, message_id=None):
+        with self._lock:
+            if token != f"{self._stop_id}:{self.activity_version}":
+                return False
+            if kind == "reply":
+                message = self._messages.get(message_id)
+                if self._state not in ("starting", "active") or not message or message.get("settled") is not False:
+                    return False
+            elif kind == "background":
+                if self._state != "idle" or not self.protocol.background_activity().get("task_count"):
+                    return False
+            else:
+                return False
+            self._close_reason = "Conversation run stopped"
+            self._diagnose("close_requested", error=self._safe_error(self._close_reason))
+            self._state = "closing"
+            return True
 
     def drain(self):
         events = []

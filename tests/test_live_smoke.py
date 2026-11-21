@@ -42,6 +42,47 @@ def harness_setup(kind, directory, env):
 
 @live
 @pytest.mark.parametrize("kind", ["pi", "claude-code"])
+def test_live_stop_and_resume(kind):
+    directory = scratch_dir(f"{kind}-stop-")
+    runner = resumed = None
+    try:
+        env = {key: None for key in ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL",
+                                     "PI_REASONING_LEVEL", "CLAUDECODE")}
+        env["TMPDIR"] = os.path.join(directory, "tmp")
+        env["XDG_CACHE_HOME"] = os.path.join(directory, "cache")
+        os.makedirs(env["TMPDIR"])
+        os.makedirs(env["XDG_CACHE_HOME"])
+        command, args = harness_setup(kind, directory, env)
+        session = str(uuid.uuid4())
+        gate = f"python3 {shlex.quote(GATE)} {shlex.quote(directory)}"
+        runner = LiveRunner(protocol=protocol_for(kind), command=command, args=args, session_id=session,
+                            chdir=directory, env=env, idle_timeout=5)
+        runner.submit(f"Remember marker HIVE_STOP_RECALL. Run this exact command in the foreground and wait: {gate}\n"
+                      "Use a tool timeout of at least 60 seconds. No other tools.")
+        runner.start()
+        waiter = EventWaiter(runner, 120, f"{kind} stop")
+        waiter.wait(lambda: os.path.exists(os.path.join(directory, "started")))
+        runner.close("Conversation run cancelled")
+        assert runner.join(), "Stopped harness did not exit"
+        assert runner.state == "exited"
+        resumed = LiveRunner(protocol=protocol_for(kind), command=command, args=args, session_id=session,
+                             chdir=directory, env=env, idle_timeout=5, resume=True)
+        resumed.submit("Without running tools, reply with the marker I asked you to remember.")
+        resumed.start()
+        resumed_waiter = EventWaiter(resumed, 120, f"{kind} resume")
+        resumed_waiter.wait(lambda: resumed.state == "idle")
+        assert any("HIVE_STOP_RECALL" in answer["content"] for answer in resumed_waiter.of("output"))
+        print(f"Live {kind}: stopped process and resumed session with recall")
+    finally:
+        for process in (runner, resumed):
+            if process:
+                process.close("Smoke complete")
+                process.join()
+        remove(directory)
+
+
+@live
+@pytest.mark.parametrize("kind", ["pi", "claude-code"])
 def test_live_steering_and_recall(kind):
     directory = scratch_dir(f"{kind}-")
     runner = None

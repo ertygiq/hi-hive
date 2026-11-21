@@ -354,6 +354,11 @@ def create_app(pool, token, manage_pool=True):
             return error(409, "No active conversation run to stop")
         return JSONResponse({"ok": True})
 
+    def stop_work(request, body):
+        if not pool.stop_conversation_work(task_id_for(request), body.get("token"), body.get("kind"), body.get("msg_id")):
+            return error(409, "The work has changed or already finished")
+        return JSONResponse({"ok": True})
+
     def reorder(request, body):
         pool.reorder_queue(body.get("order"), project_for(request, body.get("project_id")))
         return JSONResponse({"ok": True})
@@ -438,6 +443,7 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/tasks/{id}/label", run(label_task, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/chat", run(chat, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/chat/cancel", run(chat_cancel, agents=True), methods=["POST"]),
+        Route("/api/tasks/{id}/stop-work", run(stop_work, agents=True), methods=["POST"]),
         Route("/api/queue/reorder", run(reorder), methods=["POST"]),
         Route("/api/control/pause", run(pause), methods=["POST"]),
         Route("/api/control/resume", run(resume), methods=["POST"]),
