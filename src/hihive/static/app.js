@@ -68,14 +68,18 @@ function chatWaitingHtml(t) {
 // Messenger-style status line above the chat input. It sits outside the chat
 // scroll area, so it never covers messages. A reader at the end of the chat stays
 // there when the line appears and makes the chat area shorter.
+function detailAtBottom(body) {
+  return body.scrollHeight - body.scrollTop - body.clientHeight <= 32;
+}
+
 function showChatTyping(visible) {
   const typing = document.getElementById('chat-typing');
   const display = visible ? 'flex' : 'none';
   if (typing.style.display === display) return;
   const body = document.getElementById('detail-body');
-  const atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 2;
+  const atEnd = detailPinned;
   typing.style.display = display;
-  if (atEnd) body.scrollTop = body.scrollHeight;
+  if (atEnd) scrollDetailToBottom();
 }
 
 // Background work is separate from an unanswered user input and from an idle
@@ -822,10 +826,65 @@ function applyDetailWidth() {
 // between tasks but not a page reload. Saved when the panel shows other content.
 const detailScrollPositions = new Map();
 let detailRenderedKey = null;
+let detailPinned = true;
+let detailHasNewContent = false;
+let detailExpectedScroll = null;
+let detailResizeObserver = null;
+
+function updateJumpToLatest() {
+  const button = document.getElementById('chat-jump-latest');
+  button.style.display = detailRenderedKey?.endsWith(':output') && !detailPinned && detailHasNewContent ? '' : 'none';
+}
+
+function setDetailScroll(top) {
+  const body = document.getElementById('detail-body');
+  body.scrollTop = top;
+  detailExpectedScroll = body.scrollTop;
+}
+
+function scrollDetailToBottom() {
+  setDetailScroll(document.getElementById('detail-body').scrollHeight);
+}
+
+function onDetailScroll() {
+  const body = document.getElementById('detail-body');
+  if (detailExpectedScroll !== null && Math.abs(body.scrollTop - detailExpectedScroll) < 1) {
+    detailExpectedScroll = null;
+    return;
+  }
+  detailExpectedScroll = null;
+  if (!detailRenderedKey?.endsWith(':output')) return;
+  detailPinned = detailAtBottom(body);
+  if (detailPinned) detailHasNewContent = false;
+  updateJumpToLatest();
+}
+
+function jumpToLatest() {
+  detailPinned = true;
+  detailHasNewContent = false;
+  scrollDetailToBottom();
+  updateJumpToLatest();
+}
+
+function onDetailResize() {
+  if (detailRenderedKey?.endsWith(':output') && detailPinned) scrollDetailToBottom();
+}
+
+function observeDetailSize() {
+  if (!detailResizeObserver) return;
+  const body = document.getElementById('detail-body');
+  detailResizeObserver.disconnect();
+  detailResizeObserver.observe(body);
+  if (body.firstElementChild) detailResizeObserver.observe(body.firstElementChild);
+}
 
 function rememberDetailScroll() {
   if (detailRenderedKey) {
-    detailScrollPositions.set(detailRenderedKey, document.getElementById('detail-body').scrollTop);
+    const body = document.getElementById('detail-body');
+    detailScrollPositions.set(detailRenderedKey, {
+      top: body.scrollTop, atBottom: detailPinned, hasNewContent: detailHasNewContent,
+      html: body.innerHTML,
+    });
   }
 }
 
@@ -912,6 +971,14 @@ function renderDetail(task) {
   doneBtn.textContent = task.done ? 'Mark not done' : 'Mark done';
   document.getElementById('detail-done-tag').style.display = task.done ? 'inline' : 'none';
 
+  const body = document.getElementById('detail-body');
+  const renderedKey = `${task.id}:${currentDetailTab}`;
+  const switched = renderedKey !== detailRenderedKey;
+  if (switched) rememberDetailScroll();
+  const previousTop = body.scrollTop;
+  const followBottom = !switched && currentDetailTab === 'output' && detailPinned;
+  const oldHtml = switched ? null : body.innerHTML;
+
   const canChat = ['running', 'reviewing', 'completed', 'failed'].includes(task.status);
   document.getElementById('chat-area').style.display =
     (currentDetailTab === 'output' && canChat) ? 'flex' : 'none';
@@ -922,10 +989,6 @@ function renderDetail(task) {
     tab.setAttribute('aria-selected', String(active));
   });
 
-  const body = document.getElementById('detail-body');
-  const renderedKey = `${task.id}:${currentDetailTab}`;
-  const switched = renderedKey !== detailRenderedKey;
-  if (switched) rememberDetailScroll();
   showChatTyping(currentDetailTab === 'output'
     && Boolean(task.chat_pending || task.background_activity?.preparing_reply));
 
@@ -971,7 +1034,9 @@ function renderDetail(task) {
         }).join('');
       }
 
-      body.innerHTML = html;
+      const wrappedHtml = `<div class="chat-history">${html}</div>`;
+      if (!switched && !detailPinned && oldHtml !== wrappedHtml) detailHasNewContent = true;
+      body.innerHTML = wrappedHtml;
       displayedConversation = task;
       markDisplayedRepliesRead(task);
       break;
@@ -984,9 +1049,18 @@ function renderDetail(task) {
   }
 
   if (switched) {
-    body.scrollTop = detailScrollPositions.get(renderedKey) || 0;
+    const saved = detailScrollPositions.get(renderedKey);
+    detailPinned = currentDetailTab === 'output' && (saved ? saved.atBottom : true);
+    detailHasNewContent = saved?.hasNewContent || Boolean(saved && currentDetailTab === 'output'
+      && !detailPinned && saved.html !== body.innerHTML);
+    setDetailScroll(saved ? (detailPinned ? body.scrollHeight : saved.top)
+      : (detailPinned ? body.scrollHeight : 0));
     detailRenderedKey = renderedKey;
+  } else {
+    setDetailScroll(followBottom ? body.scrollHeight : previousTop);
   }
+  observeDetailSize();
+  updateJumpToLatest();
 }
 
 function switchDetailTab(tab) {
@@ -1259,6 +1333,9 @@ let uncertainChatRequest = null;
 
 function resizeChatInput(input = document.getElementById('chat-input')) {
   if (!input) return;
+  const body = document.getElementById('detail-body');
+  const previousTop = body.scrollTop;
+  const atBottom = detailPinned;
   const borderHeight = Math.max(0, (input.offsetHeight || 0) - (input.clientHeight || 0));
   input.style.height = '0px';
   const naturalHeight = input.scrollHeight + borderHeight;
@@ -1266,6 +1343,7 @@ function resizeChatInput(input = document.getElementById('chat-input')) {
   const maxHeight = Math.min(240, viewportHeight * 0.35);
   input.style.height = `${Math.min(naturalHeight, maxHeight)}px`;
   input.style.overflowY = naturalHeight > maxHeight ? 'auto' : 'hidden';
+  setDetailScroll(atBottom ? body.scrollHeight : previousTop);
 }
 
 async function sendChat() {
@@ -1278,6 +1356,7 @@ async function sendChat() {
     ? uncertainChatRequest : { taskId, message, message_id: crypto.randomUUID() };
   input.value = '';
   resizeChatInput(input);
+  jumpToLatest();
   let res;
   try {
     res = await fetch(`/api/tasks/${taskId}/chat`, {
@@ -2540,7 +2619,13 @@ setInterval(() => {
 
 // --- Init ---
 initResize();
-document.getElementById('detail-body').addEventListener('click', event => {
+const detailBody = document.getElementById('detail-body');
+detailBody.addEventListener('scroll', onDetailScroll);
+if (typeof ResizeObserver !== 'undefined') {
+  detailResizeObserver = new ResizeObserver(onDetailResize);
+  observeDetailSize();
+}
+detailBody.addEventListener('click', event => {
   const button = event.target.closest('button.output-action');
   if (button) runOutputAction(button);
 });

@@ -128,7 +128,10 @@
       <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
     </div>
   </div>
-  <div class="detail-body" id="detail-body"></div>
+  <div class="detail-scroll-region">
+    <div class="detail-body" id="detail-body"></div>
+    <button class="chat-jump-latest" id="chat-jump-latest" type="button" onclick="jumpToLatest()" style="display:none">↓ Jump to latest</button>
+  </div>
   <div class="chat-typing" id="chat-typing" role="status" style="display:none">
     <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
     Agent is replying

@@ -509,6 +509,18 @@ main {
 }
 .menu button:hover { background: var(--border); }
 
+.detail-scroll-region {
+  display: flex;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.chat-jump-latest {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 1;
+}
 .detail-body {
   flex: 1;
   overflow-y: auto;

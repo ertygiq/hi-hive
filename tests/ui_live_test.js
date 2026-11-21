@@ -424,7 +424,8 @@ test('typing line shows outside the chat only while a reply is on its way', () =
   for (const [scrollTop, expected] of [[500, 900], [100, 100]]) {
     Object.assign(body, { scrollHeight: 900, clientHeight: 400, scrollTop });
     typing.style.display = 'none';
-    vm.runInContext('showChatTyping(true)', context);
+    context.pinned = scrollTop === 500;
+    vm.runInContext('detailPinned = pinned; showChatTyping(true)', context);
     assert.equal(body.scrollTop, expected);
   }
 });
@@ -529,23 +530,82 @@ test('project deletion requires the exact case-sensitive project name', () => {
 test('detail scroll position is kept per task and tab while switching', () => {
   const { context, document } = client();
   const body = document.getElementById('detail-body');
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 0 });
   const show = (id, tab) => {
     context.shownTask = { id, status: 'completed', messages: [] };
     vm.runInContext(`currentDetailTab = '${tab}'; renderDetail(shownTask)`, context);
   };
   show('a', 'output');
   body.scrollTop = 300;
+  vm.runInContext('onDetailScroll()', context);
   show('a', 'output');
   assert.equal(body.scrollTop, 300, 'a refresh of the same task keeps the position');
   show('b', 'output');
-  assert.equal(body.scrollTop, 0, 'a task opened for the first time starts at the top');
+  assert.equal(body.scrollTop, 1000, 'a task opened for the first time follows the bottom');
   body.scrollTop = 120;
+  vm.runInContext('onDetailScroll()', context);
   show('a', 'prompt');
   assert.equal(body.scrollTop, 0, 'each tab has its own position');
   show('a', 'output');
   assert.equal(body.scrollTop, 300);
   show('b', 'output');
   assert.equal(body.scrollTop, 120);
+});
+
+test('chat follows new output only when already at the bottom', () => {
+  const { context, document } = client();
+  const body = document.getElementById('detail-body');
+  let html = '';
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 0 });
+  Object.defineProperty(body, 'innerHTML', {
+    get() { return html; },
+    set(value) { html = value; body.scrollHeight += 200; body.scrollTop = 0; }
+  });
+  context.task = { id: 'task', status: 'completed', messages: [] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(body.scrollTop, 1200, 'first open goes to the bottom');
+  body.scrollTop = 800; // browser-clamped bottom
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(body.scrollTop, 1400, 'new output follows the bottom');
+  body.scrollTop = 200;
+  vm.runInContext('onDetailScroll()', context);
+  context.task.messages = [{ role: 'assistant', content: 'new reply' }];
+  vm.runInContext('renderDetail(task)', context);
+  assert.equal(body.scrollTop, 200, 'reading older output keeps its position');
+  assert.equal(document.getElementById('chat-jump-latest').style.display, '');
+  vm.runInContext('jumpToLatest()', context);
+  assert.equal(body.scrollTop, 1600);
+  assert.equal(document.getElementById('chat-jump-latest').style.display, 'none');
+});
+
+test('delayed content growth follows only while pinned', () => {
+  const { context, document } = client();
+  const body = document.getElementById('detail-body');
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 });
+  vm.runInContext("detailRenderedKey = 'task:output'; detailPinned = true", context);
+  body.scrollHeight = 1200;
+  vm.runInContext('onDetailResize()', context);
+  assert.equal(body.scrollTop, 1200);
+  body.scrollTop = 100;
+  vm.runInContext('onDetailScroll()', context);
+  body.scrollHeight = 1400;
+  vm.runInContext('onDetailResize()', context);
+  assert.equal(body.scrollTop, 100);
+});
+
+test('resizing the composer preserves the chat position or follows its bottom', () => {
+  const { context, document } = client();
+  const body = document.getElementById('detail-body');
+  const input = document.getElementById('chat-input');
+  Object.assign(body, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 });
+  Object.defineProperty(input.style, 'height', {
+    set() { body.scrollTop = 50; }, configurable: true
+  });
+  vm.runInContext('resizeChatInput()', context);
+  assert.equal(body.scrollTop, 1000, 'bottom remains visible when composer changes size');
+  body.scrollTop = 200;
+  vm.runInContext("detailRenderedKey = 'task:output'; onDetailScroll(); resizeChatInput()", context);
+  assert.equal(body.scrollTop, 200, 'older output stays in place');
 });
 
 test('dropdown changes ask before closing editors but not action dialogs', () => {
