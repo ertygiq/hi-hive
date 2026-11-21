@@ -32,8 +32,14 @@
 </header>
 
 <div class="paused-banner" id="paused-banner">
-  Pipeline paused — no new tasks will be started
+  Pipeline paused - no new tasks will be started
   <button class="small" onclick="togglePause()">▶ Resume</button>
+</div>
+
+<div class="coding-agent-onboarding" id="coding-agent-onboarding" style="display:none">
+  <div><strong>No coding agent is set up yet.</strong><br>
+    Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings &gt; All projects &gt; Coding agents.</div>
+  <button onclick="openSettings('harnesses-heading')">Open Settings</button>
 </div>
 
 <div class="workspace">
@@ -399,9 +405,9 @@
       <div class="muted" style="font-size:12px;margin-top:4px">Read from the harness's session transcript. Currently only Pi reports cost; other tasks show nothing.</div>
 
       <hr class="settings-divider">
-      <h4 class="settings-heading">Harnesses</h4>
+      <h4 class="settings-heading" id="harnesses-heading">Coding agents</h4>
       <div id="harnesses-list"></div>
-      <button class="small" onclick="addHarnessForm()" style="margin-top:8px">+ Add Harness</button>
+      <button class="small" onclick="addHarnessForm()" style="margin-top:8px">+ Add coding agent</button>
 
       <hr class="settings-divider">
       <h4 class="settings-heading">Output actions</h4>
@@ -489,7 +495,7 @@
 <div class="modal-overlay hidden" id="harness-modal">
   <div class="modal">
     <div class="modal-header">
-      <h3 id="harness-modal-title">Add Harness</h3>
+      <h3 id="harness-modal-title">Add coding agent</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('harness-modal')">✕</button>
     </div>
     <div class="modal-body">
@@ -536,7 +542,7 @@
     </div>
     <div class="modal-footer">
       <button onclick="requestCloseModal('harness-modal')">Cancel</button>
-      <button class="primary" onclick="saveHarness()">Save Harness</button>
+      <button class="primary" onclick="saveHarness()">Save coding agent</button>
     </div>
   </div>
 </div>

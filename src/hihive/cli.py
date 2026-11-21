@@ -9,16 +9,20 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import quote, urlencode, urlsplit
 
 from . import paths
 
 FINISHED = ("completed", "failed", "cancelled")
+NO_CODING_AGENT = ("No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, "
+                   "then run the installer again, or add it in Settings > All projects > Coding agents.")
 
 USAGE = """\
 CLI for hi-hive - parallel task runner for coding agents (Claude Code, Pi).
 
 Usage: hihive [--project NAME] <command> [args]
+       hihive --version
 
 Projects:
   Tasks, templates, review sections, and working directories belong to projects.
@@ -110,6 +114,9 @@ class HiHiveCLI:
 
     def run(self, argv):
         argv = list(argv)
+        if argv == ["--version"]:
+            puts(version_text())
+            return
         self.project_arg = self.take_named_arg(argv, "--project")
         command = argv.pop(0) if argv else None
         if self.agent_token and not self.token and command not in ("help", "-h", "--help", None):
@@ -186,6 +193,8 @@ class HiHiveCLI:
     def cmd_start(self, args):
         label = self.take_named_arg(args, "--label")
         project = self.project()
+        if not project["harnesses"]:
+            self.die(NO_CODING_AGENT)
         harness = self.resolve_harness_name(self.take_named_arg(args, "--harness"), project["harnesses"])
         if "-p" in args:
             index = args.index("-p")
@@ -403,11 +412,13 @@ class HiHiveCLI:
         puts(result["id"])
 
     def cmd_open(self):
-        """Open the UI with a login link, so this browser gets the login cookie."""
+        """Check health, then open the UI with a login link."""
         if self.agent_token:
             self.die("`hihive open` needs the full token; it does not work with HIVE_TOKEN.")
-        if not self.token:
-            self.die(f"No Hive token at {paths.token_file()}. Start the server first (hihive serve).")
+        if not self.token or not self.probe_health():
+            self.die("hi-hive is not running. Start it:\n"
+                     "  hihive serve                 (keeps that terminal busy)\n"
+                     "  or in the background:  hihive service install")
         # A fragment is never sent to the server; the login page removes it from the address bar.
         url = f"{self.base_url.rstrip('/')}/login#{urlencode({'token': self.token})}"
         import webbrowser
@@ -415,13 +426,27 @@ class HiHiveCLI:
         headless = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
         if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
             headless = True
-        if headless or not webbrowser.open(url):
+        if headless:
             port = urlsplit(self.base_url).port or paths.DEFAULT_PORT
-            puts("Could not open a local browser. If hi-hive is on another machine, run this on your computer:")
+            puts("hi-hive is running. On your computer, open an SSH tunnel:")
             puts(f"  ssh -N -L {port}:127.0.0.1:{port} <user>@<hi-hive-host>")
             puts("Then open this login URL on your computer:")
             puts(url)
             puts("This URL grants full hi-hive access. Keep it private and do not paste it into logs or issues.")
+        elif webbrowser.open(url):
+            puts(f"Opened {self.base_url} in your browser (logged in).")
+        else:
+            self.die("hi-hive is running, but the browser could not be opened. Run `hihive open` again, or open it from another desktop terminal.")
+
+    def probe_health(self):
+        request = urllib.request.Request(self.base_url.rstrip("/") + "/api/config")
+        request.add_header("Origin", self.base_url)
+        request.add_header("Authorization", f"Bearer {self.token or ''}")
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return response.status == 200
+        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError):
+            return False
 
     # --- HTTP ---
 
@@ -580,6 +605,22 @@ class HiHiveCLI:
 
 # --- Formatting ---
 
+def version_text():
+    try:
+        installed = package_version("hi-hive")
+    except PackageNotFoundError:
+        installed = "0.2.0"
+    source = None
+    try:
+        record = json.loads(paths.installer_record_file().read_text(encoding="utf-8"))
+        commit = str(record.get("commit") or "")
+        if re.fullmatch(r"[0-9a-f]{40}", commit):
+            source = f"main@{commit}"
+    except (OSError, ValueError, TypeError):
+        pass
+    return f"hi-hive {installed}" + (f" ({source})" if source else "")
+
+
 def print_messages(messages):
     for message in messages:
         if message.get("kind") == "review":
@@ -687,13 +728,126 @@ def serve(args):
         from .shell_env import adopt_login_shell_env
 
         print(adopt_login_shell_env(), flush=True)
-    lock = paths.lock_home(port)  # held open until the process exits
+    try:
+        lock = paths.lock_home(port)  # held open until the process exits
+    except SystemExit:
+        running_port = urlsplit(paths.server_url()).port or paths.DEFAULT_PORT
+        raise SystemExit(f"hi-hive is already running on port {running_port}. Open it with:  hihive open\n"
+                         "To run a second, separate hi-hive, set HIVE_HOME to another folder.") from None
     config = paths.config_file()
-    paths.ensure_config(config)
+    if not config.exists():
+        setup_coding_agents(["--fresh", "--plain"])
     pool = PoolManager(config_file=config, persist_file=paths.state_file())
     token = paths.ensure_token()
-    print(f"Starting hi-hive on http://localhost:{port} (run `hihive open` to open the UI)", flush=True)
+    print(f"hi-hive is running on http://localhost:{port}", flush=True)
+    print("Keep this terminal open. Closing it or pressing Ctrl-C stops hi-hive.", flush=True)
+    print("To open it, run in another terminal:  hihive open", flush=True)
+    print("To run it in the background instead: press Ctrl-C, then run  hihive service install", flush=True)
     uvicorn.run(create_app(pool, token), host="127.0.0.1", port=port, log_level="warning")
+
+
+def _coding_agent_line(agent, result):
+    configured = next((item for item in result["configured"] if item.get("type") == agent["id"]), None)
+    default = bool(configured and configured.get("id") == result.get("default_harness"))
+    added = agent["id"] in result["added"]
+    command = str(configured.get("command") or "") if configured else ""
+    detected_path = str(agent.get("path") or "")
+    custom = bool(configured and command not in (agent["command"], detected_path))
+    if custom:
+        external = "not checked (custom command)"
+        inside = "already added" + (" (default)" if default else "")
+    else:
+        external = (f"{agent.get('version')}  {detected_path}" if agent["status"] in ("usable", "too_old")
+                    else "not found" if agent["status"] == "not_found"
+                    else "not checked (login-shell environment unavailable)" if agent.get("environment_error")
+                    else f"found at {detected_path}; version check failed")
+        if configured:
+            if agent["status"] == "usable":
+                inside = "already added" + (" (default)" if default else "")
+            elif agent["status"] == "too_old":
+                inside = f"already added: its tasks fail until you update it (needs {agent['minimum']}+)"
+            else:
+                inside = "already added: its tasks fail until you install it"
+        elif added:
+            inside = "added" + (" (default)" if default else "")
+        elif agent["status"] == "too_old":
+            inside = f"not added: too old (needs {agent['minimum']}+)"
+        else:
+            inside = "not added"
+    return f"  {agent['name']:<14} {external:<52} {inside}"
+
+
+def setup_coding_agents(args):
+    from .setup import configure_detected_agents, unconfigured_usable
+
+    fresh = _remove(args, "--fresh")
+    offer = _remove(args, "--offer")
+    plain = _remove(args, "--plain")
+    yes = _remove(args, "--yes")
+    if args or fresh == offer:
+        raise SystemExit("Usage: hihive setup-coding-agents (--fresh | --offer) [--plain] [--yes]")
+    try:
+        result = configure_detected_agents("fresh") if fresh else None
+        preview = configure_detected_agents("existing", accepted=[]) if not fresh else None
+    except (OSError, ValueError) as error:
+        raise SystemExit(str(error)) from None
+    if not fresh:
+        candidates = unconfigured_usable(preview)
+        accepted = []
+        for agent in candidates:
+            take = yes
+            if not plain and not yes:
+                try:
+                    with open("/dev/tty", "r+", encoding="utf-8", buffering=1) as terminal:
+                        terminal.write(f"Add {agent['name']} {agent['version']} ({agent['path']}) to hi-hive? "
+                                       "Your current agent settings stay as they are. [Y/n] ")
+                        answer = terminal.readline().strip().lower()
+                    take = answer in ("", "y", "yes")
+                except OSError:
+                    take = False
+            if take:
+                accepted.append(agent["id"])
+        try:
+            result = configure_detected_agents("existing", accepted=accepted)
+        except (OSError, ValueError) as error:
+            raise SystemExit(str(error)) from None
+    puts("Coding agents   On this computer                                     In hi-hive")
+    for agent in result["detected"]:
+        puts(_coding_agent_line(agent, result))
+    puts("  hi-hive does not install these or check that you are logged in.")
+    too_old = [agent for agent in result["detected"]
+               if agent["status"] == "too_old" and agent["id"] not in result["configured_types"]]
+    if too_old:
+        names = " and ".join("Claude Code (claude update)" if agent["id"] == "claude-code" else "Pi"
+                             for agent in too_old)
+        puts(f"  To add {'it' if len(too_old) == 1 else 'them'}: update {names}, then run this installer again.")
+    environment_error = next((agent.get("environment_error") for agent in result["detected"]
+                              if agent.get("environment_error")), None)
+    if environment_error:
+        puts(f"  Coding agents could not be checked because the login-shell environment failed: {environment_error}")
+    if not result["configured_types"]:
+        usable_declined = [agent["name"] for agent in result["detected"] if agent["status"] == "usable"]
+        if environment_error:
+            puts("  hi-hive has no coding agent yet, so it cannot run tasks. Fix the login shell, then run this installer again.")
+        elif usable_declined:
+            puts("  hi-hive has no coding agent yet, so it cannot run tasks. "
+                 f"Run this installer again to add {' or '.join(usable_declined)}.")
+        else:
+            puts("  hi-hive has no coding agent yet, so it cannot run tasks. "
+                 "Install Claude Code 2.1.283+ or Pi 0.87.1+, then run this installer again.")
+    if plain and not fresh:
+        for agent in unconfigured_usable(result):
+            puts(f"  {agent['name']} {agent['version']} found, not added "
+                 "(no terminal to ask; run the installer in a terminal to add it).")
+    return result
+
+
+def health():
+    client = HiHiveCLI()
+    if client.token and client.probe_health():
+        puts(f"hi-hive is healthy at {client.base_url}")
+        return
+    raise SystemExit(f"hi-hive is not running at {client.base_url}")
 
 
 def main(argv=None):
@@ -701,6 +855,12 @@ def main(argv=None):
     try:
         if argv and argv[0] == "serve":
             serve(argv[1:])
+        elif argv and argv[0] == "health":
+            if len(argv) != 1:
+                raise SystemExit("Usage: hihive health")
+            health()
+        elif argv and argv[0] == "setup-coding-agents":
+            setup_coding_agents(argv[1:])
         elif argv and argv[0] == "service":
             from . import service
 
@@ -713,6 +873,14 @@ def main(argv=None):
                 service.status()
             elif action == "restart":
                 service.restart()
+            elif action == "available":
+                if not service.available():
+                    raise SystemExit(1)
+            elif action == "installed":
+                if len(argv) != 2:
+                    raise SystemExit("Usage: hihive service installed")
+                if not service.installed():
+                    raise SystemExit(3)
             else:
                 raise SystemExit("Usage: hihive service install [--port N] | uninstall | status | restart")
         else:

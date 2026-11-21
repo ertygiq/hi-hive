@@ -2,4 +2,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 uv run pytest -q "$@"
-node --test tests/ui_live_test.js
+node --test tests/ui_live_test.js tests/test_installer_ui.js

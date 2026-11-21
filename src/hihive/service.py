@@ -3,9 +3,13 @@
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from . import paths
@@ -26,8 +30,43 @@ def launchd_path():
     return Path("~/Library/LaunchAgents").expanduser() / f"{LABEL}.plist"
 
 
-def systemd_path():
-    return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd" / "user" / UNIT_NAME
+def _systemd_manager_environment():
+    result = subprocess.run(["systemctl", "--user", "show-environment"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise SystemExit("Cannot read the systemd user manager environment; run `hihive serve` instead.")
+    environment = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name in environment:
+            raise SystemExit(f"The systemd user manager returned an ambiguous {name} setting")
+        environment[name] = value
+    return environment
+
+
+def _systemd_manager_context():
+    environment = _systemd_manager_environment()
+    configured_home = environment.get("HOME")
+    if not configured_home:
+        raise SystemExit("The systemd user manager has no HOME setting")
+    home = Path(configured_home)
+    if not home.is_absolute():
+        raise SystemExit(f"The systemd user manager has a relative HOME: {configured_home}")
+    configured_root = environment.get("XDG_CONFIG_HOME")
+    if configured_root:
+        root = Path(configured_root)
+        if not root.is_absolute():
+            raise SystemExit(f"The systemd user manager has a relative XDG_CONFIG_HOME: {configured_root}")
+    else:
+        root = home / ".config"
+    return home, root
+
+
+def systemd_path(context=None):
+    _home, root = context or _systemd_manager_context()
+    return root / "systemd" / "user" / UNIT_NAME
 
 
 def _domain():
@@ -60,13 +99,103 @@ def _executable():
     raise SystemExit("Cannot find the installed 'hihive' command. Install it first: uv tool install .")
 
 
+def available():
+    selected = manager()
+    if selected == "launchd":
+        return bool(shutil.which("launchctl") and subprocess.run(
+            ["launchctl", "print", _domain()], capture_output=True, check=False).returncode == 0)
+    if not shutil.which("systemctl"):
+        return False
+    return subprocess.run(["systemctl", "--user", "show-environment"],
+                          capture_output=True, check=False).returncode == 0
+
+
+def _logs_hint():
+    if manager() == "launchd":
+        return f"Logs: {paths.logs_dir() / 'server.log'} and {paths.logs_dir() / 'server.err'}"
+    return f"Logs: journalctl --user -u {UNIT_NAME} -f"
+
+
+def _server_config(timeout=0.5):
+    token = paths.read_token()
+    if not token:
+        return None
+    request = urllib.request.Request(paths.server_url().rstrip("/") + "/api/config")
+    request.add_header("Origin", paths.server_url())
+    request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            import json
+            return json.loads(response.read())
+    except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
+        return None
+
+
+def _wait_for_health(selected, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        config = _server_config()
+        if config and config.get("service_manager") == selected:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _cleanup_failed_service(selected):
+    try:
+        if selected == "launchd":
+            _uninstall_launchd(quiet=True)
+        else:
+            _uninstall_systemd(quiet=True)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+
 def install(port=None):
     selected = manager()
+    if not available():
+        detail = "no systemd user session" if selected == "systemd" else "no logged-in launchd GUI session"
+        raise SystemExit(f"The background service is not available here ({detail}).\n"
+                         "Run hi-hive in a terminal instead:  hihive serve")
     port = port or int(os.environ.get("PORT") or paths.DEFAULT_PORT)
-    if selected == "launchd":
-        _install_launchd(port)
+    current = _server_config()
+    if current and current.get("service_manager") not in ("launchd", "systemd"):
+        running_port = paths.server_url().rsplit(":", 1)[-1]
+        raise SystemExit(f"hi-hive is already running in a terminal (port {running_port}). "
+                         "Stop it there with Ctrl-C, then run this again.")
+    try:
+        if selected == "launchd":
+            _install_launchd(port)
+        else:
+            _install_systemd(port)
+    except subprocess.CalledProcessError as error:
+        _cleanup_failed_service(selected)
+        raise SystemExit(f"Could not start the background service ({selected}, exit {error.returncode}).\n"
+                         f"{_logs_hint()}\nRun hi-hive in a terminal instead:  hihive serve") from None
+    if not _wait_for_health(selected):
+        _cleanup_failed_service(selected)
+        raise SystemExit(f"The background service started, but hi-hive did not answer on port {port} within 10 s.\n"
+                         f"{_logs_hint()}\n"
+                         "Run hi-hive in a terminal instead:  hihive serve")
+    print(f"hi-hive is running in the background on http://localhost:{port} and starts at login.")
+    print("Open it:  hihive open")
+    print(_logs_hint())
+
+
+def _systemd_service_location():
+    context = _systemd_manager_context()
+    path = systemd_path(context)
+    _validate_service_target(path, context[1], context[0])
+    return context, path
+
+
+def installed():
+    if manager() == "launchd":
+        path = launchd_path()
+        _validate_service_target(path)
     else:
-        _install_systemd(port)
+        _context, path = _systemd_service_location()
+    return path.exists()
 
 
 def uninstall():
@@ -74,16 +203,26 @@ def uninstall():
         _uninstall_launchd()
     else:
         _uninstall_systemd()
+    print(f"hi-hive is no longer running and will not start at login. Your data in {paths.hive_home()} is kept.")
+    print("Start it yourself:            hihive serve")
+    print("Or turn the service back on:  hihive service install")
 
 
 def status():
-    if manager() == "launchd":
-        result = subprocess.run(["launchctl", "print", f"{_domain()}/{LABEL}"], check=False)
+    selected = manager()
+    if not available():
+        raise SystemExit("Background service: unavailable. Run hi-hive in a terminal with:  hihive serve")
+    if not installed():
+        print(f"Background service: not installed ({selected})")
+        return
+    if selected == "launchd":
+        running = _launchd_loaded()
     else:
-        _require_systemctl()
-        result = subprocess.run(["systemctl", "--user", "status", UNIT_NAME, "--no-pager"], check=False)
-    if result.returncode:
-        raise SystemExit(result.returncode)
+        running = subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT_NAME], check=False).returncode == 0
+    config = _server_config() if running else None
+    state = "running" if config and config.get("service_manager") == selected else ("starting" if running else "stopped")
+    port = paths.server_url().rsplit(":", 1)[-1] if config else "-"
+    print(f"Background service: installed, {state}, port {port} ({selected})")
 
 
 def restart():
@@ -93,10 +232,88 @@ def restart():
         subprocess.run(["launchctl", "kickstart", "-k", f"{_domain()}/{LABEL}"], check=True)
     else:
         _require_systemctl()
-        if not systemd_path().exists():
+        _context, path = _systemd_service_location()
+        if not path.exists():
             raise SystemExit("hi-hive systemd user service is not installed")
         subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
     print(f"Restarted hi-hive ({manager()})")
+
+
+def _service_directory_root(directory, managed_root=None):
+    directory = Path(directory)
+    home = Path.home()
+    root = Path(managed_root) if managed_root is not None else home
+    if not root.is_absolute():
+        raise SystemExit(f"Service configuration root must be absolute: {root}")
+    if directory != root and root not in directory.parents:
+        raise SystemExit(f"Service directory must be inside its managed configuration root: {directory}")
+    return root
+
+
+def _validate_service_directory(directory, create=False, managed_root=None, trusted_home=None):
+    directory = Path(directory)
+    root = _service_directory_root(directory, managed_root)
+    home = Path(trusted_home) if trusted_home is not None else Path.home()
+    external = root != home and home not in root.parents
+    anchor = Path(directory.anchor) if external else home
+    current = directory
+    while True:
+        if current.is_symlink():
+            raise SystemExit(f"Service directory must not contain symbolic links: {current}")
+        if current.exists():
+            details = current.stat()
+            if not stat.S_ISDIR(details.st_mode):
+                raise SystemExit(f"Service directory path is not a directory: {current}")
+            inside_managed_root = current == root or root in current.parents
+            writable = bool(details.st_mode & 0o022)
+            root_owned_sticky = details.st_uid == 0 and bool(details.st_mode & stat.S_ISVTX)
+            if writable and (inside_managed_root or not external or not root_owned_sticky):
+                raise SystemExit(f"Service directory must not be group/world-writable: {current}")
+            allowed_owners = (os.getuid(),) if inside_managed_root or not external else (0, os.getuid())
+            if details.st_uid not in allowed_owners:
+                owner = "the current user" if len(allowed_owners) == 1 else "the current user or root"
+                raise SystemExit(f"Service directory must be owned by {owner}: {current}")
+        if current == anchor:
+            break
+        current = current.parent
+    if create:
+        previous_umask = os.umask(0o077)
+        try:
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        finally:
+            os.umask(previous_umask)
+        _validate_service_directory(directory, managed_root=managed_root, trusted_home=trusted_home)
+
+
+def _validate_service_target(path, managed_root=None, trusted_home=None):
+    path = Path(path)
+    _validate_service_directory(path.parent, managed_root=managed_root, trusted_home=trusted_home)
+    if path.is_symlink() or (path.exists() and not stat.S_ISREG(path.stat().st_mode)):
+        raise SystemExit(f"Service file must be a regular file, not a symlink or special file: {path}")
+    if path.exists():
+        target = path.stat()
+        if target.st_uid != os.getuid() or target.st_mode & 0o022:
+            raise SystemExit(f"Service file must be user-owned and not group/world-writable: {path}")
+
+
+def _atomic_service_file(path, content, managed_root=None, trusted_home=None):
+    path = Path(path)
+    _validate_service_directory(path.parent, create=True, managed_root=managed_root, trusted_home=trusted_home)
+    _validate_service_target(path, managed_root=managed_root, trusted_home=trusted_home)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _install_launchd(port):
@@ -123,24 +340,23 @@ def _install_launchd(port):
     }
     paths.hive_home().mkdir(parents=True, exist_ok=True)
     path = launchd_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as file:
-        plistlib.dump(plist, file)
+    _atomic_service_file(path, plistlib.dumps(plist))
     print(f"Wrote {path}")
     _launchd_bootout()
     subprocess.run(["launchctl", "bootstrap", _domain(), str(path)], check=True)
-    print(f"Started {LABEL} on port {port} (launchd)")
-    print(f"Logs: tail -f {logs / 'server.log'} {logs / 'server.err'}")
 
 
-def _uninstall_launchd():
+def _uninstall_launchd(quiet=False):
+    path = launchd_path()
+    _validate_service_target(path)
     if _launchd_loaded():
         _launchd_bootout()
-        print(f"Stopped {LABEL}")
-    path = launchd_path()
+        if not quiet:
+            print(f"Stopped {LABEL}")
     if path.exists():
         path.unlink()
-        print(f"Removed {path}")
+        if not quiet:
+            print(f"Removed {path}")
 
 
 def _systemd_quote(value):
@@ -214,25 +430,22 @@ def _ensure_private_hive_home():
 
 def _install_systemd(port):
     _require_systemctl()
+    context, path = _systemd_service_location()
     _ensure_private_hive_home()
-    path = systemd_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_systemd_unit(port), encoding="utf-8")
-    os.chmod(path, 0o600)
+    _atomic_service_file(path, _systemd_unit(port).encode(), context[1], context[0])
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", UNIT_NAME], check=True)
     # Restart also starts an inactive unit and always applies a rewritten unit.
     subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
     print(f"Wrote {path}")
-    print(f"Started {UNIT_NAME} on port {port} (systemd user service)")
-    print(f"Logs: journalctl --user -u {UNIT_NAME} -f")
 
 
-def _uninstall_systemd():
+def _uninstall_systemd(quiet=False):
     _require_systemctl()
+    _context, path = _systemd_service_location()
     subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
-    path = systemd_path()
     if path.exists():
         path.unlink()
-        print(f"Removed {path}")
+        if not quiet:
+            print(f"Removed {path}")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
