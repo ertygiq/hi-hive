@@ -1,4 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
+
+import hihive.protocol as protocol_module
 
 from hihive import HiveError
 from hihive.protocol import ClaudeStreamProtocol
@@ -88,6 +92,21 @@ def test_running_or_waiting_for_action_is_not_safe_to_close(protocol, runner):
 def test_bad_probe_response_disables_idle_shutdown_without_killing_work(protocol, runner):
     request_id = probe(protocol, runner)
     protocol.idle_probe_response(runner, {"response": {"subtype": "error", "request_id": request_id}})
+    assert not protocol.idle_shutdown_ready(runner)
+    assert runner.warnings == 1
+
+
+def test_missing_probe_response_disables_shutdown_at_five_seconds(protocol, runner, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(protocol_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    probe(protocol, runner)
+    now[0] = 104.99
+    assert not protocol.idle_shutdown_ready(runner)
+    assert runner.warnings == 0
+    now[0] = 105.0
+    assert not protocol.idle_shutdown_ready(runner)
+    assert runner.warnings == 1
+    now[0] = 120.0
     assert not protocol.idle_shutdown_ready(runner)
     assert runner.warnings == 1
 

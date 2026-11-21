@@ -138,6 +138,8 @@ class PiRpcProtocol(LiveProtocol):
 
 
 class ClaudeStreamProtocol(LiveProtocol):
+    idle_probe_timeout = 5.0
+
     KNOWN_SYSTEM_SUBTYPES = {
         "thinking_tokens", "status", "compact_boundary", "hook_started", "hook_progress", "hook_response",
         "task_started", "task_progress", "task_notification", "api_retry", "local_command", "turn_duration",
@@ -171,7 +173,7 @@ class ClaudeStreamProtocol(LiveProtocol):
         if self._idle_probe:
             if self._idle_probe.get("idle") and self._idle_probe.get("snapshot"):
                 return True
-            if time.monotonic() - self._idle_probe["started"] >= 5:
+            if time.monotonic() - self._idle_probe["started"] >= self.idle_probe_timeout:
                 self._idle_shutdown_disabled = True
                 runner.idle_shutdown_uncertain()
             return False
