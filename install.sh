@@ -379,6 +379,7 @@ query_existing_service() {
     3) EXISTING_SERVICE=0 ;;
     *) die 'could not determine whether the manager-visible hi-hive service is installed' ;;
   esac
+  SERVICE_STATE_KNOWN=1
   SERVICE_QUERIED=1
 }
 
@@ -539,8 +540,10 @@ fi
 RUN_BACKGROUND=0
 FOREGROUND_RUNNING=0
 EXISTING_SERVICE=0
+SERVICE_STATE_KNOWN=0
 SERVICE_QUERIED=0
 SERVICE_SKIPPED=0
+RUNNING_PROCESS=0
 SERVICE_POSSIBLE=0
 if service_possible; then SERVICE_POSSIBLE=1; fi
 OLD_COMMIT=$(read_record_commit || true)
@@ -603,7 +606,7 @@ else
   [ -x "$CANDIDATE" ] || die 'candidate installation did not create hihive'
   "$CANDIDATE" --version >/dev/null
   if [ "$FRESH" -eq 0 ]; then
-    query_existing_service "$CANDIDATE"
+    if [ "$SERVICE_POSSIBLE" -eq 1 ]; then query_existing_service "$CANDIDATE"; fi
     "$CANDIDATE" setup-coding-agents --offer --plain >/dev/null
   fi
   candidate_python=$candidate_tools/hi-hive/bin/python
@@ -643,8 +646,10 @@ else
     die "uv did not install hihive in $TOOL_BIN"
   fi
 fi
-if [ "$FRESH" -eq 0 ] && [ "$SERVICE_QUERIED" -eq 0 ]; then query_existing_service "$HIHIVE"; fi
-if [ "$FRESH" -eq 0 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
+if [ "$FRESH" -eq 0 ] && [ "$SERVICE_POSSIBLE" -eq 1 ] && [ "$SERVICE_QUERIED" -eq 0 ]; then
+  query_existing_service "$HIHIVE"
+fi
+if [ "$FRESH" -eq 0 ] && [ "$SERVICE_STATE_KNOWN" -eq 1 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
   if [ "$INSTALL_SERVICE" -eq 1 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
     RUN_BACKGROUND=1
   else
@@ -670,8 +675,12 @@ else
     "$HIHIVE" setup-coding-agents --offer
   fi
 fi
-if [ "$FRESH" -eq 0 ] && [ "$RUN_BACKGROUND" -eq 0 ] && [ "$EXISTING_SERVICE" -eq 0 ] && "$HIHIVE" health >/dev/null 2>&1; then
-  FOREGROUND_RUNNING=1
+if [ "$FRESH" -eq 0 ] && [ "$RUN_BACKGROUND" -eq 0 ] && "$HIHIVE" health >/dev/null 2>&1; then
+  if [ "$SERVICE_STATE_KNOWN" -eq 1 ] && [ "$EXISTING_SERVICE" -eq 0 ]; then
+    FOREGROUND_RUNNING=1
+  else
+    RUNNING_PROCESS=1
+  fi
 fi
 
 SERVICE_OK=0
@@ -735,11 +744,15 @@ else
     say 'result        the new version is installed; hi-hive is still running the previous version in a terminal.'
     say "Press Ctrl-C in that terminal, then run: $DISPLAY_COMMAND serve"
     say '(This starts the new version.)'
+  elif [ "$RUNNING_PROCESS" -eq 1 ]; then
+    say 'result        the new version is installed; another hi-hive process is still running the previous version.'
+    say "Stop that process, then run: $DISPLAY_COMMAND serve"
+    say '(The service manager is unavailable, so the installer cannot identify how that process was started.)'
   else
     say 'result        hi-hive is installed but NOT running yet.'
     say 'To use it:'
   fi
-  if [ "$SERVICE_SKIPPED" -eq 1 ] || [ "$FOREGROUND_RUNNING" -eq 1 ]; then :
+  if [ "$SERVICE_SKIPPED" -eq 1 ] || [ "$FOREGROUND_RUNNING" -eq 1 ] || [ "$RUNNING_PROCESS" -eq 1 ]; then :
   elif [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
     say "  1. On this server:          $DISPLAY_COMMAND serve"
     say '     Keep that SSH session open. Closing it or pressing Ctrl-C stops hi-hive.'
@@ -750,7 +763,7 @@ else
     say '     Keep that terminal open. Closing it or pressing Ctrl-C stops hi-hive.'
     say "  2. In a second terminal: $DISPLAY_COMMAND open"
   fi
-  if [ "$SERVICE_SKIPPED" -eq 0 ] && [ "$FOREGROUND_RUNNING" -eq 0 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
+  if [ "$SERVICE_SKIPPED" -eq 0 ] && [ "$FOREGROUND_RUNNING" -eq 0 ] && [ "$RUNNING_PROCESS" -eq 0 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
     say "To run it in the background instead: $DISPLAY_COMMAND service install"
     say "First stop '$DISPLAY_COMMAND serve' with Ctrl-C."
   fi

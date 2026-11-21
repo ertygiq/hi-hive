@@ -365,6 +365,8 @@ def test_malformed_manager_service_query_fails_without_guessing_run_mode(tmp_pat
     assert result.returncode == 0
     (home / ".hihive").mkdir()
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "systemctl", "exit 0\n")
     env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "2"
     log.write_text("")
 
@@ -400,11 +402,52 @@ def test_no_service_wins_on_rerun_even_when_a_service_unit_exists(tmp_path):
     assert "hihive service restart" in rerun.stdout
 
 
-def test_rerun_detects_active_terminal_server_and_prints_restart_order(tmp_path):
+@pytest.mark.parametrize("no_service", [False, True])
+def test_rerun_continues_in_terminal_mode_when_systemd_user_manager_is_unavailable(tmp_path, no_service):
+    result, home, _bin_dir, log, env = run_installer(tmp_path)
+    assert result.returncode == 0
+    (home / ".hihive").mkdir()
+    (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "2"
+    log.write_text("")
+    arguments = ["dash", str(INSTALLER), "--plain", "--repair"]
+    if no_service:
+        arguments.append("--no-service")
+
+    rerun = subprocess.run(arguments, env=env, capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert "hihive service installed" not in log.read_text()
+    assert "hihive service install --port" not in log.read_text()
+    assert "installed but NOT running yet" in rerun.stdout
+
+
+def test_unavailable_manager_uses_neutral_guidance_for_running_process(tmp_path):
+    result, home, _bin_dir, log, env = run_installer(tmp_path)
+    assert result.returncode == 0
+    (home / ".hihive").mkdir()
+    (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    env["HIVE_FAKE_HEALTH_EXIT"] = "0"
+    log.write_text("")
+
+    rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert "another hi-hive process is still running the previous version" in rerun.stdout
+    assert "cannot identify how that process was started" in rerun.stdout
+    assert "in a terminal" not in rerun.stdout
+    assert "hihive service installed" not in log.read_text()
+
+
+def test_available_manager_and_absent_service_classifies_healthy_server_as_foreground(tmp_path):
     result, home, _bin_dir, _log, env = run_installer(tmp_path)
     assert result.returncode == 0
     (home / ".hihive").mkdir()
     (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    mocks = Path(env["PATH"].split(":", 1)[0])
+    executable(mocks / "systemctl", "exit 0\n")
+    env["HIVE_FAKE_SERVICE_INSTALLED_EXIT"] = "3"
     env["HIVE_FAKE_HEALTH_EXIT"] = "0"
 
     rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service"], env=env,
