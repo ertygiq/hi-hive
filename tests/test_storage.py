@@ -106,7 +106,24 @@ def test_omitted_templates_are_deleted(test_dir):
     assert [t["id"] for t in pool.config()["templates"]] == ["t2"]
 
 
-# --- Task labels ---
+# --- Task provenance and labels ---
+
+
+def test_created_by_task_id_persists_is_exposed_and_does_not_cascade(test_dir):
+    pool = make_pool(test_dir)
+    creator = pool.add_task("creator")
+    child = pool.add_task("child", created_by_task_id=creator)
+    human = pool.add_task("human")
+
+    assert pool.task_detail(child)["created_by_task_id"] == creator
+    assert pool.task_detail(human)["created_by_task_id"] is None
+    assert next(task for task in pool.state()["queue"] if task["id"] == child)["created_by_task_id"] == creator
+
+    pool.stop()
+    restored = make_pool(test_dir)
+    assert restored.task_detail(child)["created_by_task_id"] == creator
+    assert restored.remove_task(creator) is True
+    assert restored.task_detail(child) is not None
 
 
 def test_task_label_uses_shared_normalization_and_persists(test_dir):

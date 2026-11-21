@@ -77,10 +77,15 @@ class AgentTokens:
         self._by_hash[_digest(token)] = {"project_id": project_id, "task_id": task_id, "runner": runner}
         return token
 
+    def context(self, token):
+        """Trusted project/task identity for an agent token, or None when unknown."""
+        entry = self._by_hash.get(_digest(token)) if token else None
+        return ({"project_id": entry["project_id"], "task_id": entry["task_id"]} if entry else None)
+
     def lookup(self, token):
         """The project ID a token is limited to, or None for an unknown token."""
-        entry = self._by_hash.get(_digest(token)) if token else None
-        return entry["project_id"] if entry else None
+        context = self.context(token)
+        return context["project_id"] if context else None
 
     def revoke_runner(self, runner):
         for key in [k for k, v in self._by_hash.items() if v["runner"] is runner]:
