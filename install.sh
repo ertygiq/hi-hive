@@ -13,7 +13,6 @@ usage() {
 Install or update hi-hive from the exact current main commit.
 
 Usage: install.sh [options]
-  --yes                 Accept recommended defaults without questions
   --plain               Plain non-interactive output
   --no-modify-path      Do not add uv's tool-bin directory to shell startup
   --no-service          Do not install a background service
@@ -364,7 +363,6 @@ remove_path_block() {
 
 ask_yes() {
   question=$1
-  if [ "$YES" -eq 1 ]; then return 0; fi
   if [ "$PLAIN" -eq 1 ]; then return 0; fi
   printf '%s [Y/n] ' "$question" > "$TTY_DEVICE"
   IFS= read -r answer < "$TTY_DEVICE" || answer=
@@ -372,7 +370,7 @@ ask_yes() {
 }
 
 ask_run_mode() {
-  if [ "$YES" -eq 1 ] || [ "$PLAIN" -eq 1 ]; then RUN_BACKGROUND=1; return; fi
+  if [ "$PLAIN" -eq 1 ]; then RUN_BACKGROUND=1; return; fi
   {
     say '? How should hi-hive run?'
     say '  1  In the background (recommended): starts now and at every login, no terminal needed.'
@@ -419,7 +417,6 @@ UV_VERSION=0.10.0
 BEGIN_MARKER='# >>> hi-hive installer PATH >>>'
 END_MARKER='# <<< hi-hive installer PATH <<<'
 
-YES=0
 PLAIN=0
 MODIFY_PATH=1
 INSTALL_SERVICE=1
@@ -440,7 +437,6 @@ TTY_DEVICE=
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --yes) YES=1 ;;
     --plain) PLAIN=1 ;;
     --no-modify-path) MODIFY_PATH=0 ;;
     --no-service) INSTALL_SERVICE=0 ;;
@@ -560,6 +556,26 @@ To update the checkout: git -C '$EDITABLE_SOURCE' pull
 To replace it with main: rerun with --force."
   fi
 fi
+HIVE_DIR=${HIVE_HOME:-$HOME/.hihive}
+[ ! -L "$HIVE_DIR" ] || die "hi-hive data directory must not be a symbolic link: $HIVE_DIR"
+require_safe_destination_parent "$HIVE_DIR"
+if [ -e "$HIVE_DIR" ]; then require_safe_user_directory "$HIVE_DIR" 'hi-hive data directory'; fi
+CONFIG_PATH=${HIVE_CONFIG_FILE:-$HIVE_DIR/config.json}
+STATE_PATH=$HIVE_DIR/data/state.json
+case "$CONFIG_PATH" in /*) ;; *) die 'configuration path must be absolute' ;; esac
+require_safe_destination_parent "$(dirname -- "$CONFIG_PATH")"
+require_safe_regular_file "$CONFIG_PATH" 'configuration file'
+require_safe_destination_parent "$(dirname -- "$STATE_PATH")"
+require_safe_regular_file "$STATE_PATH" 'conversation state file'
+FRESH=1
+[ -f "$CONFIG_PATH" ] && FRESH=0
+if [ "$FRESH" -eq 1 ]; then
+  say ''
+  say 'Safety'
+  say 'Harnesses you start in hi-hive can read, change, and delete files on this computer.'
+  say 'The Claude Code harness uses --dangerously-skip-permissions by default; you can change that in Settings.'
+  say ''
+fi
 DISPLAY_COMMAND=hihive
 PATH_WAS_MISSING=0
 if ! path_contains "$TOOL_BIN"; then
@@ -582,19 +598,6 @@ RUNNING_PROCESS=0
 SERVICE_POSSIBLE=0
 if service_possible; then SERVICE_POSSIBLE=1; fi
 OLD_COMMIT=$(read_record_commit || true)
-HIVE_DIR=${HIVE_HOME:-$HOME/.hihive}
-[ ! -L "$HIVE_DIR" ] || die "hi-hive data directory must not be a symbolic link: $HIVE_DIR"
-require_safe_destination_parent "$HIVE_DIR"
-if [ -e "$HIVE_DIR" ]; then require_safe_user_directory "$HIVE_DIR" 'hi-hive data directory'; fi
-CONFIG_PATH=${HIVE_CONFIG_FILE:-$HIVE_DIR/config.json}
-STATE_PATH=$HIVE_DIR/data/state.json
-case "$CONFIG_PATH" in /*) ;; *) die 'configuration path must be absolute' ;; esac
-require_safe_destination_parent "$(dirname -- "$CONFIG_PATH")"
-require_safe_regular_file "$CONFIG_PATH" 'configuration file'
-require_safe_destination_parent "$(dirname -- "$STATE_PATH")"
-require_safe_regular_file "$STATE_PATH" 'conversation state file'
-FRESH=1
-[ -f "$CONFIG_PATH" ] && FRESH=0
 if [ "$FRESH" -eq 1 ]; then
   if [ "$INSTALL_SERVICE" -eq 0 ]; then RUN_BACKGROUND=0
   elif [ "$SERVICE_POSSIBLE" -eq 1 ]; then ask_run_mode

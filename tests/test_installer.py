@@ -136,6 +136,22 @@ def test_ssh_logout_guidance_does_not_mention_systemd_on_macos(tmp_path):
     assert "It may stop when you log out" not in result.stdout
 
 
+def test_fresh_install_prints_harness_safety_notice_once(tmp_path):
+    result, home, _bin_dir, _log, env = run_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "Harnesses you start in hi-hive can read, change, and delete files" in result.stdout
+    assert "--dangerously-skip-permissions" in result.stdout
+
+    (home / ".hihive").mkdir(exist_ok=True)
+    (home / ".hihive/config.json").write_text('{"harnesses":[]}\n')
+    rerun = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", "--repair"], env=env,
+                           capture_output=True, text=True, timeout=30)
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert "Harnesses you start in hi-hive" not in rerun.stdout
+
+
 def test_install_documentation_explains_curl_pipe_trust_boundary():
     documentation = (ROOT / "docs/install.md").read_text()
 

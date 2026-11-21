@@ -748,7 +748,7 @@ def serve(args):
 
 def _coding_agent_line(agent, result):
     configured = next((item for item in result["configured"] if item.get("type") == agent["id"]), None)
-    default = bool(configured and configured.get("id") == result.get("default_harness"))
+    default = bool(result["fresh"] and configured and configured.get("id") == result.get("default_harness"))
     added = agent["id"] in result["added"]
     command = str(configured.get("command") or "") if configured else ""
     detected_path = str(agent.get("path") or "")
@@ -783,9 +783,8 @@ def setup_coding_agents(args):
     fresh = _remove(args, "--fresh")
     offer = _remove(args, "--offer")
     plain = _remove(args, "--plain")
-    yes = _remove(args, "--yes")
     if args or fresh == offer:
-        raise SystemExit("Usage: hihive setup-harnesses (--fresh | --offer) [--plain] [--yes]")
+        raise SystemExit("Usage: hihive setup-harnesses (--fresh | --offer) [--plain]")
     try:
         result = configure_detected_agents("fresh") if fresh else None
         preview = configure_detected_agents("existing", accepted=[]) if not fresh else None
@@ -795,16 +794,16 @@ def setup_coding_agents(args):
         candidates = unconfigured_usable(preview)
         accepted = []
         for agent in candidates:
-            take = yes
-            if not plain and not yes:
+            take = False
+            if not plain:
                 try:
                     with open("/dev/tty", "r+", encoding="utf-8", buffering=1) as terminal:
                         terminal.write(f"Add {agent['name']} {agent['version']} ({agent['path']}) to hi-hive? "
-                                       "Your current agent settings stay as they are. [Y/n] ")
+                                       "Your current harness settings stay as they are. [Y/n] ")
                         answer = terminal.readline().strip().lower()
                     take = answer in ("", "y", "yes")
                 except OSError:
-                    take = False
+                    pass
             if take:
                 accepted.append(agent["id"])
         try:

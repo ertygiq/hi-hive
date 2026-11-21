@@ -41,6 +41,8 @@ The installer:
 9. Optionally installs a per-user launchd or systemd user service and waits for authenticated health before offering to open the browser.
 
 The installer never installs Claude Code or Pi, checks their authentication, or copies their credentials.
+Harnesses can read, change, and delete files available to their processes.
+The installer-created Claude Code harness uses `--dangerously-skip-permissions` by default; change its arguments in Settings if that is not appropriate.
 Claude Code 2.1.283 or newer and Pi 0.87.1 or newer are supported.
 If neither is available, hi-hive still starts, but it cannot run tasks.
 After installing Claude Code or Pi, rerun the installer to add it, or add it manually in Settings.
@@ -62,7 +64,6 @@ Plain reruns report newly found harnesses but never add them.
 ## Flags
 
 ```text
---yes                 Accept recommended defaults without questions
 --plain               Use plain non-interactive output
 --no-modify-path      Do not edit shell startup files
 --no-service          Install without a background service
