@@ -230,6 +230,47 @@ def test_systemd_install_refuses_unsafe_external_xdg_config_home_without_systemc
     assert calls == []
 
 
+@pytest.mark.parametrize("operation", ["install", "uninstall"])
+@pytest.mark.parametrize("unsafe", ["symlinked-ancestor", "group-writable-ancestor"])
+def test_external_xdg_rejects_unsafe_ancestors_before_changes_or_manager_calls(
+        service_home, monkeypatch, operation, unsafe):
+    home, _hive = service_home
+    if unsafe == "symlinked-ancestor":
+        redirected = home.parent / "external-chain-target"
+        redirected.mkdir(mode=0o700)
+        ancestor = home.parent / "external-chain-link"
+        ancestor.symlink_to(redirected)
+        root = ancestor / "config"
+        actual_root = redirected / "config"
+    else:
+        ancestor = home.parent / "external-chain-parent"
+        ancestor.mkdir(mode=0o700)
+        ancestor.chmod(0o770)
+        root = ancestor / "config"
+        actual_root = root
+    actual_root.mkdir(mode=0o700)
+    marker = actual_root / "KEEP"
+    marker.write_text("KEEP\n")
+    victim = actual_root / "systemd/user/com.hihive.service"
+    if operation == "uninstall":
+        victim.parent.mkdir(parents=True)
+        victim.write_text("UNIT\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
+
+    with pytest.raises(SystemExit, match="symbolic links|group/world-writable"):
+        if operation == "install":
+            service._install_systemd(4567)
+        else:
+            service._uninstall_systemd(quiet=True)
+
+    assert marker.read_text() == "KEEP\n"
+    assert victim.exists() is (operation == "uninstall")
+    assert calls == []
+
+
 @pytest.mark.parametrize("backend", ["launchd", "systemd"])
 def test_service_install_refuses_non_regular_target(service_home, monkeypatch, backend):
     path = service.launchd_path() if backend == "launchd" else service.systemd_path()
