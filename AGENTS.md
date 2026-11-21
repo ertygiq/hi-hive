@@ -14,10 +14,16 @@ In user-facing text, call a configured way to start Claude Code or Pi a **harnes
 
 ## Testing
 
-During implementation, run focused tests for the changes; run the full suite once the batch is ready, not after every small edit.
+During implementation, developers run focused tests only.
+Do not run `./tests/run` unless the Team lead assigns final validation or a broad failure requires it.
+
+After all changes are integrated, the Team lead assigns one validation owner to run `./tests/run` once on the integrated branch.
+The Team lead must verify that result before reporting completion.
+Delegate long validation runs so the Team lead remains available to the user.
+
 Let Ubuntu CI run in the background; wait for it only before merging or when investigating a CI failure.
 
-Run `./tests/run` for the deterministic Python and UI tests.
+`./tests/run` runs the deterministic Python and UI tests.
 Real-harness tests are skipped unless `HIVE_LIVE_SMOKE=1` is set.
 
 When changing harness communication, steering, session lifecycle, or conversation storage, also run:
@@ -27,6 +33,8 @@ HIVE_LIVE_SMOKE=1 uv run pytest tests/test_live_smoke.py
 ```
 
 These tests use real Pi and Claude Code processes, require existing authentication, and spend model tokens.
+Run required live tests once on the final integrated branch.
+Repeat them only when later changes affect harness communication, steering, session lifecycle, or conversation storage, or when investigating a failure.
 They check steering during active work and follow-up recall in the same process.
 They exercise `LiveRunner` directly, so keep the storage, API, CLI, and UI tests in the validation too.
 

@@ -82,12 +82,13 @@ if [ "${{1:-}} ${{2:-}}" = 'tool uninstall' ]; then rm -f '{bin_dir}/hihive' '{b
 exit 1
 ''')
 
-    env = os.environ.copy()
-    env.update({
+    # Start with an allowlist so inherited variables cannot redirect files or tools.
+    # Individual tests can still set the variables they explicitly exercise.
+    env = {
         "HOME": str(home), "PATH": f"{mocks}:/usr/bin:/bin", "SHELL": "/bin/sh",
         "TERM": "dumb", "HIHIVE_TEST_LOG": str(log), "XDG_STATE_HOME": str(home / ".state"),
         "TMPDIR": str(temporary),
-    })
+    }
     return home, bin_dir, log, env
 
 
@@ -96,6 +97,16 @@ def run_installer(tmp_path, *args, **options):
     result = subprocess.run(["dash", str(INSTALLER), "--plain", "--no-service", *args],
                             env=env, capture_output=True, text=True, timeout=30)
     return result, home, bin_dir, log, env
+
+
+def test_installer_environment_excludes_inherited_external_paths(tmp_path, monkeypatch):
+    keys = ("HIVE_HOME", "HIVE_CONFIG_FILE", "XDG_CONFIG_HOME", "XDG_BIN_HOME", "UV_TOOL_DIR", "SSH_CONNECTION",
+            "BASH_ENV", "ENV", "PYTHONPATH", "GIT_CONFIG_GLOBAL")
+    for key in keys:
+        monkeypatch.setenv(key, "/outside-test")
+    _home, _bin_dir, _log, env = installer_environment(tmp_path)
+    assert all(key not in env for key in keys)
+    assert env["XDG_STATE_HOME"].startswith(str(tmp_path))
 
 
 def test_ssh_logout_guidance_is_linux_only_and_first_install_only(tmp_path):

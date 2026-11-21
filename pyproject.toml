@@ -18,6 +18,7 @@ hih = "hihive.cli:main"
 dev = [
     "httpx2>=2.16.0",
     "pytest>=8.4",
+    "pytest-xdist>=3.8",
 ]
 
 [build-system]

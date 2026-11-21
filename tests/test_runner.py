@@ -35,12 +35,18 @@ class Harness:
 
         return wait_until(check, timeout, describe=lambda: repr(self.events[-20:]))
 
-    def launch(self, kind, scenario=None, idle_timeout=60, receipt_timeout=30, queued_inputs=()):
+    def launch(self, kind, scenario=None, idle_timeout=60, receipt_timeout=30, queued_inputs=(),
+               input_interval=0.02, idle_probe_timeout=0.1):
         self.session = str(uuid.uuid4())
         args = [FIXTURE, "--fake-kind", kind, "--fake-root", self.dir]
         if scenario:
             args += ["--fake-case", scenario]
-        self.runner = LiveRunner(protocol=protocol_for(kind), command=sys.executable, args=args,
+        protocol = protocol_for(kind)
+        if kind == "pi":
+            protocol.input_interval = input_interval
+        else:
+            protocol.idle_probe_timeout = idle_probe_timeout
+        self.runner = LiveRunner(protocol=protocol, command=sys.executable, args=args,
                                  session_id=self.session, chdir=self.dir, idle_timeout=idle_timeout,
                                  receipt_timeout=receipt_timeout, task_id="test-task", harness=kind,
                                  diagnostics_path=self.path("diagnostics.jsonl"))
@@ -88,6 +94,9 @@ def h(test_dir):
     harness = Harness(test_dir)
     yield harness
     if harness.runner:
+        # Let the fake harness finish blocked work before its stdin is closed.
+        # Tests that exercise cancellation perform and assert it themselves.
+        harness.release()
         harness.runner.close("test cleanup")
         harness.runner.join()
 
@@ -122,7 +131,7 @@ def test_two_steers_and_idle_follow_up(h, kind):
 
 
 def test_pi_spaces_startup_and_idle_bursts_in_order(h):
-    h.launch("pi", queued_inputs=["STARTUP_ONE", "STARTUP_TWO"])
+    h.launch("pi", queued_inputs=["STARTUP_ONE", "STARTUP_TWO"], input_interval=0.15)
     h.release()
     # Completion probes must still work while later inputs wait in Hive.
     h.wait(lambda: h.settled(h.base["id"]))
@@ -135,14 +144,24 @@ def test_pi_spaces_startup_and_idle_bursts_in_order(h):
     with open(h.path("input_times")) as file:
         times = [entry for entry in map(json.loads, file) if entry["id"] in ids]
     assert [entry["id"] for entry in times] == ids
-    # Allow small pipe-reader scheduling jitter; sender spacing is one second.
+    # Allow small pipe-reader scheduling jitter with the shortened test interval.
     for a, b in zip(times, times[1:]):
-        assert b["at"] - a["at"] >= 0.95
+        assert b["at"] - a["at"] >= 0.12
     assert all(h.receipt(i)["harness_accepted"] and h.receipt(i)["settled"] for i in ids)
 
 
+def test_pi_default_spacing_is_observed_by_real_writes(h):
+    h.launch("pi", queued_inputs=["NEXT"], input_interval=PiRpcProtocol.input_interval)
+    h.wait(lambda: h.accepted(h.queued[0]["id"]))
+    ids = {h.base["id"], h.queued[0]["id"]}
+    with open(h.path("input_times")) as file:
+        times = [entry["at"] for entry in map(json.loads, file) if entry["id"] in ids]
+    assert len(times) == 2
+    assert times[1] - times[0] >= 0.95
+
+
 def test_pi_cancellation_does_not_flush_messages_waiting_for_spacing(h):
-    h.launch("pi", queued_inputs=["MUST_STAY_QUEUED"])
+    h.launch("pi", queued_inputs=["MUST_STAY_QUEUED"], input_interval=1.0)
     h.runner.close("Cancelled while queued")
     h.wait(lambda: h.runner.state == "exited")
     assert h.receipt(h.queued[0]["id"])["status"] == "failed"
@@ -153,6 +172,7 @@ def test_pi_cancellation_does_not_flush_messages_waiting_for_spacing(h):
 def test_input_spacing_is_pi_only():
     assert PiRpcProtocol().input_interval == 1.0
     assert ClaudeStreamProtocol().input_interval == 0
+    assert ClaudeStreamProtocol().idle_probe_timeout == 5.0
 
 
 def test_claude_does_not_settle_at_result_with_outstanding_input_ids(h):
@@ -295,22 +315,22 @@ def test_claude_idle_shutdown_queries_state(h):
 
 
 def test_background_work_and_completion_generation_prevent_idle_shutdown(h):
-    h.launch("claude-code", idle_timeout=0.15)
+    h.launch("claude-code", idle_timeout=0.1)
     h.protocol_event({"type": "system", "subtype": "background_tasks_changed",
                       "tasks": [{"task_id": "monitor", "task_type": "local_bash"}]})
     h.release()
     h.wait(lambda: h.runner.state == "idle")
-    time.sleep(0.35)
+    time.sleep(0.2)
     assert h.runner.state == "idle", "Background work must outlive the idle timeout"
     # Last task ends, but Claude has not started its completion turn yet.
     h.protocol_event({"type": "system", "subtype": "background_tasks_changed", "tasks": []})
-    time.sleep(0.05)
+    time.sleep(0.02)
     assert h.runner.state == "idle", "Task completion must start a fresh grace period"
     h.protocol_event({"type": "system", "subtype": "init", "capabilities": ["msg_lifecycle_v1"]})
-    time.sleep(0.35)
+    time.sleep(0.2)
     assert h.runner.state == "idle", "An active completion turn must not be interrupted"
     h.protocol_event({"type": "result", "uuid": "completion", "origin": {"kind": "task-notification"}, "result": "Done"})
-    time.sleep(0.05)
+    time.sleep(0.02)
     assert h.runner.state == "idle", "Completion reply must start a fresh grace period"
     h.wait(lambda: h.runner.state == "exited")
     assert any(output["content"] == "Done" for output in h.of("output"))
