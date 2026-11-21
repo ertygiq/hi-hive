@@ -66,6 +66,69 @@ test('marking and unmarking Done refresh the board without an error', async () =
   assert.equal(polls, 2);
 });
 
+test('result harness names are full, escaped, and use only configured colors or icons', () => {
+  const { context } = client();
+  context.harnesses = [
+    { id: 'h', name: 'Long <name> "quoted" and more', color: 'rose' },
+    { id: 'custom', name: 'Custom', icon: '★' },
+    { id: 'plain', name: 'No color' }
+  ];
+  vm.runInContext('configCache.harnesses = harnesses', context);
+  let html = vm.runInContext("resultHarnessHtml('h')", context);
+  assert.match(html, /title="Harness: Long &lt;name&gt; &quot;quoted&quot; and more"/);
+  assert.match(html, /Long &lt;name&gt; "quoted" and more/);
+  assert.match(html, /class="harness-dot" style="--harness-accent:#f85149"/);
+  html = vm.runInContext("resultHarnessHtml('custom')", context);
+  assert.match(html, /class="harness-glyph"[^>]*>★/);
+  assert.doesNotMatch(html, /harness-dot/);
+  assert.doesNotMatch(vm.runInContext("resultHarnessHtml('plain')", context), /harness-dot/);
+  assert.equal(vm.runInContext("resultHarnessHtml('missing')", context), '');
+});
+
+test('result cards hide completed status and put accessible fork controls in meta', () => {
+  const { context } = client();
+  context.task = { id: 'task', label: 'Result', status: 'completed' };
+  context.child = { id: 'child', label: 'Child', status: 'completed' };
+  let html = vm.runInContext('renderResultCard(task, 0, new Map())', context);
+  assert.doesNotMatch(html, /result-status|fork-toggle|fork-count/);
+  html = vm.runInContext('renderResultCard(task, 0, new Map([[task.id, [child]]]))', context);
+  assert.match(html, /class="fork-count" aria-expanded="true" title="Hide forks" aria-label="Hide forks"/);
+  assert.match(html, /⑂ 1 <span class="fork-chevron" aria-hidden="true">▾/);
+  assert.match(html, /fork-tree-prefix/);
+  vm.runInContext("collapsedForks.add('task')", context);
+  html = vm.runInContext('renderResultCard(task, 0, new Map([[task.id, [child]]]))', context);
+  assert.match(html, /aria-expanded="false" title="Show forks" aria-label="Show forks"/);
+  assert.match(html, />▸<\/span>/);
+  assert.doesNotMatch(html, /fork-tree-prefix| hidden/);
+  for (const [status, label, icon] of [['failed', 'Failed', '✗'], ['cancelled', 'Cancelled', '⊘']]) {
+    context.task.status = status;
+    html = vm.runInContext('renderResultCard(task, 0, new Map())', context);
+    assert.ok(html.includes(`class="result-status status-${status}" title="${label}" aria-label="${label}">${icon}`));
+  }
+});
+
+test('quiet result styles preserve focus, unread, layout and action visibility', () => {
+  const { context } = client();
+  context.task = { id: 'task', label: 'Result', status: 'completed' };
+  vm.runInContext("unreadReplies.ids.add('task')", context);
+  const html = vm.runInContext('renderResultCard(task, 0, new Map())', context);
+  assert.match(html, /unread-reply-card selected/);
+  assert.match(html, /New reply/);
+  assert.match(html, /class="actions"/);
+  assert.match(html, /aria-label="Mark done"/);
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.task-card\.result-card\s*\{[^}]*border-color:\s*transparent;[^}]*padding:\s*8px 12px;[^}]*margin-bottom:\s*2px/s);
+  assert.match(css, /\.task-card\.result-card\.unread-reply-card\s*\{\s*border-color:\s*transparent/);
+  assert.match(css, /\.task-card\.result-card\.selected\s*\{\s*border-color:\s*var\(--primary\)/);
+  assert.match(css, /\.result-card:focus-visible \.actions/);
+  assert.match(css, /\.result-card \.actions:focus-within/);
+  assert.match(css, /\.task-card\.result-card \.actions\s*\{\s*display:\s*flex;\s*opacity:\s*0;\s*pointer-events:\s*none/);
+  assert.match(css, /\.actions:focus-within\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto/);
+  assert.match(css, /\.result-card:hover \.label,[\s\S]*?\.result-card:has\(\.actions:focus-within\) \.label\s*\{\s*padding-right:\s*var\(--action-space\)/);
+  assert.match(css, /\.result-card \.meta > \*\s*\{\s*flex-shrink:\s*0/);
+  assert.match(css, /\.result-card \.meta > \.harness-name\s*\{[^}]*flex-shrink:\s*1/s);
+});
+
 test('result cards show accessible outline message counts and plain reviewed text', () => {
   const { context } = client();
   for (const count of [1, 2]) {

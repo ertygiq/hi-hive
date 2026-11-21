@@ -423,12 +423,18 @@ def test_lost_acknowledgement_times_out_and_is_unknown_not_resent(h):
 
 
 def test_closed_stdin_and_stdout_are_reported_and_reaped(h):
-    h.launch("pi", receipt_timeout=0.3)
+    # Use the normal receipt deadline so Pi input pacing cannot trigger a
+    # receipt timeout before the next write exposes the closed stdin.
+    h.launch("pi")
     sent = h.runner.submit("CLOSE_STDIN")
     h.runner.submit("AFTER_STDIN_CLOSED")
     h.wait(lambda: h.runner.state == "exited")
     assert h.receipt(sent["id"])["status"] == "unknown"
     assert h.of("error")
+    assert not any("receipt deadline" in message for message in h.of("error"))
+    assert any(event.get("message") == "CLOSE_STDIN" for event in h.inputs())
+    assert not any(event.get("message") == "AFTER_STDIN_CLOSED" for event in h.inputs())
+    assert any(record["kind"] in ("stdout_eof", "child_exit") for record in h.diagnostics())
 
 
 def test_stdout_eof_does_not_leave_a_hanging_child(h):
