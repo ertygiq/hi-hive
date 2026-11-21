@@ -1,30 +1,11 @@
 #!/bin/sh
 # hi-hive per-user installer for macOS and Ubuntu-tested Linux.
-# Designed to run as: curl --proto '=https' --tlsv1.2 -fsSL URL | sh
-set -eu
-
-umask 077
-
-PROGRAM=hi-hive
-PACKAGE_VERSION=0.2.0
-REPOSITORY=https://github.com/ertygiq/hi-hive
-API_URL=https://api.github.com/repos/ertygiq/hi-hive/git/ref/heads/main
-UV_VERSION=0.10.0
-BEGIN_MARKER='# >>> hi-hive installer PATH >>>'
-END_MARKER='# <<< hi-hive installer PATH <<<'
-
-YES=0
-PLAIN=0
-MODIFY_PATH=1
-INSTALL_SERVICE=1
-FORCE=0
-UNINSTALL=0
-PORT=4567
-TMP_DIR=
-TTY_DEVICE=
+# Designed to run as: curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL URL | sh
 
 say() { printf '%s\n' "$*"; }
+
 warn() { printf 'warning: %s\n' "$*" >&2; }
+
 die() { printf 'error: %s\n' "$*" >&2; exit "${2:-1}"; }
 
 usage() {
@@ -45,59 +26,20 @@ Uninstall preserves ~/.hihive (or HIVE_HOME), including tasks, settings and toke
 EOF
 }
 
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --yes) YES=1 ;;
-    --plain) PLAIN=1 ;;
-    --no-modify-path) MODIFY_PATH=0 ;;
-    --no-service) INSTALL_SERVICE=0 ;;
-    --force|--repair) FORCE=1 ;;
-    --uninstall) UNINSTALL=1 ;;
-    --port)
-      shift
-      [ "$#" -gt 0 ] || die 'missing value after --port'
-      PORT=$1
-      ;;
-    --help|-h) usage; exit 0 ;;
-    --) shift; break ;;
-    *) die "unknown option: $1" ;;
-  esac
-  shift
-done
-[ "$#" -eq 0 ] || die "unexpected argument: $1"
-
-case "$PORT" in ''|*[!0-9]*) die "invalid port: $PORT" ;; esac
-[ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "invalid port: $PORT"
-
-command -v id >/dev/null 2>&1 || die 'id is required'
-[ "$(id -u)" -ne 0 ] || die 'do not run the hi-hive installer as root; it is a per-user install'
-[ -n "${HOME:-}" ] || die 'HOME is not set'
-case "$HOME" in /*) ;; *) die 'HOME must be an absolute path' ;; esac
-[ -d "$HOME" ] || die "HOME is not a directory: $HOME"
-[ ! -L "$HOME" ] || die 'HOME must not be a symbolic link'
-home_uid=$(ls -dn "$HOME" 2>/dev/null | awk '{print $3}')
-[ "$home_uid" = "$(id -u)" ] || die 'HOME must be owned by the current user'
-[ -w "$HOME" ] || die 'HOME is not writable'
-if [ -n "${HIVE_HOME:-}" ]; then case "$HIVE_HOME" in /*) ;; *) die 'HIVE_HOME must be an absolute path' ;; esac; fi
-if [ -n "${XDG_STATE_HOME:-}" ]; then case "$XDG_STATE_HOME" in /*) ;; *) die 'XDG_STATE_HOME must be an absolute path' ;; esac; fi
-if [ -n "${XDG_BIN_HOME:-}" ]; then case "$XDG_BIN_HOME" in /*) ;; *) die 'XDG_BIN_HOME must be an absolute path' ;; esac; fi
-
-if [ -t 1 ] && [ -r /dev/tty ] && [ "$PLAIN" -eq 0 ]; then
-  TTY_DEVICE=/dev/tty
-else
-  PLAIN=1
-fi
-if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = dumb ]; then PLAIN=1; fi
-
 cleanup() {
   code=$?
   trap - 0 HUP INT TERM
+  if [ -n "${PROFILE_TMP:-}" ]; then rm -f -- "$PROFILE_TMP"; fi
+  if [ -n "${RECORD_TMP:-}" ]; then rm -f -- "$RECORD_TMP"; fi
+  if [ -n "${RESTORE_TMP:-}" ]; then rm -f -- "$RESTORE_TMP"; fi
+  if [ -n "${UV_STAGE:-}" ]; then rm -f -- "$UV_STAGE"; fi
+  if [ -n "${UVX_STAGE:-}" ]; then rm -f -- "$UVX_STAGE"; fi
+  if [ -n "${BOOTSTRAP_UV_CREATED:-}" ]; then rm -f -- "$BOOTSTRAP_UV_CREATED" "${BOOTSTRAP_UV_CREATED}x"; fi
   if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
     case "$TMP_DIR" in "${TMPDIR:-/tmp}"/hi-hive-install.*) rm -rf -- "$TMP_DIR" ;; esac
   fi
   exit "$code"
 }
-trap cleanup 0 HUP INT TERM
 
 make_temp() {
   base=${TMPDIR:-/tmp}
@@ -109,22 +51,11 @@ make_temp() {
   tmp_mode=$(LC_ALL=C ls -ld "$TMP_DIR" 2>/dev/null | cut -c1-10)
   [ "$tmp_uid" = "$(id -u)" ] && [ "$tmp_mode" = drwx------ ] || die 'temporary directory is not private and user-owned'
 }
-make_temp
-
-case "$(uname -s 2>/dev/null || true)" in
-  Darwin) OS=macos ;;
-  Linux) OS=linux ;;
-  *) die 'hi-hive supports macOS and Ubuntu-tested Linux' 2 ;;
-esac
-case "$(uname -m 2>/dev/null || true)" in
-  arm64|aarch64) ARCH=aarch64 ;;
-  x86_64|amd64) ARCH=x86_64 ;;
-  *) die "unsupported CPU architecture: $(uname -m 2>/dev/null || printf unknown)" 2 ;;
-esac
 
 need_curl() {
   command -v curl >/dev/null 2>&1 || die 'curl is required'
 }
+
 fetch() {
   url=$1
   destination=$2
@@ -140,21 +71,85 @@ normal_bin_dir() {
   fi
 }
 
-state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive
-record_file=$state_dir/install.json
-[ ! -e "$state_dir" ] || [ ! -L "$state_dir" ] || die "install state directory must not be a symbolic link: $state_dir"
+require_safe_user_directory() {
+  safe_directory=$1
+  safe_label=$2
+  [ -d "$safe_directory" ] && [ ! -L "$safe_directory" ] || die "$safe_label must be a real directory: $safe_directory"
+  safe_uid=$(ls -dn "$safe_directory" 2>/dev/null | awk '{print $3}')
+  safe_mode=$(LC_ALL=C ls -ld "$safe_directory" 2>/dev/null | cut -c1-10)
+  safe_write_bits=$(printf '%s' "$safe_mode" | cut -c6,9)
+  [ "$safe_uid" = "$(id -u)" ] || die "$safe_label must be owned by the current user: $safe_directory"
+  case "$safe_write_bits" in *w*) die "$safe_label must not be group/world-writable: $safe_directory" ;; esac
+  [ -w "$safe_directory" ] || die "$safe_label is not writable: $safe_directory"
+}
 
-write_record() {
-  commit=$1
+require_safe_destination_parent() {
+  safe_parent=$1
+  case "$safe_parent" in
+    "$HOME"|"$HOME"/*)
+      while [ "$safe_parent" != "$HOME" ]; do
+        if [ -e "$safe_parent" ] || [ -L "$safe_parent" ]; then
+          require_safe_user_directory "$safe_parent" 'destination ancestor'
+        fi
+        safe_parent=$(dirname -- "$safe_parent")
+      done
+      require_safe_user_directory "$HOME" 'HOME'
+      ;;
+    *)
+      while [ ! -e "$safe_parent" ] && [ ! -L "$safe_parent" ]; do
+        next_parent=$(dirname -- "$safe_parent")
+        [ "$next_parent" != "$safe_parent" ] || break
+        safe_parent=$next_parent
+      done
+      require_safe_user_directory "$safe_parent" 'destination ancestor'
+      ;;
+  esac
+}
+
+require_safe_regular_file() {
+  safe_file=$1
+  safe_label=$2
+  [ ! -L "$safe_file" ] || die "$safe_label must not be a symbolic link: $safe_file"
+  [ ! -e "$safe_file" ] && return 0
+  [ -f "$safe_file" ] || die "$safe_label must be a regular file: $safe_file"
+  safe_uid=$(ls -dn "$safe_file" 2>/dev/null | awk '{print $3}')
+  safe_mode=$(LC_ALL=C ls -ld "$safe_file" 2>/dev/null | cut -c1-10)
+  safe_write_bits=$(printf '%s' "$safe_mode" | cut -c6,9)
+  [ "$safe_uid" = "$(id -u)" ] || die "$safe_label must be owned by the current user: $safe_file"
+  case "$safe_write_bits" in *w*) die "$safe_label must not be group/world-writable: $safe_file" ;; esac
+}
+
+validate_install_paths() {
   case "$UV$TOOL_BIN" in *\\*|*\"*) die 'uv or tool-bin path contains a character unsupported by the install record' ;; esac
   case "$UV$TOOL_BIN" in *"
 "*) die 'uv or tool-bin path contains a newline' ;; esac
+}
+
+atomic_restore_file() {
+  restore_source=$1
+  restore_destination=$2
+  restore_parent=$(dirname -- "$restore_destination")
+  mkdir -p "$restore_parent"
+  require_safe_user_directory "$restore_parent" 'restore directory'
+  require_safe_regular_file "$restore_destination" 'restore target'
+  RESTORE_TMP=$(mktemp "$restore_destination.hi-hive.XXXXXX") || die 'could not create a private restore temporary file'
+  cp -p "$restore_source" "$RESTORE_TMP"
+  mv -f "$RESTORE_TMP" "$restore_destination"
+  RESTORE_TMP=
+}
+
+write_record() {
+  commit=$1
+  validate_install_paths
   mkdir -p "$state_dir"
-  record_tmp=$state_dir/.install.json.$$
-  [ ! -L "$record_file" ] || die "refusing to replace symbolic-link install record: $record_file"
+  require_safe_user_directory "$state_dir" 'install state directory'
+  require_safe_regular_file "$record_file" 'install record'
+  RECORD_TMP=$(mktemp "$state_dir/.install.json.XXXXXX") || die 'could not create a private install-record temporary file'
   printf '{"version":"%s","commit":"%s","source":"main","uv":"%s","tool_bin":"%s"}\n' \
-    "$PACKAGE_VERSION" "$commit" "$UV" "$TOOL_BIN" > "$record_tmp"
-  mv -f "$record_tmp" "$record_file"
+    "$PACKAGE_VERSION" "$commit" "$UV" "$TOOL_BIN" > "$RECORD_TMP"
+  chmod 600 "$RECORD_TMP"
+  mv -f "$RECORD_TMP" "$record_file"
+  RECORD_TMP=
 }
 
 read_record_commit() {
@@ -166,14 +161,18 @@ find_uv() {
   found=$(command -v uv 2>/dev/null || true)
   if [ -z "$found" ] && [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
     marker=HIHIVE_UV_PATH_
-    output=$($SHELL -l -i -c "printf '\n${marker}%s\n' \"\$(command -v uv 2>/dev/null || true)\"" </dev/null 2>/dev/null || true)
+    output=$("$SHELL" -l -i -c "printf '\n${marker}%s\n' \"\$(command -v uv 2>/dev/null || true)\"" </dev/null 2>/dev/null || true)
     found=$(printf '%s\n' "$output" | sed -n "s/^${marker}//p" | tail -n 1)
+  fi
+  if [ -z "$found" ]; then
+    standard_uv=$(normal_bin_dir)/uv
+    [ ! -x "$standard_uv" ] || found=$standard_uv
   fi
   case "$found" in /*) [ -x "$found" ] && printf '%s\n' "$found" ;; esac
 }
 
 uv_compatible() {
-  output=$($1 --version 2>/dev/null || true)
+  output=$("$1" --version 2>/dev/null || true)
   version=$(printf '%s\n' "$output" | sed -n 's/^uv \([0-9][0-9.]*\).*/\1/p' | head -n 1)
   [ -n "$version" ] || return 1
   major=$(printf '%s' "$version" | cut -d. -f1)
@@ -189,6 +188,12 @@ sha256_file() {
 }
 
 install_uv() {
+  bin_dir=$(normal_bin_dir)
+  case "$bin_dir" in /*) ;; *) die 'uv executable directory must be absolute' ;; esac
+  [ ! -e "$bin_dir/uv" ] && [ ! -L "$bin_dir/uv" ] \
+    || die "refusing to overwrite existing $bin_dir/uv; put a compatible uv on PATH or move that file"
+  [ ! -e "$bin_dir/uvx" ] && [ ! -L "$bin_dir/uvx" ] \
+    || die "refusing to overwrite existing $bin_dir/uvx; put a compatible uv on PATH or move that file"
   case "$OS-$ARCH" in
     macos-aarch64) target=aarch64-apple-darwin; expected=82d4b99dc6ea686695b5ee142ceba03dd3e3eda2b414e94215ab7bce94972fbb ;;
     macos-x86_64) target=x86_64-apple-darwin; expected=664aed584c276f8d79cdc3b7685cd48f5d64657bd6840b06b4b2b0db731b9c99 ;;
@@ -203,22 +208,39 @@ install_uv() {
   actual=$(sha256_file "$TMP_DIR/$archive")
   [ "$actual" = "$expected" ] || die 'downloaded uv archive failed SHA-256 verification'
   tar -xzf "$TMP_DIR/$archive" -C "$TMP_DIR"
-  bin_dir=$(normal_bin_dir)
-  case "$bin_dir" in /*) ;; *) die 'uv executable directory must be absolute' ;; esac
+  require_safe_destination_parent "$bin_dir"
   mkdir -p "$bin_dir"
-  [ ! -L "$bin_dir/uv" ] || die "refusing to replace symbolic link: $bin_dir/uv"
-  cp "$TMP_DIR/uv-$target/uv" "$bin_dir/uv.new"
-  chmod 755 "$bin_dir/uv.new"
-  mv -f "$bin_dir/uv.new" "$bin_dir/uv"
-  if [ -f "$TMP_DIR/uv-$target/uvx" ]; then
-    cp "$TMP_DIR/uv-$target/uvx" "$bin_dir/uvx.new"
-    chmod 755 "$bin_dir/uvx.new"
-    mv -f "$bin_dir/uvx.new" "$bin_dir/uvx"
-  else
-    ln -f "$bin_dir/uv" "$bin_dir/uvx"
+  require_safe_user_directory "$bin_dir" 'uv executable directory'
+  UV_STAGE=$(mktemp "$bin_dir/.uv.hi-hive.XXXXXX") || die 'could not stage uv in its executable directory'
+  cp "$TMP_DIR/uv-$target/uv" "$UV_STAGE"
+  chmod 755 "$UV_STAGE"
+  if ! ln "$UV_STAGE" "$bin_dir/uv"; then
+    rm -f "$UV_STAGE"
+    UV_STAGE=
+    die "refusing to overwrite existing $bin_dir/uv"
   fi
+  rm -f "$UV_STAGE"
+  UV_STAGE=
+  BOOTSTRAP_UV_CREATED=$bin_dir/uv
+  if [ -f "$TMP_DIR/uv-$target/uvx" ]; then
+    UVX_STAGE=$(mktemp "$bin_dir/.uvx.hi-hive.XXXXXX") || { rm -f "$bin_dir/uv"; BOOTSTRAP_UV_CREATED=; die 'could not stage uvx in its executable directory'; }
+    cp "$TMP_DIR/uv-$target/uvx" "$UVX_STAGE"
+    chmod 755 "$UVX_STAGE"
+    if ! ln "$UVX_STAGE" "$bin_dir/uvx"; then
+      rm -f "$UVX_STAGE" "$bin_dir/uv"
+      UVX_STAGE=
+      BOOTSTRAP_UV_CREATED=
+      die "refusing to overwrite existing $bin_dir/uvx"
+    fi
+    rm -f "$UVX_STAGE"
+    UVX_STAGE=
+  elif ! ln "$bin_dir/uv" "$bin_dir/uvx"; then
+    rm -f "$bin_dir/uv"
+    BOOTSTRAP_UV_CREATED=
+    die "refusing to overwrite existing $bin_dir/uvx"
+  fi
+  BOOTSTRAP_UV_CREATED=
   UV=$bin_dir/uv
-  UV_INSTALLED=1
 }
 
 profile_for_shell() {
@@ -235,6 +257,15 @@ path_contains() {
   case ":$PATH:" in *":$1:"*) return 0 ;; *) return 1 ;; esac
 }
 
+validate_tool_bin() {
+  case "$TOOL_BIN" in /*) ;; *) die 'uv tool-bin directory must be absolute' ;; esac
+  [ ! -L "$TOOL_BIN" ] || die "uv tool-bin directory must not be a symbolic link: $TOOL_BIN"
+  require_safe_destination_parent "$TOOL_BIN"
+  if [ -e "$TOOL_BIN" ]; then
+    require_safe_user_directory "$TOOL_BIN" 'uv tool-bin directory'
+  fi
+}
+
 validate_profile_bin() {
   case "$1" in *[!A-Za-z0-9_./\ -]*|'') die "tool-bin path cannot be written safely to a shell profile: $1" ;; esac
   case "$1" in *"
@@ -243,7 +274,8 @@ validate_profile_bin() {
 
 validate_path_block_target() {
   profile=$(profile_for_shell) || return 0
-  [ ! -L "$profile" ] || die "refusing to edit symbolic-link profile: $profile"
+  require_safe_destination_parent "$(dirname -- "$profile")"
+  require_safe_regular_file "$profile" 'shell profile'
   validate_profile_bin "$TOOL_BIN"
   [ -e "$profile" ] || return 0
   begins=$(grep -Fxc "$BEGIN_MARKER" "$profile" 2>/dev/null || true)
@@ -277,7 +309,11 @@ add_path_block() {
     printf "case ':\$PATH:' in *':%s:'*) ;; *) export PATH='%s':\"\$PATH\" ;; esac\n" "$TOOL_BIN" "$TOOL_BIN"
     printf '%s\n' "$END_MARKER"
   } > "$TMP_DIR/profile.new"
-  cat "$TMP_DIR/profile.new" > "$profile"
+  PROFILE_TMP=$(mktemp "$profile.hi-hive.XXXXXX") || die 'could not create a private temporary shell profile'
+  if [ -e "$profile" ]; then cp -p "$profile" "$PROFILE_TMP"; fi
+  cat "$TMP_DIR/profile.new" > "$PROFILE_TMP"
+  mv -f "$PROFILE_TMP" "$profile"
+  PROFILE_TMP=
   say "PATH         added $TOOL_BIN in $profile"
 }
 
@@ -294,7 +330,11 @@ remove_path_block() {
     $0 == end && inside { inside=0; next }
     !inside { print }
   ' "$profile" > "$TMP_DIR/profile.remove"
-  cat "$TMP_DIR/profile.remove" > "$profile"
+  PROFILE_TMP=$(mktemp "$profile.hi-hive.XXXXXX") || die 'could not create a private temporary shell profile'
+  cp -p "$profile" "$PROFILE_TMP"
+  cat "$TMP_DIR/profile.remove" > "$PROFILE_TMP"
+  mv -f "$PROFILE_TMP" "$profile"
+  PROFILE_TMP=
   say "PATH         removed installer block from $profile"
 }
 
@@ -327,6 +367,119 @@ service_possible() {
   fi
 }
 
+main() {
+set -eu
+
+umask 077
+
+PACKAGE_VERSION=0.2.0
+REPOSITORY=https://github.com/ertygiq/hi-hive
+API_URL=https://api.github.com/repos/ertygiq/hi-hive/git/ref/heads/main
+UV_VERSION=0.10.0
+BEGIN_MARKER='# >>> hi-hive installer PATH >>>'
+END_MARKER='# <<< hi-hive installer PATH <<<'
+
+YES=0
+PLAIN=0
+MODIFY_PATH=1
+INSTALL_SERVICE=1
+FORCE=0
+UNINSTALL=0
+PORT=4567
+TMP_DIR=
+PROFILE_TMP=
+RECORD_TMP=
+RESTORE_TMP=
+UV_STAGE=
+UVX_STAGE=
+BOOTSTRAP_UV_CREATED=
+TTY_DEVICE=
+
+
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes) YES=1 ;;
+    --plain) PLAIN=1 ;;
+    --no-modify-path) MODIFY_PATH=0 ;;
+    --no-service) INSTALL_SERVICE=0 ;;
+    --force|--repair) FORCE=1 ;;
+    --uninstall) UNINSTALL=1 ;;
+    --port)
+      shift
+      [ "$#" -gt 0 ] || die 'missing value after --port'
+      PORT=$1
+      ;;
+    --help|-h) usage; exit 0 ;;
+    --) shift; break ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+[ "$#" -eq 0 ] || die "unexpected argument: $1"
+
+case "$PORT" in ''|*[!0-9]*) die "invalid port: $PORT" ;; esac
+[ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "invalid port: $PORT"
+
+command -v id >/dev/null 2>&1 || die 'id is required'
+[ "$(id -u)" -ne 0 ] || die 'do not run the hi-hive installer as root; it is a per-user install'
+[ -n "${HOME:-}" ] || die 'HOME is not set'
+case "$HOME" in /*) ;; *) die 'HOME must be an absolute path' ;; esac
+require_safe_user_directory "$HOME" 'HOME'
+if [ -n "${HIVE_HOME:-}" ]; then case "$HIVE_HOME" in /*) ;; *) die 'HIVE_HOME must be an absolute path' ;; esac; fi
+if [ -n "${XDG_STATE_HOME:-}" ]; then case "$XDG_STATE_HOME" in /*) ;; *) die 'XDG_STATE_HOME must be an absolute path' ;; esac; fi
+if [ -n "${XDG_BIN_HOME:-}" ]; then case "$XDG_BIN_HOME" in /*) ;; *) die 'XDG_BIN_HOME must be an absolute path' ;; esac; fi
+if [ -n "${XDG_DATA_HOME:-}" ]; then case "$XDG_DATA_HOME" in /*) ;; *) die 'XDG_DATA_HOME must be an absolute path' ;; esac; fi
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then case "$XDG_CONFIG_HOME" in /*) ;; *) die 'XDG_CONFIG_HOME must be an absolute path' ;; esac; fi
+
+if [ -t 1 ] && [ -r /dev/tty ] && [ "$PLAIN" -eq 0 ]; then
+  TTY_DEVICE=/dev/tty
+else
+  PLAIN=1
+fi
+if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = dumb ]; then PLAIN=1; fi
+
+trap cleanup 0 HUP INT TERM
+
+make_temp
+
+case "$(uname -s 2>/dev/null || true)" in
+  Darwin) OS=macos ;;
+  Linux) OS=linux ;;
+  *) die 'hi-hive supports macOS and Ubuntu-tested Linux' 2 ;;
+esac
+case "$(uname -m 2>/dev/null || true)" in
+  arm64|aarch64) ARCH=aarch64 ;;
+  x86_64|amd64) ARCH=x86_64 ;;
+  *) die "unsupported CPU architecture: $(uname -m 2>/dev/null || printf unknown)" 2 ;;
+esac
+
+
+
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/hi-hive
+record_file=$state_dir/install.json
+[ ! -L "$state_dir" ] || die "install state directory must not be a symbolic link: $state_dir"
+require_safe_destination_parent "$state_dir"
+if [ -e "$state_dir" ]; then require_safe_user_directory "$state_dir" 'install state directory'; fi
+require_safe_regular_file "$record_file" 'install record'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 if [ "$UNINSTALL" -eq 1 ]; then
   UV=$(find_uv || true)
   [ -n "$UV" ] || die 'uv was not found; hi-hive tool removal cannot be verified'
@@ -344,7 +497,6 @@ fi
 
 need_curl
 UV=$(find_uv || true)
-UV_INSTALLED=0
 if [ -n "$UV" ] && ! uv_compatible "$UV"; then
   die "existing uv is too old or unreadable: $UV (update uv, then rerun)"
 fi
@@ -355,8 +507,8 @@ if [ -n "$UV" ]; then
 else
   TOOL_BIN=$(normal_bin_dir)
 fi
-case "$TOOL_BIN" in /*) ;; *) die 'uv tool-bin directory must be absolute' ;; esac
-[ ! -L "$TOOL_BIN" ] || die "uv tool-bin directory must not be a symbolic link: $TOOL_BIN"
+validate_tool_bin
+validate_install_paths
 DISPLAY_COMMAND=hihive
 PATH_WAS_MISSING=0
 if ! path_contains "$TOOL_BIN"; then
@@ -371,13 +523,22 @@ fi
 
 RUN_BACKGROUND=0
 FOREGROUND_RUNNING=0
+EXISTING_SERVICE=0
+SERVICE_SKIPPED=0
 SERVICE_POSSIBLE=0
 if service_possible; then SERVICE_POSSIBLE=1; fi
 OLD_COMMIT=$(read_record_commit || true)
 HIVE_DIR=${HIVE_HOME:-$HOME/.hihive}
+[ ! -L "$HIVE_DIR" ] || die "hi-hive data directory must not be a symbolic link: $HIVE_DIR"
+require_safe_destination_parent "$HIVE_DIR"
+if [ -e "$HIVE_DIR" ]; then require_safe_user_directory "$HIVE_DIR" 'hi-hive data directory'; fi
 CONFIG_PATH=${HIVE_CONFIG_FILE:-$HIVE_DIR/config.json}
+STATE_PATH=$HIVE_DIR/data/state.json
 case "$CONFIG_PATH" in /*) ;; *) die 'configuration path must be absolute' ;; esac
-[ ! -L "$CONFIG_PATH" ] || die "configuration file must not be a symbolic link: $CONFIG_PATH"
+require_safe_destination_parent "$(dirname -- "$CONFIG_PATH")"
+require_safe_regular_file "$CONFIG_PATH" 'configuration file'
+require_safe_destination_parent "$(dirname -- "$STATE_PATH")"
+require_safe_regular_file "$STATE_PATH" 'conversation state file'
 FRESH=1
 [ -f "$CONFIG_PATH" ] && FRESH=0
 if [ "$FRESH" -eq 1 ]; then
@@ -387,8 +548,13 @@ if [ "$FRESH" -eq 1 ]; then
     say "Runs         only while '$DISPLAY_COMMAND serve' runs (no background service is available here)"
   fi
 else
-  if [ "$SERVICE_POSSIBLE" -eq 1 ] && { [ -f "$HOME/Library/LaunchAgents/com.hihive.plist" ] || [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/com.hihive.service" ]; }; then
+  if [ -f "$HOME/Library/LaunchAgents/com.hihive.plist" ] || [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/com.hihive.service" ]; then
+    EXISTING_SERVICE=1
+  fi
+  if [ "$INSTALL_SERVICE" -eq 1 ] && [ "$SERVICE_POSSIBLE" -eq 1 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
     RUN_BACKGROUND=1
+  elif [ "$INSTALL_SERVICE" -eq 0 ] && [ "$EXISTING_SERVICE" -eq 1 ]; then
+    SERVICE_SKIPPED=1
   fi
 fi
 if [ "$PLAIN" -eq 1 ] && [ "$FRESH" -eq 1 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
@@ -407,7 +573,8 @@ say "Target        hi-hive $PACKAGE_VERSION from main@$COMMIT"
 if [ -z "$UV" ]; then install_uv; fi
 say "uv           using $("$UV" --version | awk '{print $2}') at $UV"
 TOOL_BIN=$("$UV" tool dir --bin)
-case "$TOOL_BIN" in /*) ;; *) die 'uv returned a non-absolute tool-bin directory' ;; esac
+validate_tool_bin
+validate_install_paths
 HIHIVE=$TOOL_BIN/hihive
 DISPLAY_COMMAND=$HIHIVE
 if path_contains "$TOOL_BIN" || [ "$MODIFY_PATH" -eq 1 ]; then DISPLAY_COMMAND=hihive; fi
@@ -433,16 +600,22 @@ else
   fi
   candidate_python=$candidate_tools/hi-hive/bin/python
   [ -x "$candidate_python" ] || die 'candidate installation has no Python interpreter'
-  PY_VERSION=$($candidate_python -c 'import platform; print(platform.python_version())')
+  PY_VERSION=$("$candidate_python" -c 'import platform; print(platform.python_version())')
   case "$PY_VERSION" in 3.14.*) ;; *) die "uv selected Python $PY_VERSION; hi-hive requires Python 3.14.x" ;; esac
-  PY_PATH=$($candidate_python -c 'import sys; print(sys.executable)')
+  PY_PATH=$("$candidate_python" -c 'import sys; print(sys.executable)')
   say "Python       selected $PY_VERSION at $PY_PATH (system Python unchanged)"
 
   if [ "$FRESH" -eq 0 ]; then
-    BACKUP=${HIVE_HOME:-$HOME/.hihive}/backups/install-$(date +%Y%m%d-%H%M%S)
-    mkdir -p "$BACKUP"
+    backup_root=$HIVE_DIR/backups
+    [ ! -L "$backup_root" ] || die "backup directory must not be a symbolic link: $backup_root"
+    require_safe_destination_parent "$backup_root"
+    mkdir -p "$backup_root"
+    require_safe_user_directory "$backup_root" 'backup directory'
+    BACKUP=$backup_root/install-$(date +%Y%m%d-%H%M%S)-$$
+    [ ! -e "$BACKUP" ] && [ ! -L "$BACKUP" ] || die "backup path already exists: $BACKUP"
+    mkdir "$BACKUP"
     [ ! -f "$CONFIG_PATH" ] || cp "$CONFIG_PATH" "$BACKUP/config.json"
-    [ ! -f "${HIVE_HOME:-$HOME/.hihive}/data/state.json" ] || cp "${HIVE_HOME:-$HOME/.hihive}/data/state.json" "$BACKUP/state.json"
+    [ ! -f "$STATE_PATH" ] || cp "$STATE_PATH" "$BACKUP/state.json"
     say "Backup       saved config/state files in $BACKUP"
   fi
   if ! "$UV" tool install --force --python 3.14 --no-config --no-progress "$ARCHIVE_URL"; then
@@ -462,6 +635,7 @@ else
     die "uv did not install hihive in $TOOL_BIN"
   fi
 fi
+write_record "$COMMIT"
 
 if [ "$PATH_WAS_MISSING" -eq 1 ] && [ "$MODIFY_PATH" -eq 1 ]; then add_path_block; fi
 
@@ -480,7 +654,7 @@ else
     "$HIHIVE" setup-coding-agents --offer
   fi
 fi
-if [ "$FRESH" -eq 0 ] && [ "$RUN_BACKGROUND" -eq 0 ] && "$HIHIVE" health >/dev/null 2>&1; then
+if [ "$FRESH" -eq 0 ] && [ "$RUN_BACKGROUND" -eq 0 ] && [ "$EXISTING_SERVICE" -eq 0 ] && "$HIHIVE" health >/dev/null 2>&1; then
   FOREGROUND_RUNNING=1
 fi
 
@@ -490,31 +664,34 @@ if [ "$RUN_BACKGROUND" -eq 1 ]; then
     SERVICE_OK=1
   else
     warn 'hi-hive is installed but NOT running: the background service failed.'
+    ROLLBACK_SERVICE_OK=0
     if [ -n "$OLD_COMMIT" ] && [ "$OLD_COMMIT" != "$COMMIT" ]; then
       warn "Restoring the previous package main@$OLD_COMMIT."
       if "$UV" tool install --force --python 3.14 --no-config --no-progress "$REPOSITORY/archive/$OLD_COMMIT.tar.gz"; then
         if [ -n "$BACKUP" ]; then
-          [ ! -f "$BACKUP/config.json" ] || cp "$BACKUP/config.json" "$CONFIG_PATH"
-          if [ -f "$BACKUP/state.json" ]; then
-            mkdir -p "${HIVE_HOME:-$HOME/.hihive}/data"
-            cp "$BACKUP/state.json" "${HIVE_HOME:-$HOME/.hihive}/data/state.json"
-          fi
+          [ ! -f "$BACKUP/config.json" ] || atomic_restore_file "$BACKUP/config.json" "$CONFIG_PATH"
+          [ ! -f "$BACKUP/state.json" ] || atomic_restore_file "$BACKUP/state.json" "$STATE_PATH"
         fi
         write_record "$OLD_COMMIT"
-        "$HIHIVE" service install --port "$PORT" >/dev/null 2>&1 || warn 'The previous package was restored, but its service could not be restarted.'
+        if "$HIHIVE" service install --port "$PORT" >/dev/null 2>&1; then
+          ROLLBACK_SERVICE_OK=1
+          warn 'The previous package and background service were restored.'
+        else
+          warn 'The previous package was restored, but its service could not be restarted.'
+        fi
       else
         warn 'Automatic package rollback failed; user data and the failed service remain stopped.'
       fi
     fi
-    warn 'Run it in a terminal instead:'
-    warn "  $DISPLAY_COMMAND serve"
-    warn "Then, in another terminal:  $DISPLAY_COMMAND open"
-    warn "Try the background service again: $DISPLAY_COMMAND service install"
+    if [ "$ROLLBACK_SERVICE_OK" -eq 0 ]; then
+      warn 'Run it in a terminal instead:'
+      warn "  $DISPLAY_COMMAND serve"
+      warn "Then, in another terminal:  $DISPLAY_COMMAND open"
+      warn "Try the background service again: $DISPLAY_COMMAND service install"
+    fi
     exit 1
   fi
 fi
-
-write_record "$COMMIT"
 
 say ''
 say 'Result'
@@ -530,7 +707,11 @@ if [ "$RUN_BACKGROUND" -eq 1 ] && [ "$SERVICE_OK" -eq 1 ]; then
     say "Open it later: $DISPLAY_COMMAND open"
   fi
 else
-  if [ "$FOREGROUND_RUNNING" -eq 1 ]; then
+  if [ "$SERVICE_SKIPPED" -eq 1 ]; then
+    say 'result        the new version is installed; the existing background service was not restarted because of --no-service.'
+    say "To load the new version in that service: $DISPLAY_COMMAND service restart"
+    say "Or remove the service first:            $DISPLAY_COMMAND service uninstall"
+  elif [ "$FOREGROUND_RUNNING" -eq 1 ]; then
     say 'result        the new version is installed; hi-hive is still running the previous version in a terminal.'
     say "Press Ctrl-C in that terminal, then run: $DISPLAY_COMMAND serve"
     say '(This starts the new version.)'
@@ -538,7 +719,7 @@ else
     say 'result        hi-hive is installed but NOT running yet.'
     say 'To use it:'
   fi
-  if [ "$FOREGROUND_RUNNING" -eq 1 ]; then :
+  if [ "$SERVICE_SKIPPED" -eq 1 ] || [ "$FOREGROUND_RUNNING" -eq 1 ]; then :
   elif [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
     say "  1. On this server:          $DISPLAY_COMMAND serve"
     say '     Keep that SSH session open. Closing it or pressing Ctrl-C stops hi-hive.'
@@ -549,7 +730,7 @@ else
     say '     Keep that terminal open. Closing it or pressing Ctrl-C stops hi-hive.'
     say "  2. In a second terminal: $DISPLAY_COMMAND open"
   fi
-  if [ "$FOREGROUND_RUNNING" -eq 0 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
+  if [ "$SERVICE_SKIPPED" -eq 0 ] && [ "$FOREGROUND_RUNNING" -eq 0 ] && [ "$SERVICE_POSSIBLE" -eq 1 ]; then
     say "To run it in the background instead: $DISPLAY_COMMAND service install"
     say "First stop '$DISPLAY_COMMAND serve' with Ctrl-C."
   fi
@@ -560,3 +741,7 @@ fi
 say "Installed      hi-hive $PACKAGE_VERSION from main@$COMMIT"
 say "Commands       $TOOL_BIN/hihive and $TOOL_BIN/hih"
 say "Data kept at   ${HIVE_HOME:-$HOME/.hihive}"
+
+}
+
+main "$@"

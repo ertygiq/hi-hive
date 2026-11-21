@@ -17,8 +17,13 @@ less install-hi-hive.sh
 sh install-hi-hive.sh
 ```
 
-The primary command downloads the installer from the repository's current `main` branch.
-The installer then resolves `main` once to an exact 40-character commit SHA, shows that SHA, and installs only that immutable source archive.
+The one-line command downloads the current installer from `main` and immediately runs it as your user.
+HTTPS protects the download in transit, but you still trust the repository and download host to provide the installer script.
+The installer script runs before it can resolve the exact package commit.
+The exact `main@SHA` protects the hi-hive source archive, not the already-running installer script.
+To review the script first, use the download, inspect, and run commands above, or use the manual uv instructions below.
+
+After the installer starts, it resolves `main` once to an exact 40-character commit SHA, shows that SHA, and installs only that immutable source archive.
 Until versioned releases exist, the displayed identity has two parts: package version `0.2.0` and source `main@SHA`.
 
 ## What the installer does
@@ -149,9 +154,11 @@ uv tool install --python 3.14 https://github.com/ertygiq/hi-hive/archive/COMMIT_
 
 ## Uninstall
 
-Download the installer and run:
+Download the installer, inspect it if desired, and run:
 
 ```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
+less install-hi-hive.sh
 sh install-hi-hive.sh --uninstall
 ```
 

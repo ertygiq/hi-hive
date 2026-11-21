@@ -16,7 +16,7 @@ from . import paths
 
 FINISHED = ("completed", "failed", "cancelled")
 NO_CODING_AGENT = ("No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, "
-                   "then run the installer again, or add it in Settings > All projects > Harnesses.")
+                   "then run the installer again, or add it in Settings > All projects > Coding agents.")
 
 USAGE = """\
 CLI for hi-hive - parallel task runner for coding agents (Claude Code, Pi).

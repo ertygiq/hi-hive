@@ -3,8 +3,10 @@
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -186,6 +188,48 @@ def restart():
     print(f"Restarted hi-hive ({manager()})")
 
 
+def _atomic_service_file(path, content):
+    path = Path(path)
+    previous_umask = os.umask(0o077)
+    try:
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    finally:
+        os.umask(previous_umask)
+    current = path.parent
+    home = Path.home()
+    while True:
+        if current.is_symlink():
+            raise SystemExit(f"Service directory must not contain symbolic links: {current}")
+        parent = current.stat()
+        if parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+            raise SystemExit(f"Service directory must be user-owned and not group/world-writable: {current}")
+        if current == home:
+            break
+        if home not in current.parents:
+            raise SystemExit(f"Service directory must be inside the current user's home: {path.parent}")
+        current = current.parent
+    if path.is_symlink() or (path.exists() and not stat.S_ISREG(path.stat().st_mode)):
+        raise SystemExit(f"Service file must be a regular file, not a symlink or special file: {path}")
+    if path.exists():
+        target = path.stat()
+        if target.st_uid != os.getuid() or target.st_mode & 0o022:
+            raise SystemExit(f"Service file must be user-owned and not group/world-writable: {path}")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _install_launchd(port):
     logs = paths.logs_dir()
     logs.mkdir(parents=True, exist_ok=True)
@@ -210,9 +254,7 @@ def _install_launchd(port):
     }
     paths.hive_home().mkdir(parents=True, exist_ok=True)
     path = launchd_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as file:
-        plistlib.dump(plist, file)
+    _atomic_service_file(path, plistlib.dumps(plist))
     print(f"Wrote {path}")
     _launchd_bootout()
     subprocess.run(["launchctl", "bootstrap", _domain(), str(path)], check=True)
@@ -303,9 +345,7 @@ def _install_systemd(port):
     _require_systemctl()
     _ensure_private_hive_home()
     path = systemd_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_systemd_unit(port), encoding="utf-8")
-    os.chmod(path, 0o600)
+    _atomic_service_file(path, _systemd_unit(port).encode())
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", UNIT_NAME], check=True)
     # Restart also starts an inactive unit and always applies a rewritten unit.

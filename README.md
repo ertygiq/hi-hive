@@ -48,7 +48,8 @@ Install on macOS or Ubuntu-tested Linux:
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
 ```
 
-The installer shows every download and asks whether hi-hive should run in the background.
+The installer reports the exact hi-hive commit and any additional software it downloads.
+In an interactive terminal, it asks whether hi-hive should run in the background.
 It detects supported Claude Code and Pi commands already installed on your computer; it does not install them or check their login.
 See [installation details](docs/install.md) for trust, manual installation, flags, updates, and uninstalling.
 

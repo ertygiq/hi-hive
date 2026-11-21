@@ -1311,7 +1311,7 @@ async function sendChat() {
 async function openAddTask() {
   await loadConfig();
   if ((configCache?.harnesses || []).length === 0) {
-    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Harnesses.', 'No coding agent');
+    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Coding agents.', 'No coding agent');
     return;
   }
   document.getElementById('add-label').value = '';
@@ -1399,7 +1399,7 @@ function updateBatchSubmitLabel() {
 async function openBatchAdd() {
   await loadConfig();
   if ((configCache?.harnesses || []).length === 0) {
-    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Harnesses.', 'No coding agent');
+    showMessage('No coding agent is set up yet. Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add it in Settings > All projects > Coding agents.', 'No coding agent');
     return;
   }
   const select = document.getElementById('batch-template');
@@ -1950,7 +1950,7 @@ function readHarnessAvailability() {
 
 function addHarnessForm() {
   editingHarnessId = null;
-  document.getElementById('harness-modal-title').textContent = 'Add Harness';
+  document.getElementById('harness-modal-title').textContent = 'Add coding agent';
   document.getElementById('harness-name').value = '';
   document.getElementById('harness-icon').value = '◆';
   document.getElementById('harness-command').value = '';
@@ -1966,7 +1966,7 @@ function editHarness(id) {
   const h = harnessesLocal.find(x => x.id === id);
   if (!h) return;
   editingHarnessId = id;
-  document.getElementById('harness-modal-title').textContent = 'Edit Harness';
+  document.getElementById('harness-modal-title').textContent = 'Edit coding agent';
   document.getElementById('harness-name').value = h.name || '';
   document.getElementById('harness-icon').value = h.icon || '◆';
   document.getElementById('harness-command').value = h.command || '';

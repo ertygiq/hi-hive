@@ -65,6 +65,79 @@ def test_linux_install_writes_private_direct_systemd_user_service(service_home, 
     ]
 
 
+@pytest.mark.parametrize("backend", ["launchd", "systemd"])
+def test_service_install_refuses_symlink_target_without_changing_victim(service_home, monkeypatch, backend):
+    home, _hive = service_home
+    path = service.launchd_path() if backend == "launchd" else service.systemd_path()
+    path.parent.mkdir(parents=True)
+    victim = home / "victim"
+    victim.write_text("KEEP\n")
+    path.symlink_to(victim)
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    installer = service._install_launchd if backend == "launchd" else service._install_systemd
+    with pytest.raises(SystemExit, match="regular file"):
+        installer(4567)
+
+    assert path.is_symlink()
+    assert victim.read_text() == "KEEP\n"
+
+
+@pytest.mark.parametrize("backend", ["launchd", "systemd"])
+def test_service_install_refuses_symlinked_directory_ancestor(service_home, monkeypatch, backend):
+    home, _hive = service_home
+    redirected = home / "redirected"
+    redirected.mkdir(parents=True)
+    ancestor = home / ("Library" if backend == "launchd" else ".config")
+    ancestor.parent.mkdir(parents=True, exist_ok=True)
+    ancestor.symlink_to(redirected)
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    installer = service._install_launchd if backend == "launchd" else service._install_systemd
+    with pytest.raises(SystemExit, match="symbolic links"):
+        installer(4567)
+
+    assert not (redirected / ("LaunchAgents/com.hihive.plist" if backend == "launchd" else "systemd/user/com.hihive.service")).exists()
+
+
+@pytest.mark.parametrize("backend", ["launchd", "systemd"])
+def test_service_install_refuses_non_regular_target(service_home, monkeypatch, backend):
+    path = service.launchd_path() if backend == "launchd" else service.systemd_path()
+    path.mkdir(parents=True)
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    installer = service._install_launchd if backend == "launchd" else service._install_systemd
+    with pytest.raises(SystemExit, match="regular file"):
+        installer(4567)
+
+
+@pytest.mark.parametrize("backend", ["launchd", "systemd"])
+def test_service_install_refuses_group_writable_regular_target(service_home, monkeypatch, backend):
+    path = service.launchd_path() if backend == "launchd" else service.systemd_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("KEEP\n")
+    path.chmod(0o620)
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    installer = service._install_launchd if backend == "launchd" else service._install_systemd
+    with pytest.raises(SystemExit, match="group/world-writable"):
+        installer(4567)
+
+    assert path.read_text() == "KEEP\n"
+
+
+def test_atomic_service_write_replaces_regular_file_and_leaves_no_temp(service_home):
+    path = service.systemd_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("old\n")
+
+    service._atomic_service_file(path, b"new\n")
+
+    assert path.read_text() == "new\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(path.parent.glob(f".{path.name}.*")) == []
+
+
 def test_systemd_working_directory_keeps_spaces_raw_and_escapes_specifiers():
     assert service._systemd_working_directory("/tmp/wd test%name") == "/tmp/wd test%%name"
     with pytest.raises(SystemExit, match="absolute path"):

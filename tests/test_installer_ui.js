@@ -7,7 +7,9 @@ test('zero-agent onboarding copy names supported agents and next steps', () => {
   assert.match(html, /No coding agent is set up yet/);
   assert.match(html, /Claude Code 2\.1\.283\+/);
   assert.match(html, /Pi 0\.87\.1\+/);
-  assert.match(html, /Settings &gt; All projects &gt; Harnesses/);
+  assert.match(html, /Settings &gt; All projects &gt; Coding agents/);
+  assert.match(html, /Add coding agent/);
+  assert.match(html, /Save coding agent/);
 });
 
 test('task entry points guard the zero-agent state', () => {
@@ -15,4 +17,7 @@ test('task entry points guard the zero-agent state', () => {
   assert.match(js, /function renderCodingAgentOnboarding/);
   assert.match(js, /async function openAddTask\(\)[\s\S]*No coding agent is set up yet/);
   assert.match(js, /async function openBatchAdd\(\)[\s\S]*No coding agent is set up yet/);
+  assert.match(js, /Add coding agent/);
+  assert.match(js, /Edit coding agent/);
+  assert.doesNotMatch(js, /Settings > All projects > Harnesses/);
 });
