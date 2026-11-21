@@ -66,6 +66,95 @@ test('marking and unmarking Done refresh the board without an error', async () =
   assert.equal(polls, 2);
 });
 
+test('responsive Results layout clamps widths and caps nested cards', () => {
+  const { context } = client();
+  for (const [width, expected] of [[899, 535], [900, 536], [1079, 715], [1080, 416], [1440, 776]]) {
+    context.innerWidth = width;
+    assert.equal(vm.runInContext('clampDetailWidth(2000)', context), expected);
+  }
+  context.innerWidth = 1080;
+  assert.equal(vm.runInContext('clampDetailWidth(1)', context), 400);
+  context.task = { id: 'task', label: 'Result', status: 'completed' };
+  assert.match(vm.runInContext('renderResultCard(task, 2, new Map())', context), /--fork-indent:32px;--action-space:106px/);
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  assert.match(css, /grid-template-columns:\s*300px minmax\(360px, 1fr\)/);
+  assert.match(css, /@media \(min-width: 900px\) and \(max-width: 1079px\)/);
+  assert.match(css, /\.workspace:has\(> \.detail-panel:not\(\.hidden\)\) main\s*\{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)/s);
+  assert.match(css, /\.workspace:has\(> \.detail-panel:not\(\.hidden\)\) \.side-column\s*\{[^}]*max-height:\s*35vh;[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.side-column \.panel\.is-empty \.task-list\s*\{\s*display:\s*none/);
+  assert.match(css, /\.side-column \.panel \.task-list\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /@media \(max-width: 899px\)/);
+  assert.match(css, /max-width:\s*calc\(880px - var\(--fork-indent, 0px\)\)/);
+  assert.match(css, /\.results-header-top, \.results-search-row, \.results-date-header\s*\{\s*max-width:\s*880px/);
+  assert.match(css, /@container \(max-width: 460px\)/);
+  assert.match(css, /\.result-card \.actions \.card-action\s*\{\s*display:\s*none/);
+  assert.match(css, /\.result-card \.harness-name-text, \.result-card \.harness-glyph\s*\{\s*display:\s*none/);
+  assert.match(css, /max-width:\s*140px;\s*text-overflow:\s*ellipsis/);
+  assert.match(html, /placeholder="Search…"/);
+});
+
+test('narrow action menu supports keyboard, focus return, positioning, and conditional actions', () => {
+  const { context, document } = client();
+  const children = [];
+  const menu = { id: '', getBoundingClientRect: () => ({ width: 170, height: 120 }),
+    set innerHTML(_value) { children.length = 0; }, appendChild(button) { children.push(button); },
+    get firstElementChild() { return children[0]; }, get lastElementChild() { return children.at(-1); } };
+  const container = { style: {}, classList: { add() {}, remove() {} },
+    querySelector() { return menu; }, querySelectorAll() { return children; } };
+  const originalGet = document.getElementById;
+  document.getElementById = id => id === 'result-card-menu-container' ? container : originalGet(id);
+  document.createElement = () => ({ setAttribute() {}, addEventListener(_event, handler) { this.click = handler; },
+    focus() { document.activeElement = this; } });
+  const attributes = {};
+  context.trigger = { setAttribute(name, value) { attributes[name] = value; },
+    closest() { return { classList: { add() {}, remove() {} } }; },
+    getBoundingClientRect() { return { right: 600, top: 740, bottom: 760 }; },
+    focus() { document.activeElement = this; } };
+  context.innerWidth = 1000; context.innerHeight = 800;
+  context.snapshot = { results: [{ id: 'task', status: 'failed', done: false }] };
+  vm.runInContext('state = snapshot', context);
+  context.event = { currentTarget: context.trigger, key: 'ArrowDown', stopPropagation() {}, preventDefault() {} };
+  vm.runInContext("resultMenuTriggerKey(event, 'task', false)", context);
+  assert.deepEqual(children.map(item => item.textContent), ['Mark done', 'Fork…', 'Continue', 'Retry', 'Delete']);
+  assert.equal(menu.id, 'result-menu-task');
+  assert.equal(attributes['aria-expanded'], 'true');
+  assert.equal(document.activeElement, children[0]);
+  assert.equal(container.style.top, '616px');
+  assert.equal(container.style.left, '430px');
+  context.event.key = 'ArrowUp'; vm.runInContext('resultMenuKey(event)', context);
+  assert.equal(document.activeElement, children.at(-1));
+  context.event.key = 'Home'; vm.runInContext('resultMenuKey(event)', context);
+  assert.equal(document.activeElement, children[0]);
+  context.event.key = 'End'; vm.runInContext('resultMenuKey(event)', context);
+  assert.equal(document.activeElement, children.at(-1));
+  context.event.key = 'Escape'; vm.runInContext('resultMenuKey(event)', context);
+  assert.equal(document.activeElement, context.trigger);
+  assert.equal(attributes['aria-expanded'], 'false');
+  context.event.key = 'ArrowUp'; vm.runInContext("resultMenuTriggerKey(event, 'task', true)", context);
+  assert.deepEqual(children.map(item => item.textContent), ['Mark done', 'Fork…', 'Continue', 'Delete']);
+  assert.equal(document.activeElement, children.at(-1));
+  context.event.key = 'Tab'; vm.runInContext('resultMenuKey(event)', context);
+  assert.equal(document.activeElement, context.trigger);
+});
+
+test('reply states use one indicator and prioritize unread, reply, then background', () => {
+  const { context } = client();
+  context.task = { id: 'task', activity_kind: 'reply', chat_pending: true, background_activity: { task_count: 2 } };
+  vm.runInContext("unreadReplies.ids.add('task')", context);
+  assert.match(vm.runInContext('replyStateHtml(task)', context), /is-unread[^]*New reply/);
+  vm.runInContext("unreadReplies.ids.delete('task')", context);
+  assert.match(vm.runInContext('replyStateHtml(task)', context), /is-active[^]*Replying/);
+  context.task.chat_pending = false;
+  assert.match(vm.runInContext('replyStateHtml(task)', context), /Background work/);
+  context.task.background_activity = { preparing_reply: true, task_count: 0 };
+  assert.match(vm.runInContext('replyStateHtml(task)', context), /Replying/);
+  context.task.activity_kind = 'original';
+  assert.equal(vm.runInContext('replyStateHtml(task)', context), '');
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.reply-state\.is-active \.state-dot\s*\{\s*animation:\s*none/);
+});
+
 test('result harness names are full, escaped, and use only configured colors or icons', () => {
   const { context } = client();
   context.harnesses = [
@@ -80,8 +169,8 @@ test('result harness names are full, escaped, and use only configured colors or 
   assert.match(html, /class="harness-dot" style="--harness-accent:#f85149"/);
   html = vm.runInContext("resultHarnessHtml('custom')", context);
   assert.match(html, /class="harness-glyph"[^>]*>★/);
-  assert.doesNotMatch(html, /harness-dot/);
-  assert.doesNotMatch(vm.runInContext("resultHarnessHtml('plain')", context), /harness-dot/);
+  assert.match(html, /harness-dot/);
+  assert.match(vm.runInContext("resultHarnessHtml('plain')", context), /harness-dot/);
   assert.equal(vm.runInContext("resultHarnessHtml('missing')", context), '');
 });
 
@@ -123,8 +212,8 @@ test('quiet result styles preserve focus, unread, layout and action visibility',
   assert.match(css, /\.result-card:focus-visible \.actions/);
   assert.match(css, /\.result-card \.actions:focus-within/);
   assert.match(css, /\.task-card\.result-card \.actions\s*\{\s*display:\s*flex;\s*opacity:\s*0;\s*pointer-events:\s*none/);
-  assert.match(css, /\.actions:focus-within\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto/);
-  assert.match(css, /\.result-card:hover \.label,[\s\S]*?\.result-card:has\(\.actions:focus-within\) \.label\s*\{\s*padding-right:\s*var\(--action-space\)/);
+  assert.match(css, /\.result-card\.menu-open \.actions\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto/);
+  assert.match(css, /\.result-card:hover \.label,[\s\S]*?\.result-card\.menu-open \.label\s*\{\s*padding-right:\s*var\(--action-space\)/);
   assert.match(css, /\.result-card \.meta > \*\s*\{\s*flex-shrink:\s*0/);
   assert.match(css, /\.result-card \.meta > \.harness-name\s*\{[^}]*flex-shrink:\s*1/s);
 });
@@ -373,7 +462,7 @@ test('read markers synchronize between tabs without a request', () => {
 test('follow-up indicator does not promote a result in completion order', () => {
   const { context, document } = client();
   context.cards = [
-    { id: 'older', label: 'OLDER_CARD', status: 'completed', completed_at: '2020-01-01T00:00:00Z' },
+    { id: 'older', label: 'OLDER_CARD', status: 'completed', activity_kind: 'reply', completed_at: '2020-01-01T00:00:00Z' },
     { id: 'newer', label: 'NEWER_CARD', status: 'completed', completed_at: '2020-01-02T00:00:00Z' }
   ];
   for (const pending of [false, true, false]) {
@@ -382,14 +471,14 @@ test('follow-up indicator does not promote a result in completion order', () => 
     vm.runInContext('state.results = cards; renderResults()', context);
     const html = document.getElementById('results-list').innerHTML;
     assert.ok(html.indexOf('NEWER_CARD') < html.indexOf('OLDER_CARD'));
-    assert.equal(html.includes('awaiting reply'), pending);
+    assert.equal(html.includes('Replying'), pending);
   }
 });
 
 test('background activity badges update cards and details without promoting results', () => {
   const { context, document } = client();
   context.cards = [
-    { id: 'task', label: 'OLDER_CARD', status: 'completed', completed_at: '2020-01-01T00:00:00Z', runner_state: 'idle', messages: [] },
+    { id: 'task', label: 'OLDER_CARD', status: 'completed', activity_kind: 'reply', completed_at: '2020-01-01T00:00:00Z', runner_state: 'idle', messages: [] },
     { id: 'newer', label: 'NEWER_CARD', status: 'completed', completed_at: '2020-01-02T00:00:00Z' }
   ];
   for (const [activity, label] of [
@@ -404,7 +493,7 @@ test('background activity badges update cards and details without promoting resu
     assert.ok(html.indexOf('NEWER_CARD') < html.indexOf('OLDER_CARD'));
     const detail = document.getElementById('detail-background-activity');
     if (label) {
-      assert.ok(html.includes(label));
+      assert.ok(html.includes(label === 'Preparing reply' ? 'Replying' : label));
       assert.ok(detail.innerHTML.includes(label));
       assert.equal(detail.style.display, 'inline-flex');
       assert.ok(html.includes('awaiting-reply'));
@@ -426,7 +515,7 @@ test('background activity uses the existing board poll without extra requests', 
     requests++;
     assert.match(url, /^\/api\/state(\?since=[^&]+)?$/);
     return { json: async () => ({ version, queue: [], workers: [], stats: {}, results: [{
-      id: 'task', status: 'completed', label: 'Task',
+      id: 'task', status: 'completed', label: 'Task', activity_kind: 'reply',
       background_activity: { task_count: version === 1 ? 2 : 0, preparing_reply: version === 2 }
     }] }) };
   };
@@ -435,7 +524,7 @@ test('background activity uses the existing board poll without extra requests', 
   assert.doesNotMatch(document.getElementById('results-list').innerHTML, /Background work ·/);
   version++;
   await vm.runInContext('originalPoll()', context);
-  assert.match(document.getElementById('results-list').innerHTML, /Preparing reply/);
+  assert.match(document.getElementById('results-list').innerHTML, /Replying/);
   version++;
   await vm.runInContext('originalPoll()', context);
   assert.doesNotMatch(document.getElementById('results-list').innerHTML, /background-activity/);

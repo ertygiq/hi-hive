@@ -59,10 +59,16 @@ function costHtml(t) {
 
 // Badge for a follow-up that's been sent but not yet answered. Disappears the
 // moment the agent's reply lands, so an idle card means "replied".
-function chatWaitingHtml(t) {
-  if (!t.chat_pending) return '';
-  return '<span class="chat-waiting" title="Follow-up sent — waiting for the agent to reply">'
-    + '<span class="pulse"></span>awaiting reply</span>';
+function replyStateHtml(task) {
+  let label, title, kind;
+  if (unreadReplies.ids.has(task.id)) {
+    [label, title, kind] = ['New reply', 'A reply arrived since you last opened this task', 'unread'];
+  } else if (task.activity_kind === 'reply' && (task.chat_pending || task.background_activity?.preparing_reply)) {
+    [label, title, kind] = ['Replying', 'The harness is replying to your message', 'active'];
+  } else if (task.background_activity?.task_count > 0) {
+    [label, title, kind] = ['Background work', 'Background tasks are still running', 'active'];
+  } else return '';
+  return `<span class="reply-state is-${kind}" title="${title}"><span class="state-dot" aria-hidden="true"></span>${label}</span>`;
 }
 
 // Messenger-style status line above the chat input. It sits outside the chat
@@ -508,6 +514,8 @@ async function poll() {
 }
 
 // --- Rendering ---
+let openResultMenu = null;
+
 // Lists are rebuilt from HTML on every state change. Put keyboard focus back on
 // the same card (or the same action button on it) so polling cannot steal it.
 function renderListPreservingFocus(list, html) {
@@ -515,6 +523,15 @@ function renderListPreservingFocus(list, html) {
   const card = active && list.contains?.(active) ? active.closest('[data-task-id]') : null;
   const actionLabel = card && active !== card ? active.getAttribute('aria-label') : null;
   list.innerHTML = html;
+  if (openResultMenu && list.id === 'results-list') {
+    const nextTrigger = list.querySelector(`[data-task-id="${openResultMenu.id}"] .card-menu-btn`);
+    if (nextTrigger) {
+      openResultMenu.trigger = nextTrigger;
+      nextTrigger.setAttribute('aria-expanded', 'true');
+      nextTrigger.closest('.result-card')?.classList.add('menu-open');
+      positionResultCardMenu();
+    } else closeResultCardMenu(false, true);
+  }
   if (!card) return;
   const next = list.querySelector(`[data-task-id="${card.dataset.taskId}"]`);
   const action = actionLabel && next?.querySelector(`[aria-label="${actionLabel}"]`);
@@ -522,6 +539,81 @@ function renderListPreservingFocus(list, html) {
 }
 
 // Enter or Space on a focused card opens it; keys on its buttons act on the button.
+function positionResultCardMenu() {
+  if (!openResultMenu) return;
+  const { trigger, container } = openResultMenu;
+  const rect = trigger.getBoundingClientRect();
+  const menu = container.querySelector('[role="menu"]');
+  const bounds = menu.getBoundingClientRect();
+  container.style.left = `${Math.max(0, Math.min(window.innerWidth - bounds.width, rect.right - bounds.width))}px`;
+  container.style.top = `${Math.max(0, rect.bottom + 4 + bounds.height > window.innerHeight ? rect.top - bounds.height - 4 : rect.bottom + 4)}px`;
+}
+
+function closeResultCardMenu(restoreFocus = false, fallback = false) {
+  if (!openResultMenu) return;
+  const { trigger, container } = openResultMenu;
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.closest('.result-card')?.classList.remove('menu-open');
+  container.classList.add('hidden');
+  openResultMenu = null;
+  if (restoreFocus) trigger.focus();
+  else if (fallback) document.getElementById('results-search')?.focus();
+}
+
+function openResultCardMenu(event, id, hasChildren, last = false) {
+  event.stopPropagation();
+  const trigger = event.currentTarget;
+  if (openResultMenu?.trigger === trigger) { closeResultCardMenu(true); return; }
+  closeResultCardMenu();
+  const task = (state.results || []).find(item => item.id === id);
+  if (!task) return;
+  const container = document.getElementById('result-card-menu-container');
+  const menu = container.querySelector('[role="menu"]');
+  menu.id = `result-menu-${id}`;
+  menu.innerHTML = '';
+  const items = [
+    [task.done ? 'Mark not done' : 'Mark done', () => toggleDone(id)],
+    ['Fork…', () => openForkTask(id)],
+    ...(['failed', 'cancelled'].includes(task.status) ? [['Continue', () => continueTask(id)]] : []),
+    ...(hasChildren ? [] : [['Retry', () => retryTask(id)]]),
+    ['Delete', () => deleteResultTask(id)]
+  ];
+  for (const [label, action] of items) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = label; button.setAttribute('role', 'menuitem');
+    button.addEventListener('click', e => { e.stopPropagation(); closeResultCardMenu(true); action(); });
+    menu.appendChild(button);
+  }
+  openResultMenu = { id, trigger, container };
+  trigger.setAttribute('aria-expanded', 'true');
+  trigger.closest('.result-card')?.classList.add('menu-open');
+  container.classList.remove('hidden');
+  positionResultCardMenu();
+  (last ? menu.lastElementChild : menu.firstElementChild)?.focus();
+}
+
+function resultMenuTriggerKey(event, id, hasChildren) {
+  event.stopPropagation();
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    openResultCardMenu(event, id, hasChildren, event.key === 'ArrowUp');
+  }
+}
+
+function resultMenuKey(event) {
+  event.stopPropagation();
+  if (!openResultMenu) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeResultCardMenu(true); return; }
+  if (event.key === 'Tab') { closeResultCardMenu(true); return; }
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const items = [...openResultMenu.container.querySelectorAll('[role="menuitem"]')];
+  const index = items.indexOf(document.activeElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 :
+    (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+  items[next]?.focus();
+}
+
 function cardKeydown(event, id) {
   if (event.target !== event.currentTarget) return;
   if (event.key === 'Enter' || event.key === ' ') {
@@ -634,8 +726,7 @@ function renderWorkers() {
           <span class="status-badge ${statusClass}">${statusText}</span>
           ${harnessBadgeHtml(t.harness)}
           ${costHtml(t)}
-          ${chatWaitingHtml(t)}
-          ${backgroundActivityHtml(t)}
+          ${replyStateHtml(t)}
         </div>
         <div class="output-preview">${esc(lastLines) || '...'}</div>
         <div class="actions">
@@ -650,6 +741,7 @@ function renderResults() {
   const list = document.getElementById('results-list');
   let results = state.results || [];
   if (results.length === 0) {
+    if (openResultMenu) closeResultCardMenu(false, true);
     list.innerHTML = '<div class="empty">No results yet. Start an agent with + Add Task.</div>';
     return;
   }
@@ -658,6 +750,7 @@ function renderResults() {
   if (hideDone) {
     results = results.filter(t => !t.done);
     if (results.length === 0) {
+      if (openResultMenu) closeResultCardMenu(false, true);
       list.innerHTML = '<div class="empty">No tasks left to do</div>';
       return;
     }
@@ -676,6 +769,7 @@ function renderResults() {
         (deepSearch && deepMatchesTask(t)))
       .sort(sortDesc);
     if (matches.length === 0) {
+      if (openResultMenu) closeResultCardMenu(false, true);
       list.innerHTML = '<div class="empty">No results match your search</div>';
       return;
     }
@@ -735,9 +829,10 @@ function resultHarnessHtml(harnessId) {
   const title = esc(name).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const swatch = TASK_COLORS.find(color => color.id === harness.color)?.swatch;
   const icon = (harness.icon || '').trim();
-  const glyph = icon && icon !== '◆' ? `<span class="harness-glyph" aria-hidden="true">${esc(icon)}</span>`
-    : swatch ? `<span class="harness-dot" style="--harness-accent:${swatch}" aria-hidden="true"></span>` : '';
-  return `<span class="harness-name" title="Harness: ${title}">${glyph}<span class="harness-name-text">${esc(name)}</span></span>`;
+  const custom = icon && icon !== '◆';
+  const glyph = custom ? `<span class="harness-glyph" aria-hidden="true">${esc(icon)}</span>` : '';
+  const dot = `<span class="harness-dot" style="--harness-accent:${swatch || 'var(--text-muted)'}" aria-hidden="true"></span>`;
+  return `<span class="harness-name${custom ? ' has-glyph' : ''}" title="Harness: ${title}">${glyph}${dot}<span class="harness-name-text">${esc(name)}</span></span>`;
 }
 
 function messageCountHtml(count) {
@@ -763,7 +858,7 @@ function renderResultCard(t, depth, childrenByParent) {
   const isCollapsed = hasChildren && collapsedForks.has(t.id);
   const forkPrefix = depth > 0 ? '<span class="fork-tree-prefix">└─</span>' : '';
   const actionCount = 3 + (hasChildren ? 0 : 1) + (['failed', 'cancelled'].includes(t.status) ? 1 : 0);
-  const indentStyle = `style="${depth > 0 ? `margin-left:${depth * 16}px;` : ''}--action-space:${actionCount * 28 + (actionCount - 1) * 2 + 4}px"`;
+  const indentStyle = `style="--fork-indent:${depth * 16}px;--action-space:${actionCount * 24 + (actionCount - 1) * 2 + 4}px"`;
   const forkAction = isCollapsed ? 'Show forks' : 'Hide forks';
   const forksLabel = hasChildren ? `<button class="fork-count" aria-expanded="${!isCollapsed}" title="${forkAction}" aria-label="${forkAction}" onclick="event.stopPropagation();toggleForkCollapse('${t.id}')">⑂ ${children.length} <span class="fork-chevron" aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span></button>` : '';
   const activityHtml = backgroundActivityHtml(t);
@@ -783,18 +878,17 @@ function renderResultCard(t, depth, childrenByParent) {
         ${costHtml(t)}
         ${t.has_review ? '<span>reviewed</span>' : ''}
         ${messageCountHtml(t.chat_count)}
-        ${chatWaitingHtml(t)}
-        ${activityHtml}
-        ${unreadReplyHtml(t)}
+        ${replyStateHtml(t)}
         ${forksLabel}
       </div>
       ${summary}
       <div class="actions">
-        <button class="icon-btn small done-btn${t.done ? ' is-done' : ''}" onclick="event.stopPropagation();toggleDone('${t.id}')" title="${doneTitle}" aria-label="${doneTitle}">${doneIcon}</button>
-        <button class="icon-btn small" onclick="event.stopPropagation();openForkTask('${t.id}')" title="Fork" aria-label="Fork">⑂</button>
-        ${['failed', 'cancelled'].includes(t.status) ? `<button class="icon-btn small" onclick="event.stopPropagation();continueTask('${t.id}')" title="Continue" aria-label="Continue">▶</button>` : ''}
-        ${hasChildren ? '' : `<button class="icon-btn small" onclick="event.stopPropagation();retryTask('${t.id}')" title="Retry" aria-label="Retry">↻</button>`}
-        <button class="icon-btn small" onclick="event.stopPropagation();deleteResultTask('${t.id}')" title="Delete" aria-label="Delete">✕</button>
+        <button class="icon-btn small card-action done-btn${t.done ? ' is-done' : ''}" onclick="event.stopPropagation();toggleDone('${t.id}')" title="${doneTitle}" aria-label="${doneTitle}">${doneIcon}</button>
+        <button class="icon-btn small card-action" onclick="event.stopPropagation();openForkTask('${t.id}')" title="Fork" aria-label="Fork">⑂</button>
+        ${['failed', 'cancelled'].includes(t.status) ? `<button class="icon-btn small card-action" onclick="event.stopPropagation();continueTask('${t.id}')" title="Continue" aria-label="Continue">▶</button>` : ''}
+        ${hasChildren ? '' : `<button class="icon-btn small card-action" onclick="event.stopPropagation();retryTask('${t.id}')" title="Retry" aria-label="Retry">↻</button>`}
+        <button class="icon-btn small card-action" onclick="event.stopPropagation();deleteResultTask('${t.id}')" title="Delete" aria-label="Delete">✕</button>
+        <button class="icon-btn small card-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="result-menu-${t.id}" title="Actions" aria-label="Actions" onclick="openResultCardMenu(event, '${t.id}', ${hasChildren})" onkeydown="resultMenuTriggerKey(event, '${t.id}', ${hasChildren})">⋯</button>
       </div>
     </div>
   `;
@@ -826,11 +920,12 @@ const DETAIL_WIDTH_KEY = 'hihive.detail_width';
 let detailWidth = 0;
 try { detailWidth = Number(localStorage.getItem(DETAIL_WIDTH_KEY)) || 0; } catch (e) {}
 
-// Keep at least 420px for the board so Results stay readable.
+// Preserve a 360px Results column and, on wide screens, the 300px side column.
 function clampDetailWidth(width) {
   const viewport = globalThis.innerWidth || 1200;
   const preferred = width || Math.round(viewport * 0.45);
-  return Math.max(360, Math.min(Math.max(360, viewport - 420), preferred));
+  const maximum = viewport >= 1080 ? viewport - 664 : viewport - 364;
+  return Math.max(400, Math.min(Math.max(400, maximum), preferred));
 }
 
 function applyDetailWidth() {
@@ -2515,6 +2610,7 @@ function flagInvalid(el, message) {
 }
 
 document.addEventListener('click', (e) => {
+  if (openResultMenu) closeResultCardMenu();
   if (detailMenuOpen() && !e.target.closest('.menu-wrap')) closeDetailMenu();
   if (projectMenuOpen() && !e.target.closest('.project-switcher')) closeProjectMenu();
   if (!e.target.classList.contains('modal-overlay')) return;
@@ -2526,6 +2622,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (confirmResolve) return resolveConfirm(false);
+  if (openResultMenu) { closeResultCardMenu(true); return; }
   if (projectMenuOpen()) {
     closeProjectMenu();
     document.getElementById('project-btn').focus();
