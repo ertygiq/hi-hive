@@ -26,7 +26,7 @@ def service_home(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_executable", lambda: "/opt/hi hive/bin/hihive")
     monkeypatch.setattr(service, "_server_config", lambda timeout=0.5: None)
     monkeypatch.setattr(service, "_wait_for_health", lambda selected, timeout=10: True)
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {})
+    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"HOME": str(home)})
     return home, hive
 
 
@@ -111,7 +111,8 @@ def test_systemd_install_refuses_symlinked_custom_xdg_config_ancestor_before_cre
     config_link = home / "config-install-link"
     config_link.symlink_to(redirected)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_link))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(config_link)})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(config_link)})
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     with pytest.raises(SystemExit, match="symbolic links"):
@@ -152,7 +153,8 @@ def test_systemd_uninstall_refuses_symlinked_custom_xdg_config_ancestor(service_
     config_link = home / "config-link"
     config_link.symlink_to(redirected)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_link))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(config_link)})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(config_link)})
     victim = redirected / "systemd/user/com.hihive.service"
     victim.parent.mkdir(parents=True)
     victim.write_text("KEEP\n")
@@ -167,19 +169,30 @@ def test_systemd_uninstall_refuses_symlinked_custom_xdg_config_ancestor(service_
     assert calls == []
 
 
-def test_systemd_install_and_uninstall_allow_safe_external_xdg_config_home(service_home, monkeypatch):
+def test_systemd_operations_use_manager_home_and_external_xdg_not_process_values(service_home, monkeypatch):
     home, _hive = service_home
-    external = home.parent / "external-config"
-    external.mkdir(mode=0o700)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(external)})
+    manager_home = home.parent / "manager-home"
+    manager_home.mkdir(mode=0o700)
+    manager_root = home.parent / "manager-config"
+    manager_root.mkdir(mode=0o700)
+    process_root = home.parent / "process-config"
+    process_root.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(process_root))
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(manager_home), "XDG_CONFIG_HOME": str(manager_root)})
+    monkeypatch.setattr(service.sys, "platform", "linux")
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     calls = []
     monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
 
     service._install_systemd(4567)
-    path = external / "systemd/user/com.hihive.service"
+    path = manager_root / "systemd/user/com.hihive.service"
     assert path.exists()
+    assert not (process_root / "systemd").exists()
+    assert not (home / ".config/systemd").exists()
+
+    service.status()
+    service.restart()
 
     calls.clear()
     service._uninstall_systemd(quiet=True)
@@ -188,6 +201,22 @@ def test_systemd_install_and_uninstall_allow_safe_external_xdg_config_home(servi
         ["systemctl", "--user", "disable", "--now", service.UNIT_NAME],
         ["systemctl", "--user", "daemon-reload"],
     ]
+
+
+def test_manager_only_external_xdg_works_with_process_xdg_unset(service_home, monkeypatch):
+    home, _hive = service_home
+    manager_root = home.parent / "manager-only-config"
+    manager_root.mkdir(mode=0o700)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(manager_root)})
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: Result())
+
+    service._install_systemd(4567)
+
+    assert (manager_root / "systemd/user/com.hihive.service").exists()
+    assert not (home / ".config/systemd").exists()
 
 
 def test_systemd_manager_environment_is_read_without_shell_parsing(monkeypatch):
@@ -199,32 +228,51 @@ def test_systemd_manager_environment_is_read_without_shell_parsing(monkeypatch):
     assert environment == {"XDG_CONFIG_HOME": "/safe/config", "VALUE": "contains=equals"}
 
 
-def test_systemd_manager_environment_rejects_ambiguous_duplicate(monkeypatch):
+@pytest.mark.parametrize("name", ["HOME", "XDG_CONFIG_HOME"])
+def test_systemd_manager_environment_rejects_ambiguous_duplicate(monkeypatch, name):
     monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: Result(
-        stdout="XDG_CONFIG_HOME=/one\nXDG_CONFIG_HOME=/two\n"))
+        stdout=f"{name}=/one\n{name}=/two\n"))
 
-    with pytest.raises(SystemExit, match="ambiguous XDG_CONFIG_HOME"):
+    with pytest.raises(SystemExit, match=f"ambiguous {name}"):
         service._systemd_manager_environment()
 
 
-def test_process_only_external_xdg_does_not_redirect_systemd_unit(service_home, monkeypatch):
+def test_systemd_manager_missing_or_relative_home_is_rejected_before_writes(service_home, monkeypatch):
     home, _hive = service_home
+    calls = []
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: calls.append(args) or Result())
+    for environment, message in (({}, "no HOME"), ({"HOME": "relative"}, "relative HOME")):
+        monkeypatch.setattr(service, "_systemd_manager_environment", lambda environment=environment: environment)
+        with pytest.raises(SystemExit, match=message):
+            service._install_systemd(4567)
+
+    assert not (home / ".config/systemd").exists()
+    assert calls == []
+
+
+def test_manager_home_fallback_ignores_process_home_and_external_xdg(service_home, monkeypatch):
+    home, _hive = service_home
+    manager_home = home.parent / "fallback-manager-home"
+    manager_home.mkdir(mode=0o700)
     process_only = home.parent / "process-only-config"
     process_only.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(process_only))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {})
+    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"HOME": str(manager_home)})
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: Result())
 
     service._install_systemd(4567)
 
-    assert (home / ".config/systemd/user/com.hihive.service").exists()
+    assert (manager_home / ".config/systemd/user/com.hihive.service").exists()
+    assert not (home / ".config/systemd").exists()
     assert not (process_only / "systemd").exists()
 
 
 def test_systemd_manager_relative_xdg_is_rejected_before_writes(service_home, monkeypatch):
     home, _hive = service_home
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": "relative"})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": "relative"})
     calls = []
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: calls.append(args) or Result())
@@ -237,6 +285,7 @@ def test_systemd_manager_relative_xdg_is_rejected_before_writes(service_home, mo
 
 
 def test_systemd_external_xdg_under_root_owned_sticky_temp_supports_install_and_uninstall(service_home, monkeypatch):
+    home, _hive = service_home
     shared = (Path("/private/tmp") if Path("/private/tmp").exists() else Path("/tmp")).resolve()
     details = shared.stat()
     if details.st_uid != 0 or not details.st_mode & 0o022 or not details.st_mode & 0o1000:
@@ -244,7 +293,8 @@ def test_systemd_external_xdg_under_root_owned_sticky_temp_supports_install_and_
     external = Path(tempfile.mkdtemp(prefix="hi-hive-xdg-", dir=shared))
     external.chmod(0o700)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(external)})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(external)})
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     calls = []
     monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
@@ -272,7 +322,8 @@ def test_systemd_uninstall_refuses_group_writable_external_xdg_without_changes(s
     victim.write_text("KEEP\n")
     external.chmod(0o770)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(external)})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(external)})
     calls = []
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
@@ -305,7 +356,8 @@ def test_systemd_install_refuses_unsafe_external_xdg_config_home_without_systemc
         parent.chmod(0o770)
         external = parent / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(external)})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(external)})
 
     with pytest.raises(SystemExit, match="group/world-writable|symbolic links"):
         service._install_systemd(4567)
@@ -339,7 +391,8 @@ def test_external_xdg_rejects_unsafe_ancestors_before_changes_or_manager_calls(
         victim.parent.mkdir(parents=True)
         victim.write_text("UNIT\n")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
-    monkeypatch.setattr(service, "_systemd_manager_environment", lambda: {"XDG_CONFIG_HOME": str(root)})
+    monkeypatch.setattr(service, "_systemd_manager_environment",
+                        lambda: {"HOME": str(home), "XDG_CONFIG_HOME": str(root)})
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     calls = []
     monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())

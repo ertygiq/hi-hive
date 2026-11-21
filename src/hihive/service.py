@@ -46,14 +46,26 @@ def _systemd_manager_environment():
     return environment
 
 
-def systemd_path():
-    configured = _systemd_manager_environment().get("XDG_CONFIG_HOME")
-    if configured:
-        root = Path(configured)
+def _systemd_manager_context():
+    environment = _systemd_manager_environment()
+    configured_home = environment.get("HOME")
+    if not configured_home:
+        raise SystemExit("The systemd user manager has no HOME setting")
+    home = Path(configured_home)
+    if not home.is_absolute():
+        raise SystemExit(f"The systemd user manager has a relative HOME: {configured_home}")
+    configured_root = environment.get("XDG_CONFIG_HOME")
+    if configured_root:
+        root = Path(configured_root)
         if not root.is_absolute():
-            raise SystemExit(f"The systemd user manager has a relative XDG_CONFIG_HOME: {configured}")
+            raise SystemExit(f"The systemd user manager has a relative XDG_CONFIG_HOME: {configured_root}")
     else:
-        root = Path.home() / ".config"
+        root = home / ".config"
+    return home, root
+
+
+def systemd_path(context=None):
+    _home, root = context or _systemd_manager_context()
     return root / "systemd" / "user" / UNIT_NAME
 
 
@@ -184,7 +196,13 @@ def status():
     selected = manager()
     if not available():
         raise SystemExit("Background service: unavailable. Run hi-hive in a terminal with:  hihive serve")
-    installed = launchd_path().exists() if selected == "launchd" else systemd_path().exists()
+    if selected == "launchd":
+        installed = launchd_path().exists()
+    else:
+        context = _systemd_manager_context()
+        path = systemd_path(context)
+        _validate_service_target(path, context[1], context[0])
+        installed = path.exists()
     if not installed:
         print(f"Background service: not installed ({selected})")
         return
@@ -205,32 +223,31 @@ def restart():
         subprocess.run(["launchctl", "kickstart", "-k", f"{_domain()}/{LABEL}"], check=True)
     else:
         _require_systemctl()
-        if not systemd_path().exists():
+        context = _systemd_manager_context()
+        path = systemd_path(context)
+        _validate_service_target(path, context[1], context[0])
+        if not path.exists():
             raise SystemExit("hi-hive systemd user service is not installed")
         subprocess.run(["systemctl", "--user", "restart", UNIT_NAME], check=True)
     print(f"Restarted hi-hive ({manager()})")
 
 
-def _service_directory_root(directory):
+def _service_directory_root(directory, managed_root=None):
     directory = Path(directory)
     home = Path.home()
-    if directory == home or home in directory.parents:
-        return home
-    configured = os.environ.get("XDG_CONFIG_HOME")
-    if configured:
-        root = Path(configured)
-        if not root.is_absolute():
-            raise SystemExit(f"XDG_CONFIG_HOME must be absolute: {root}")
-        if directory == root or root in directory.parents:
-            return root
-    raise SystemExit(f"Service directory must be inside HOME or XDG_CONFIG_HOME: {directory}")
+    root = Path(managed_root) if managed_root is not None else home
+    if not root.is_absolute():
+        raise SystemExit(f"Service configuration root must be absolute: {root}")
+    if directory != root and root not in directory.parents:
+        raise SystemExit(f"Service directory must be inside its managed configuration root: {directory}")
+    return root
 
 
-def _validate_service_directory(directory, create=False):
+def _validate_service_directory(directory, create=False, managed_root=None, trusted_home=None):
     directory = Path(directory)
-    root = _service_directory_root(directory)
-    home = Path.home()
-    external = root != home
+    root = _service_directory_root(directory, managed_root)
+    home = Path(trusted_home) if trusted_home is not None else Path.home()
+    external = root != home and home not in root.parents
     anchor = Path(directory.anchor) if external else home
     current = directory
     while True:
@@ -258,12 +275,12 @@ def _validate_service_directory(directory, create=False):
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
         finally:
             os.umask(previous_umask)
-        _validate_service_directory(directory)
+        _validate_service_directory(directory, managed_root=managed_root, trusted_home=trusted_home)
 
 
-def _validate_service_target(path):
+def _validate_service_target(path, managed_root=None, trusted_home=None):
     path = Path(path)
-    _validate_service_directory(path.parent)
+    _validate_service_directory(path.parent, managed_root=managed_root, trusted_home=trusted_home)
     if path.is_symlink() or (path.exists() and not stat.S_ISREG(path.stat().st_mode)):
         raise SystemExit(f"Service file must be a regular file, not a symlink or special file: {path}")
     if path.exists():
@@ -272,10 +289,10 @@ def _validate_service_target(path):
             raise SystemExit(f"Service file must be user-owned and not group/world-writable: {path}")
 
 
-def _atomic_service_file(path, content):
+def _atomic_service_file(path, content, managed_root=None, trusted_home=None):
     path = Path(path)
-    _validate_service_directory(path.parent, create=True)
-    _validate_service_target(path)
+    _validate_service_directory(path.parent, create=True, managed_root=managed_root, trusted_home=trusted_home)
+    _validate_service_target(path, managed_root=managed_root, trusted_home=trusted_home)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as file:
@@ -406,9 +423,10 @@ def _ensure_private_hive_home():
 
 def _install_systemd(port):
     _require_systemctl()
+    context = _systemd_manager_context()
     _ensure_private_hive_home()
-    path = systemd_path()
-    _atomic_service_file(path, _systemd_unit(port).encode())
+    path = systemd_path(context)
+    _atomic_service_file(path, _systemd_unit(port).encode(), context[1], context[0])
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", UNIT_NAME], check=True)
     # Restart also starts an inactive unit and always applies a rewritten unit.
@@ -418,8 +436,9 @@ def _install_systemd(port):
 
 def _uninstall_systemd(quiet=False):
     _require_systemctl()
-    path = systemd_path()
-    _validate_service_target(path)
+    context = _systemd_manager_context()
+    path = systemd_path(context)
+    _validate_service_target(path, context[1], context[0])
     subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
     if path.exists():
         path.unlink()
