@@ -188,32 +188,48 @@ def restart():
     print(f"Restarted hi-hive ({manager()})")
 
 
-def _atomic_service_file(path, content):
-    path = Path(path)
-    previous_umask = os.umask(0o077)
-    try:
-        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    finally:
-        os.umask(previous_umask)
-    current = path.parent
+def _validate_service_directory(directory, create=False):
+    directory = Path(directory)
     home = Path.home()
+    if directory != home and home not in directory.parents:
+        raise SystemExit(f"Service directory must be inside the current user's home: {directory}")
+    current = directory
     while True:
         if current.is_symlink():
             raise SystemExit(f"Service directory must not contain symbolic links: {current}")
-        parent = current.stat()
-        if parent.st_uid != os.getuid() or parent.st_mode & 0o022:
-            raise SystemExit(f"Service directory must be user-owned and not group/world-writable: {current}")
+        if current.exists():
+            details = current.stat()
+            if not stat.S_ISDIR(details.st_mode):
+                raise SystemExit(f"Service directory path is not a directory: {current}")
+            if details.st_uid != os.getuid() or details.st_mode & 0o022:
+                raise SystemExit(f"Service directory must be user-owned and not group/world-writable: {current}")
         if current == home:
             break
-        if home not in current.parents:
-            raise SystemExit(f"Service directory must be inside the current user's home: {path.parent}")
         current = current.parent
+    if create:
+        previous_umask = os.umask(0o077)
+        try:
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        finally:
+            os.umask(previous_umask)
+        _validate_service_directory(directory)
+
+
+def _validate_service_target(path):
+    path = Path(path)
+    _validate_service_directory(path.parent)
     if path.is_symlink() or (path.exists() and not stat.S_ISREG(path.stat().st_mode)):
         raise SystemExit(f"Service file must be a regular file, not a symlink or special file: {path}")
     if path.exists():
         target = path.stat()
         if target.st_uid != os.getuid() or target.st_mode & 0o022:
             raise SystemExit(f"Service file must be user-owned and not group/world-writable: {path}")
+
+
+def _atomic_service_file(path, content):
+    path = Path(path)
+    _validate_service_directory(path.parent, create=True)
+    _validate_service_target(path)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as file:
@@ -266,6 +282,7 @@ def _uninstall_launchd(quiet=False):
         if not quiet:
             print(f"Stopped {LABEL}")
     path = launchd_path()
+    _validate_service_target(path)
     if path.exists():
         path.unlink()
         if not quiet:
@@ -357,6 +374,7 @@ def _uninstall_systemd(quiet=False):
     _require_systemctl()
     subprocess.run(["systemctl", "--user", "disable", "--now", UNIT_NAME], check=False)
     path = systemd_path()
+    _validate_service_target(path)
     if path.exists():
         path.unlink()
         if not quiet:

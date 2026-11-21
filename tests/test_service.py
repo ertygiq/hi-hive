@@ -100,6 +100,63 @@ def test_service_install_refuses_symlinked_directory_ancestor(service_home, monk
     assert not (redirected / ("LaunchAgents/com.hihive.plist" if backend == "launchd" else "systemd/user/com.hihive.service")).exists()
 
 
+def test_systemd_install_refuses_symlinked_custom_xdg_config_ancestor_before_creating_directories(service_home, monkeypatch):
+    home, _hive = service_home
+    redirected = home / "redirected-install-xdg"
+    redirected.mkdir(parents=True)
+    config_link = home / "config-install-link"
+    config_link.symlink_to(redirected)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_link))
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    with pytest.raises(SystemExit, match="symbolic links"):
+        service._install_systemd(4567)
+
+    assert not (redirected / "systemd").exists()
+
+
+@pytest.mark.parametrize("backend", ["launchd", "systemd"])
+def test_service_uninstall_refuses_symlinked_ancestor_without_deleting_redirected_file(service_home, monkeypatch, backend):
+    home, _hive = service_home
+    redirected = home / "redirected-uninstall"
+    redirected.mkdir(parents=True)
+    ancestor = home / ("Library" if backend == "launchd" else ".config")
+    ancestor.parent.mkdir(parents=True, exist_ok=True)
+    ancestor.symlink_to(redirected)
+    relative = "LaunchAgents/com.hihive.plist" if backend == "launchd" else "systemd/user/com.hihive.service"
+    victim = redirected / relative
+    victim.parent.mkdir(parents=True)
+    victim.write_text("KEEP\n")
+    monkeypatch.setattr(service, "_launchd_loaded", lambda: False)
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: Result())
+
+    uninstaller = service._uninstall_launchd if backend == "launchd" else service._uninstall_systemd
+    with pytest.raises(SystemExit, match="symbolic links"):
+        uninstaller(quiet=True)
+
+    assert victim.read_text() == "KEEP\n"
+
+
+def test_systemd_uninstall_refuses_symlinked_custom_xdg_config_ancestor(service_home, monkeypatch):
+    home, _hive = service_home
+    redirected = home / "redirected-xdg"
+    redirected.mkdir(parents=True)
+    config_link = home / "config-link"
+    config_link.symlink_to(redirected)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_link))
+    victim = redirected / "systemd/user/com.hihive.service"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("KEEP\n")
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: Result())
+
+    with pytest.raises(SystemExit, match="symbolic links"):
+        service._uninstall_systemd(quiet=True)
+
+    assert victim.read_text() == "KEEP\n"
+
+
 @pytest.mark.parametrize("backend", ["launchd", "systemd"])
 def test_service_install_refuses_non_regular_target(service_home, monkeypatch, backend):
     path = service.launchd_path() if backend == "launchd" else service.systemd_path()
