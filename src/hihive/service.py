@@ -217,9 +217,11 @@ def _validate_service_directory(directory, create=False):
             details = current.stat()
             if not stat.S_ISDIR(details.st_mode):
                 raise SystemExit(f"Service directory path is not a directory: {current}")
-            if details.st_mode & 0o022:
-                raise SystemExit(f"Service directory must not be group/world-writable: {current}")
             inside_managed_root = current == root or root in current.parents
+            writable = bool(details.st_mode & 0o022)
+            root_owned_sticky = details.st_uid == 0 and bool(details.st_mode & stat.S_ISVTX)
+            if writable and (inside_managed_root or not external or not root_owned_sticky):
+                raise SystemExit(f"Service directory must not be group/world-writable: {current}")
             allowed_owners = (os.getuid(),) if inside_managed_root or not external else (0, os.getuid())
             if details.st_uid not in allowed_owners:
                 owner = "the current user" if len(allowed_owners) == 1 else "the current user or root"

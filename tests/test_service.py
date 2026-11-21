@@ -2,6 +2,8 @@ import os
 import plistlib
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -183,6 +185,33 @@ def test_systemd_install_and_uninstall_allow_safe_external_xdg_config_home(servi
     ]
 
 
+def test_systemd_external_xdg_under_root_owned_sticky_temp_supports_install_and_uninstall(service_home, monkeypatch):
+    shared = (Path("/private/tmp") if Path("/private/tmp").exists() else Path("/tmp")).resolve()
+    details = shared.stat()
+    if details.st_uid != 0 or not details.st_mode & 0o022 or not details.st_mode & 0o1000:
+        pytest.skip("no root-owned sticky temporary directory is available")
+    external = Path(tempfile.mkdtemp(prefix="hi-hive-xdg-", dir=shared))
+    external.chmod(0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(external))
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
+    try:
+        service._install_systemd(4567)
+        path = external / "systemd/user/com.hihive.service"
+        assert path.exists()
+
+        calls.clear()
+        service._uninstall_systemd(quiet=True)
+        assert not path.exists()
+        assert calls == [
+            ["systemctl", "--user", "disable", "--now", service.UNIT_NAME],
+            ["systemctl", "--user", "daemon-reload"],
+        ]
+    finally:
+        shutil.rmtree(external, ignore_errors=True)
+
+
 def test_systemd_uninstall_refuses_group_writable_external_xdg_without_changes(service_home, monkeypatch):
     home, _hive = service_home
     external = home.parent / "external-uninstall-unsafe"
@@ -202,16 +231,16 @@ def test_systemd_uninstall_refuses_group_writable_external_xdg_without_changes(s
     assert calls == []
 
 
-@pytest.mark.parametrize("unsafe", ["group-writable", "symlink", "unsafe-parent"])
+@pytest.mark.parametrize("unsafe", ["group-writable", "sticky-non-root", "symlink", "unsafe-parent"])
 def test_systemd_install_refuses_unsafe_external_xdg_config_home_without_systemctl_calls(service_home, monkeypatch, unsafe):
     home, _hive = service_home
     calls = []
     monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(service.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
-    if unsafe == "group-writable":
-        external = home.parent / "external-unsafe"
+    if unsafe in ("group-writable", "sticky-non-root"):
+        external = home.parent / f"external-{unsafe}"
         external.mkdir(mode=0o700)
-        external.chmod(0o770)
+        external.chmod(0o1777 if unsafe == "sticky-non-root" else 0o770)
     elif unsafe == "symlink":
         redirected = home.parent / "external-redirected"
         redirected.mkdir(mode=0o700)
