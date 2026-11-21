@@ -155,6 +155,7 @@ def test_each_agent_gets_its_own_token_that_ends_when_the_process_exits(test_dir
                            and open(token_file).read(), 10)
         assert token != TOKEN
         assert s.pool.token_project(token) == s.sandbox
+        assert s.pool.token_context(token) == {"project_id": s.sandbox, "task_id": task}
         s.pool.cancel_task(task)
         runner = s.pool._tasks[task]["runner"]
         runner.join()
@@ -186,9 +187,13 @@ def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
     assert [t["id"] for t in state["queue"]] == [own]
     assert api.call("GET", f"/api/tasks/{other}", api.agent).status_code == 404
     assert api.call("POST", f"/api/tasks/{other}/cancel", api.agent, json={}).status_code == 404
+    relabelled = api.call("POST", f"/api/tasks/{own}/label", api.agent, json={"label": "Agent label"})
+    assert relabelled.status_code == 200
+    assert setup.pool.task_detail(own)["label"] == "Agent label"
     assert api.call("GET", f"/api/state?project={setup.main}", api.agent).status_code == 403
     created = api.call("POST", "/api/tasks", api.agent, json={"prompt": "child"})
     assert setup.pool._tasks[created.json()["id"]]["project_id"] == setup.sandbox
+    assert setup.pool._tasks[created.json()["id"]]["created_by_task_id"] == "agent-task"
     assert api.call("POST", "/api/tasks", api.agent, json={"prompt": "x", "project_id": setup.main}).status_code == 403
     escape = api.call("POST", "/api/tasks", api.agent, json={"prompt": "x", "harness": "host"})
     assert escape.status_code >= 400 and "not available" in escape.json()["error"]
@@ -201,7 +206,8 @@ def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
 @pytest.mark.parametrize("method,path,body", [
     ("GET", "", None), ("DELETE", "", None), ("POST", "/fork", {"prompt": "x"}), ("POST", "/cancel", {}),
     ("POST", "/continue", {}), ("POST", "/retry", {}), ("POST", "/done", {}),
-    ("POST", "/chat", {"message": "x"}), ("POST", "/chat/cancel", {"msg_id": None})])
+    ("POST", "/label", {"label": "x"}), ("POST", "/chat", {"message": "x"}),
+    ("POST", "/chat/cancel", {"msg_id": None})])
 def test_an_agent_token_cannot_use_any_task_route_on_another_projects_task(api, setup, method, path, body):
     """Each task route (behind show, wait, followup, cancel, retry, fork) must check the task's project."""
     other = setup.pool.add_task("other", project_id=setup.main)
@@ -216,6 +222,46 @@ def test_an_agent_token_cannot_use_any_task_route_on_another_projects_task(api, 
     # The same request with the full token reaches the task, so the 404 above comes from the project check.
     assert api.call(method, f"/api/tasks/{other}{path}", TOKEN,
                     **({"json": body} if body is not None else {})).status_code != 404 or method == "DELETE"
+
+
+def test_agent_created_task_provenance_comes_only_from_the_token(api, setup, monkeypatch):
+    creator = setup.pool.add_task("creator", project_id=setup.sandbox)
+    runner = type("R", (), {"state": "idle"})()
+    agent = setup.pool._agent_tokens.issue(setup.sandbox, creator, runner)
+    monkeypatch.setenv("HIVE_TASK_ID", "spoofed-environment-task")
+
+    created = api.call("POST", "/api/tasks", agent,
+                       json={"prompt": "child", "created_by_task_id": "spoofed-body-task"}).json()["id"]
+    assert setup.pool.task_detail(created)["created_by_task_id"] == creator
+
+    human = api.call("POST", "/api/tasks", TOKEN,
+                     json={"prompt": "human", "project_id": setup.sandbox,
+                           "created_by_task_id": "spoofed-body-task"}).json()["id"]
+    assert setup.pool.task_detail(human)["created_by_task_id"] is None
+
+    setup.pool.update_config({"templates": [
+        {"id": "batch", "project_id": setup.sandbox, "name": "Batch", "template": "Do %{input}"}]})
+    batch = api.call("POST", "/api/tasks/batch", agent,
+                     json={"template_id": "batch", "inputs": ["one", "two"],
+                           "created_by_task_id": "spoofed-body-task"}).json()["ids"]
+    assert [setup.pool.task_detail(task_id)["created_by_task_id"] for task_id in batch] == [creator, creator]
+
+    target = setup.pool.add_task("fork target", project_id=setup.sandbox)
+    setup.pool._tasks[target]["status"] = "completed"
+    setup.pool._tasks[target]["session_id"] = "session"
+    forked = api.call("POST", f"/api/tasks/{target}/fork", agent,
+                      json={"prompt": "forked", "created_by_task_id": "spoofed-body-task"}).json()["id"]
+    detail = setup.pool.task_detail(forked)
+    assert detail["parent_task_id"] == target
+    assert detail["created_by_task_id"] == creator
+
+    child_agent = setup.pool._agent_tokens.issue(setup.sandbox, created, runner)
+    grandchild = api.call("POST", "/api/tasks", child_agent, json={"prompt": "grandchild"}).json()["id"]
+    assert setup.pool.task_detail(grandchild)["created_by_task_id"] == created
+
+    assert setup.pool.remove_task(creator) is True
+    assert setup.pool.task_detail(created) is not None
+    assert setup.pool.task_detail(forked) is not None
 
 
 def test_an_agent_token_cannot_run_another_projects_template(api, setup):
@@ -257,6 +303,7 @@ def test_the_full_token_sees_all_projects_or_one(api, setup):
 def test_cli_help_explains_project_ownership_and_global_harnesses():
     assert "Tasks, templates, review sections, and working directories belong to projects." in USAGE
     assert "Harnesses are configured globally and can be made available to selected projects." in USAGE
+    assert 'label <id> "new label"' in USAGE
 
 
 class ProjectsCLI(HiHiveCLI):
@@ -359,6 +406,20 @@ def test_cancel_with_a_named_project_does_not_touch_another_projects_task(monkey
     with pytest.raises(Exit):
         c.run(["--project", "Sandbox", "cancel", "aaaa"])
     assert c.posts == []
+
+
+def test_label_resolves_a_short_id_inside_the_named_project(monkeypatch, capsys):
+    monkeypatch.delenv("HIVE_PROJECT", raising=False)
+
+    class LabelTaskCLI(TaskCLI):
+        def post(self, path, body=None):
+            self.posts.append((path, body))
+            return {"ok": True, "label": "Renamed"}
+
+    cli = LabelTaskCLI(PROJECTS)
+    cli.run(["--project", "Sandbox", "label", "bbbb", "Renamed"])
+    assert cli.posts == [("/api/tasks/bbbb-sandbox/label", {"label": "Renamed"})]
+    assert "Changed label for bbbb-san: Renamed" in capsys.readouterr().out
 
 
 TWINS = [{"id": "abcd1111", "name": "Frontend", "templates": [], "harnesses": []},

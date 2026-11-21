@@ -199,6 +199,18 @@ def p(test_dir):
     pool.pool.stop()
 
 
+def test_agent_receives_its_full_task_id_not_an_inherited_value(test_dir, monkeypatch):
+    monkeypatch.setenv("HIVE_TASK_ID", "wrong-inherited-id")
+    pool = Pool(test_dir)
+    try:
+        with open(pool.path("hive_task_id")) as file:
+            assert file.read() == pool.task
+        assert pool_module.child_process_env()["HIVE_TASK_ID"] is None
+        pool.settle()
+    finally:
+        pool.pool.stop()
+
+
 def test_completed_task_with_idle_process_is_deleted_in_one_call(p):
     p.settle()
     runner = p.internal()["runner"]

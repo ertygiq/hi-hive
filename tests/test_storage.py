@@ -106,6 +106,44 @@ def test_omitted_templates_are_deleted(test_dir):
     assert [t["id"] for t in pool.config()["templates"]] == ["t2"]
 
 
+# --- Task provenance and labels ---
+
+
+def test_created_by_task_id_persists_is_exposed_and_does_not_cascade(test_dir):
+    pool = make_pool(test_dir)
+    creator = pool.add_task("creator")
+    child = pool.add_task("child", created_by_task_id=creator)
+    human = pool.add_task("human")
+
+    assert pool.task_detail(child)["created_by_task_id"] == creator
+    assert pool.task_detail(human)["created_by_task_id"] is None
+    assert next(task for task in pool.state()["queue"] if task["id"] == child)["created_by_task_id"] == creator
+
+    pool.stop()
+    restored = make_pool(test_dir)
+    assert restored.task_detail(child)["created_by_task_id"] == creator
+    assert restored.remove_task(creator) is True
+    assert restored.task_detail(child) is not None
+
+
+def test_task_label_uses_shared_normalization_and_persists(test_dir):
+    pool = make_pool(test_dir)
+    task_id = pool.add_task("prompt")
+    version = pool.version
+
+    assert pool.set_task_label(task_id, "  New\n\tlabel  ") == "New label"
+    assert pool.task_detail(task_id)["label"] == "New label"
+    assert pool.version == version + 1
+    assert pool.set_task_label(task_id, "x" * 250) == "x" * 200
+    with pytest.raises(HiveError, match="cannot be empty"):
+        pool.set_task_label(task_id, " \n\t ")
+    assert pool.set_task_label("missing", "label") is None
+
+    pool.stop()
+    restored = make_pool(test_dir)
+    assert restored.task_detail(task_id)["label"] == "x" * 200
+
+
 # --- Output actions ---
 
 def value_action(directory, command=None, pattern="[a-z0-9]{4}"):
@@ -119,6 +157,19 @@ def test_click_runs_the_command_with_the_value_as_one_argument(test_dir):
     assert make_pool(test_dir, output_actions=[value_action(test_dir)]).run_output_action("run-id", "ab12") is None
     with open(os.path.join(test_dir, "marker")) as file:
         assert file.read() == "id=ab12"
+
+
+def test_output_actions_do_not_receive_an_inherited_task_id(test_dir, monkeypatch):
+    import sys
+    marker = os.path.join(test_dir, "task-id")
+    action = {"tag": "run-id", "label": "Run", "pattern": ".+", "command": sys.executable,
+              "args": ["-c", "import os,sys; open(sys.argv[1], 'w').write(os.environ.get('HIVE_TASK_ID', ''))",
+                       marker]}
+    monkeypatch.setenv("HIVE_TASK_ID", "wrong-inherited-id")
+
+    assert make_pool(test_dir, output_actions=[action]).run_output_action("run-id", "value") is None
+    with open(marker) as file:
+        assert file.read() == ""
 
 
 def test_value_must_fully_match_the_pattern(test_dir):

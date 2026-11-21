@@ -68,6 +68,20 @@ def test_done_for_missing_task_returns_not_found(api):
     assert response.json()["error"] == "Task not found"
 
 
+def test_task_label_is_cleaned_and_missing_or_empty_labels_are_rejected(api):
+    response = api.client.post(f"/api/tasks/{api.task_id}/label", json={"label": "  New\nlabel  "}, headers=TRUSTED)
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "label": "New label"}
+    assert api.pool.task_detail(api.task_id)["label"] == "New label"
+
+    response = api.client.post(f"/api/tasks/{api.task_id}/label", json={"label": "  "}, headers=TRUSTED)
+    assert response.status_code == 400
+    assert response.json()["error"] == "Label cannot be empty"
+    response = api.client.post("/api/tasks/missing/label", json={"label": "new"}, headers=TRUSTED)
+    assert response.status_code == 404
+    assert response.json()["error"] == "Task not found"
+
+
 def test_delete_running_task_returns_warning_without_cancelling(api):
     api.task["status"] = "running"
     response = api.client.delete(f"/api/tasks/{api.task_id}", headers=TRUSTED)

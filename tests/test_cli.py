@@ -46,6 +46,25 @@ def test_cancel_requests_stop_of_the_whole_run_without_sending_a_message(capsys)
     assert "Requested stop of the active conversation run" in capsys.readouterr().out
 
 
+def test_label_resolves_the_task_and_prints_the_cleaned_label(capsys):
+    class LabelCLI(FakeCLI):
+        def post(self, path, body=None):
+            self.posts.append((path, body))
+            return {"ok": True, "label": "New label"}
+
+    cli = LabelCLI([])
+    cli.run(["label", "task", "New", "label"])
+
+    assert cli.posts == [("/api/tasks/task-id/label", {"label": "New label"})]
+    assert capsys.readouterr().out == "Changed label for task-id: New label\n"
+
+
+def test_label_requires_an_id_and_nonempty_label(capsys):
+    with pytest.raises(Exit):
+        FakeCLI([]).run(["label", "task-id"])
+    assert 'Usage: hihive label <id> "new label"' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
 def test_wait_stops_on_failure_or_cancellation_even_before_delivery_settles(capsys, status):
     cli = FakeCLI([{"messages": []}, {"status": status, "messages": [

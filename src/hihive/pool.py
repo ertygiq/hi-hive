@@ -44,10 +44,10 @@ TEMPLATE_INPUT = re.compile(r"%(%|\{input\})")
 HARNESS_TYPES = [{"id": "claude-code", "label": "Claude Code"}, {"id": "pi", "label": "Pi"}]
 
 # Variables a parent agent or Hive's own launcher sets that must not reach the
-# agents Hive starts (see KNOWN_PITFALLS.md). Hive sets HIVE_TOKEN itself for each
-# agent; an inherited one would give the agent another agent's project.
+# agents Hive starts (see KNOWN_PITFALLS.md). Hive sets HIVE_TOKEN and HIVE_TASK_ID
+# itself for each agent; inherited values could identify another task or project.
 INHERITED_AGENT_VARS = ("PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL",
-                        "HIVE_TOKEN", "HIVE_PROJECT")
+                        "HIVE_TOKEN", "HIVE_PROJECT", "HIVE_TASK_ID")
 PYTHON_LAUNCH_VARS = ("PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__", "UV_RUN_RECURSION_DEPTH")
 
 
@@ -224,7 +224,7 @@ class PoolManager:
 
     # --- Task management ---
 
-    def add_task(self, prompt, label=None, harness=None, project_id=None):
+    def add_task(self, prompt, label=None, harness=None, project_id=None, created_by_task_id=None):
         """Without project_id, the task goes to the only project; with several projects one must be named."""
         if not isinstance(prompt, str) or not prompt.strip():
             raise HiveError("Prompt required")
@@ -234,13 +234,26 @@ class PoolManager:
             harness_id = self._resolve_new_task_harness_id(project, harness=harness)
             task = self._build_task(task_id, prompt=prompt, label=_clean_label(label) or _derive_label(prompt),
                                     created_at=now(), harness=harness_id, project_id=project["id"],
+                                    created_by_task_id=created_by_task_id,
                                     session_id=self._initial_session_id(harness_id))
             self._tasks[task_id] = task
             self._task_order.append(task_id)
             self._bump_version()
             return task_id
 
-    def fork_task(self, parent_id, prompt, label=None):
+    def set_task_label(self, task_id, label):
+        cleaned = _clean_label(label)
+        if not cleaned:
+            raise HiveError("Label cannot be empty")
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
+            task["label"] = cleaned
+            self._bump_version()
+            return cleaned
+
+    def fork_task(self, parent_id, prompt, label=None, created_by_task_id=None):
         """New task ID, None if the parent cannot fork, or "missing_session"."""
         with self._lock:
             parent = self._tasks.get(parent_id)
@@ -253,14 +266,15 @@ class PoolManager:
             self._require_available(self._find_harness(harness_id), self._projects[parent["project_id"]])
             task = self._build_task(task_id, prompt=prompt, label=_clean_label(label) or _derive_label(prompt),
                                     created_at=now(), color=parent.get("color"), template_id=parent.get("template_id"),
-                                    parent_task_id=parent_id, harness=harness_id, project_id=parent["project_id"],
+                                    parent_task_id=parent_id, created_by_task_id=created_by_task_id,
+                                    harness=harness_id, project_id=parent["project_id"],
                                     session_id=self._initial_session_id(harness_id))
             self._tasks[task_id] = task
             self._task_order.append(task_id)
             self._bump_version()
             return task_id
 
-    def add_tasks_batch(self, inputs, template_id, harness=None):
+    def add_tasks_batch(self, inputs, template_id, harness=None, created_by_task_id=None):
         with self._lock:
             template = self._templates.get(template_id)
             if not template:
@@ -279,6 +293,7 @@ class PoolManager:
                                         label=_clean_label(value) or _clean_label(template["name"]) or _derive_label(prompt),
                                         created_at=now(), review_prompts=review_prompts, color=template.get("color"),
                                         template_id=template_id, harness=harness_id, project_id=project["id"],
+                                        created_by_task_id=created_by_task_id,
                                         session_id=self._initial_session_id(harness_id))
                 self._tasks[task_id] = task
                 self._task_order.append(task_id)
@@ -652,6 +667,11 @@ class PoolManager:
         with self._lock:
             return self._agent_tokens.lookup(token)
 
+    def token_context(self, token):
+        """Trusted project and creator-task identity for an agent token."""
+        with self._lock:
+            return self._agent_tokens.context(token)
+
     def backup_zip(self):
         """A consistent ZIP snapshot of the two allowlisted restore files."""
         with self._lock:
@@ -868,6 +888,7 @@ class PoolManager:
                 created_at=parse_time(stored.get("created_at")) or now(),
                 failure_details=stored.get("failure_details"), color=stored.get("color"),
                 template_id=stored.get("template_id"), parent_task_id=stored.get("parent_task_id"),
+                created_by_task_id=stored.get("created_by_task_id"),
                 harness=stored.get("harness"), project_id=stored["project_id"])
             task["result_placement"] = stored.get("result_placement")
             task["done"] = bool(stored.get("done"))
@@ -951,6 +972,7 @@ class PoolManager:
             "color": task.get("color"),
             "template_id": task.get("template_id"),
             "parent_task_id": task.get("parent_task_id"),
+            "created_by_task_id": task.get("created_by_task_id"),
             "harness": _task_harness_id(task),
             # Derived from the harness transcript, held in memory only.
             "cost": task.get("cost"),
@@ -1025,8 +1047,10 @@ class PoolManager:
                                 chdir=self._resolve_work_dir(task), env=child_process_env(), resume=resume,
                                 parent=parent, task_id=task["id"], harness=harness["type"],
                                 diagnostics_path=self._diagnostics_path(task["id"]))
-            # The agent's own token, limited to the task's project; valid until the process exits.
+            # These values identify this exact task and its project-scoped API access.
+            # child_process_env removed any inherited values before they are set here.
             runner.env["HIVE_TOKEN"] = self._agent_tokens.issue(task["project_id"], task["id"], runner)
+            runner.env["HIVE_TASK_ID"] = task["id"]
             if kind != "chat":
                 task.pop("result_placement", None)
             task["runner"] = runner
@@ -1205,7 +1229,8 @@ class PoolManager:
 
     def _build_task(self, task_id, label, created_at, prompt=None, messages=None, status="queued", session_id=None,
                     exit_status=None, started_at=None, completed_at=None, review_prompts=(), failure_details=None,
-                    color=None, template_id=None, parent_task_id=None, harness=None, project_id=None):
+                    color=None, template_id=None, parent_task_id=None, created_by_task_id=None,
+                    harness=None, project_id=None):
         task = {
             "id": task_id,
             "project_id": project_id,
@@ -1223,6 +1248,7 @@ class PoolManager:
             "color": color,
             "template_id": template_id,
             "parent_task_id": parent_task_id,
+            "created_by_task_id": str(created_by_task_id) if created_by_task_id else None,
             "harness": harness,
             "done": False,
         }
@@ -1487,6 +1513,7 @@ def _persist_task(task):
         "color": task.get("color"),
         "template_id": task.get("template_id"),
         "parent_task_id": task.get("parent_task_id"),
+        "created_by_task_id": task.get("created_by_task_id"),
         "harness": task.get("harness"),
         "project_id": task["project_id"],
         "done": bool(task.get("done")),

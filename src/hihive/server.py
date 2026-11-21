@@ -93,10 +93,12 @@ class RequestGuard:
         supplied = header[7:] if header.lower().startswith("bearer ") else request.cookies.get(COOKIE, "")
         if _same_secret(supplied, self.token):
             scope["hive_project"] = None
+            scope["hive_creator_task"] = None
             return True
-        project = self.pool.token_project(supplied) if header else None
-        if project:
-            scope["hive_project"] = project
+        context = self.pool.token_context(supplied) if header else None
+        if context:
+            scope["hive_project"] = context["project_id"]
+            scope["hive_creator_task"] = context["task_id"]
             return True
         return False
 
@@ -210,6 +212,10 @@ def create_app(pool, token, manage_pool=True):
             raise HttpError(404, "Not found")
         return task_id
 
+    def creator_task_for(request):
+        """Trusted creator identity from an agent token; full tokens have none."""
+        return request.scope.get("hive_creator_task")
+
     def state(request, _body):
         project = project_for(request, request.query_params.get("project"))
         snapshot = pool.state_since(request.query_params.get("since"), project)
@@ -256,7 +262,7 @@ def create_app(pool, token, manage_pool=True):
     def add_task(request, body):
         project = project_for(request, body.get("project_id"))
         task_id = pool.add_task(prompt=body.get("prompt"), label=body.get("label"), harness=body.get("harness"),
-                                project_id=project)
+                                project_id=project, created_by_task_id=creator_task_for(request))
         return JSONResponse({"id": task_id})
 
     def add_batch(request, body):
@@ -264,7 +270,7 @@ def create_app(pool, token, manage_pool=True):
         if limit and pool.template_project(body.get("template_id")) != limit:
             return error(404, "Template not found")
         ids = pool.add_tasks_batch(inputs=body.get("inputs"), template_id=body.get("template_id"),
-                                   harness=body.get("harness"))
+                                   harness=body.get("harness"), created_by_task_id=creator_task_for(request))
         return JSONResponse({"ids": ids})
 
     def delete_task(request, _body):
@@ -280,7 +286,8 @@ def create_app(pool, token, manage_pool=True):
         prompt = str(body.get("prompt") or "").strip()
         if not prompt:
             return error(400, "Prompt required")
-        task_id = pool.fork_task(parent_id=task_id_for(request), prompt=prompt, label=body.get("label"))
+        task_id = pool.fork_task(parent_id=task_id_for(request), prompt=prompt, label=body.get("label"),
+                                 created_by_task_id=creator_task_for(request))
         if task_id == "missing_session":
             return error(400, "Parent task has no agent session id; fork is unavailable")
         if not task_id:
@@ -314,6 +321,15 @@ def create_app(pool, token, manage_pool=True):
         if result is None:
             return error(404, "Task not found")
         return JSONResponse({"ok": True, "done": result})
+
+    def label_task(request, body):
+        try:
+            label = pool.set_task_label(task_id_for(request), body.get("label"))
+        except HiveError as failure:
+            return error(400, str(failure))
+        if label is None:
+            return error(404, "Task not found")
+        return JSONResponse({"ok": True, "label": label})
 
     def chat(request, body):
         task_id = task_id_for(request)  # outside the try: a refused task must stay a 404, not become a 500
@@ -419,6 +435,7 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/tasks/{id}/continue", run(continue_task, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/retry", run(retry, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/done", run(done, agents=True), methods=["POST"]),
+        Route("/api/tasks/{id}/label", run(label_task, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/chat", run(chat, agents=True), methods=["POST"]),
         Route("/api/tasks/{id}/chat/cancel", run(chat_cancel, agents=True), methods=["POST"]),
         Route("/api/queue/reorder", run(reorder), methods=["POST"]),
