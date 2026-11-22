@@ -33,6 +33,169 @@ function client(storage = new Map()) {
   return { context, document, storage, listeners };
 }
 
+test('paused banner Resume appears only for an open phone overlay without changing its height', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  assert.match(html, /Paused in all projects - queued tasks won't start\./);
+  assert.match(html, /id="detail-title" tabindex="-1"/);
+  assert.match(css, /@media \(max-width: 899px\)\s*\{\s*\.paused-banner\s*\{\s*min-height:\s*45px/);
+  assert.doesNotMatch(css.match(/\.paused-banner\s*\{[^}]*\}/s)[0], /min-height/);
+  assert.match(css, /#paused-banner button\s*\{\s*display:\s*none/);
+  assert.match(css, /@media \(max-width: 899px\)\s*\{[^]*?body:has\(#detail-panel:not\(\.hidden\)\) #paused-banner button\s*\{\s*display:\s*inline-flex/);
+});
+
+test('banner Resume restores keyboard focus on success, close and external resume', async () => {
+  const { context, document, listeners } = client();
+  const bannerButton = document.getElementById('banner-resume-btn');
+  const heading = document.getElementById('detail-title');
+  const toolbar = document.getElementById('pause-btn');
+  heading.focus = () => { document.activeElement = heading; };
+  toolbar.focus = () => { document.activeElement = toolbar; };
+  context.innerWidth = 390;
+  vm.runInContext('selectedTaskId = "task"; state.paused = true; updateLayoutMetrics = () => {}; render = () => {};', context);
+  context.postJson = async () => null;
+  document.activeElement = bannerButton;
+  await vm.runInContext('resumeFromBanner()', context);
+  assert.equal(document.activeElement, heading);
+  document.activeElement = bannerButton;
+  context.postJson = async () => 'offline';
+  const messages = []; context.showMessage = (...args) => messages.push(args);
+  await vm.runInContext('resumeFromBanner()', context);
+  assert.equal(document.activeElement, bannerButton);
+  assert.deepEqual(messages[0], ['offline', 'Could not resume']);
+  vm.runInContext('state.paused = false; renderPausedBanner()', context);
+  assert.equal(document.activeElement, heading);
+  document.activeElement = bannerButton;
+  vm.runInContext('selectedTaskId = "task"; closeDetail()', context);
+  assert.equal(document.activeElement, toolbar);
+  document.activeElement = heading;
+  vm.runInContext('selectedTaskId = "task"; closeDetail()', context);
+  assert.equal(document.activeElement, heading);
+  document.activeElement = bannerButton;
+  context.innerWidth = 1000;
+  // The production resize listener is installed in the initialization section;
+  // the same focus decision is exercised directly here.
+  vm.runInContext('focusAfterBannerResumeHidden()', context);
+  assert.equal(document.activeElement, toolbar);
+});
+
+test('banner focus recovers when the browser moves focus to BODY before resize', () => {
+  const { context, document } = client();
+  const banner = document.getElementById('paused-banner');
+  banner.classList = { contains: () => true };
+  const toolbar = document.getElementById('pause-btn');
+  let focused = false, scheduled;
+  toolbar.focus = () => { focused = true; };
+  document.body = {}; document.activeElement = document.body;
+  context.innerWidth = 1000;
+  context.getComputedStyle = () => ({ display: 'none' });
+  context.setTimeout = callback => { scheduled = callback; };
+  context.event = { relatedTarget: null };
+  vm.runInContext('onBannerResumeBlur(event)', context);
+  scheduled();
+  assert.equal(focused, true);
+  focused = false;
+  context.getComputedStyle = () => ({ display: 'inline-flex' });
+  vm.runInContext('onBannerResumeBlur(event)', context);
+  scheduled();
+  assert.equal(focused, false);
+});
+
+test('message dialog focuses OK and restores its connected opener', () => {
+  const { context, document } = client();
+  const opener = { isConnected: true, focus() { document.activeElement = this; } };
+  document.activeElement = opener;
+  const ok = document.getElementById('message-ok-btn');
+  ok.focus = () => { document.activeElement = ok; };
+  vm.runInContext("showMessage('offline', 'Could not resume')", context);
+  assert.equal(document.activeElement, ok);
+  vm.runInContext("closeModal('message-modal')", context);
+  assert.equal(document.activeElement, opener);
+});
+
+test('button variants, sizes, toggles and disabled hover share consistent rules', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  assert.match(css, /button\s*\{[^}]*font-size:\s*13px;[^}]*line-height:\s*15px;[^}]*min-height:\s*29px/s);
+  assert.match(css, /button\.small\s*\{[^}]*font-size:\s*12px;[^}]*line-height:\s*16px;[^}]*min-height:\s*24px/s);
+  assert.match(css, /button\.icon-btn\.small\s*\{[^}]*width:\s*20px;[^}]*height:\s*20px/s);
+  assert.match(css, /button\.primary:not\(:disabled\):not\(\[aria-disabled="true"\]\):hover/);
+  assert.match(css, /button\.danger:not\(:disabled\):not\(\[aria-disabled="true"\]\):hover/);
+  assert.match(css, /button:disabled, button\[aria-disabled="true"\], select:disabled\s*\{[^}]*opacity:\s*0\.5/s);
+  assert.match(css, /button:focus-visible, select:focus-visible/);
+  assert.match(css, /button\.toggle\[aria-pressed="true"\]/);
+  assert.match(css, /\.results-sort\s*\{[^}]*height:\s*24px/s);
+  assert.match(html, /id="results-hide-done" class="small toggle"[^]*?aria-pressed="false"/);
+  assert.match(html, /id="results-deep-search" class="small toggle"[^]*?aria-pressed="false"/);
+  assert.match(html, /class="small toggle" id="pause-btn"[^>]*>Pause/);
+  assert.doesNotMatch(html.match(/<button[^>]*id="pause-btn"[^>]*>/)[0], /aria-pressed/);
+  assert.match(html, /id="detail-cancel-btn"[^>]*>Cancel task/);
+  assert.match(html, /id="header-run-template"[^>]*>Run template/);
+  assert.match(html, /id="restart-server-btn"[^>]*>Restart server/);
+});
+
+test('Results toggles expose aria-pressed and Pause swaps labels without a pressed state', () => {
+  const { context, document } = client();
+  const pause = document.getElementById('pause-btn');
+  const classes = new Set();
+  pause.classList = { toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); } };
+  context.snapshot = { workers: [], queue: [], stats: {}, max_parallel: 4, paused: false };
+  vm.runInContext('state = snapshot; renderStats(); hideDone = false; deepSearch = false; syncHideDoneButton(); syncDeepSearchButton()', context);
+  assert.equal(pause.textContent, 'Pause'); assert.equal(classes.has('is-on'), false);
+  assert.equal(document.getElementById('results-hide-done')['aria-pressed'], 'false');
+  assert.equal(document.getElementById('results-deep-search')['aria-pressed'], 'false');
+  context.snapshot.paused = true;
+  vm.runInContext('renderStats(); hideDone = true; deepSearch = true; syncHideDoneButton(); syncDeepSearchButton()', context);
+  assert.equal(pause.textContent, 'Resume'); assert.equal(classes.has('is-on'), true);
+  assert.equal(pause['aria-pressed'], undefined);
+  assert.equal(document.getElementById('results-hide-done')['aria-pressed'], 'true');
+  assert.equal(document.getElementById('results-deep-search')['aria-pressed'], 'true');
+});
+
+test('confirm severity, labels and safe focus are set per invocation', async () => {
+  const { context, document } = client();
+  let focused = '';
+  document.activeElement = { isConnected: true, focus() { focused = 'opener'; } };
+  const accept = document.getElementById('confirm-accept-btn');
+  accept.classList = { toggle(name, value) { assert.equal(name, 'danger'); accept.danger = value; } };
+  document.getElementById('confirm-cancel-btn').focus = () => { focused = 'cancel'; };
+  context.options = { confirmLabel: 'Delete', cancelLabel: 'Keep', danger: true };
+  let pending = vm.runInContext("showConfirm('Delete?', options)", context);
+  assert.equal(focused, 'cancel');
+  assert.equal(accept.textContent, 'Delete'); assert.equal(accept.danger, true);
+  assert.equal(document.getElementById('confirm-cancel-btn').textContent, 'Keep');
+  vm.runInContext('resolveConfirm(true)', context);
+  assert.equal(await pending, true); assert.equal(focused, 'opener');
+  pending = vm.runInContext("showConfirm('Continue?')", context);
+  assert.equal(accept.danger, false); assert.equal(accept.textContent, 'Yes');
+  assert.equal(document.getElementById('confirm-cancel-btn').textContent, 'No');
+  vm.runInContext('resolveConfirm(false)', context);
+  assert.equal(await pending, false);
+  const source = fs.readFileSync('src/hihive/static/app.js', 'utf8');
+  for (const text of ['Cancel task', 'Cancel all', 'Delete', 'Restart', 'Discard', 'Discard changes']) {
+    assert.match(source, new RegExp(`confirmLabel: '${text}', danger: true`));
+  }
+  assert.match(source, /confirmLabel: 'Mark not done'/);
+  assert.match(source, /confirmLabel: 'Save anyway'/);
+});
+
+test('composer one-line, focus, disabled and growth retain aligned sizing', () => {
+  const { context, document } = client();
+  const input = document.getElementById('chat-input');
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.chat-input-area\s*\{[^}]*align-items:\s*flex-end/s);
+  assert.match(css, /\.chat-input-area textarea\s*\{[^}]*min-height:\s*36px/s);
+  assert.match(css, /#chat-send-btn\s*\{[^}]*min-height:\s*36px;[^}]*padding:\s*0 14px;[^}]*align-items:\s*center;[^}]*border-radius:\s*var\(--radius\)/s);
+  assert.match(css, /\.chat-input-area textarea:focus\s*\{[^}]*border-color:\s*var\(--primary\)/s);
+  assert.match(css, /button:disabled, button\[aria-disabled="true"\]/);
+  input.scrollHeight = 20; vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '36px');
+  input.scrollHeight = 100; vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '102px');
+  input.scrollHeight = 1000; vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '240px'); assert.equal(input.style.overflowY, 'auto');
+});
+
 test('worker and Results counts follow project lists and active filters', () => {
   const { context, document } = client();
   context.snapshot = { stats: {}, queue: [], workers: [], results: [], running_total: 2, max_parallel: 4 };
@@ -349,7 +512,7 @@ test('responsive Results layout clamps widths and caps nested cards', () => {
   context.innerWidth = 1080;
   assert.equal(vm.runInContext('clampDetailWidth(1)', context), 400);
   context.task = { id: 'task', label: 'Result', status: 'completed' };
-  assert.match(vm.runInContext('renderResultCard(task, 2, new Map())', context), /--fork-indent:32px;--action-space:106px/);
+  assert.match(vm.runInContext('renderResultCard(task, 2, new Map())', context), /--fork-indent:32px;--action-space:90px/);
   const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
   const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
   assert.match(css, /grid-template-columns:\s*300px minmax\(360px, 1fr\)/);
@@ -364,7 +527,7 @@ test('responsive Results layout clamps widths and caps nested cards', () => {
   assert.match(css, /@container \(max-width: 460px\)/);
   assert.match(css, /\.result-card \.actions \.card-action\s*\{\s*display:\s*none/);
   assert.match(css, /\.result-card \.harness-name-text, \.result-card \.harness-glyph\s*\{\s*display:\s*none/);
-  assert.match(css, /max-width:\s*140px;\s*text-overflow:\s*ellipsis/);
+  assert.match(css, /\.results-sort\s*\{[^}]*max-width:\s*140px;[^}]*text-overflow:\s*ellipsis/s);
   assert.match(html, /placeholder="Search…"/);
 });
 
@@ -589,7 +752,7 @@ test('reply Stop sends the visible input and state, preserving drafts and handli
 
 test('Send has visible disabled styling during stop', () => {
   const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
-  assert.match(css, /#chat-send-btn:disabled\s*\{[^}]*opacity:\s*0\.5;[^}]*cursor:\s*default;/);
+  assert.match(css, /button:disabled, button\[aria-disabled="true"\], select:disabled\s*\{[^}]*opacity:\s*0\.5;[^}]*cursor:\s*default;/);
 });
 
 test('original work has no stop or typing line, idle background has only background stop', () => {
