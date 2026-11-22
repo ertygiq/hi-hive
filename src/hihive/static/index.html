@@ -25,8 +25,8 @@
     </div>
   </div>
   <div class="header-controls">
-    <button class="primary" onclick="openBatchAdd()">▶ Run template</button>
-    <button onclick="openAddTask()">+ Add Task</button>
+    <button class="primary" id="header-add-task" onclick="openAddTask()">+ Add task</button>
+    <button id="header-run-template" onclick="openBatchAdd()">▶ Run template</button>
     <button onclick="openSettings()">⚙ Settings</button>
   </div>
 </header>
@@ -39,7 +39,7 @@
 <div class="harness-onboarding" id="harness-onboarding" style="display:none">
   <div><strong>No harness is set up yet.</strong><br>
     Install Claude Code 2.1.283+ or Pi 0.87.1+, then run the installer again, or add a harness in Settings &gt; All projects &gt; Harnesses.</div>
-  <button onclick="openSettings('harnesses-heading')">Open Settings</button>
+  <button onclick="openSettings('harnesses-heading')">Open settings</button>
 </div>
 
 <div class="workspace">
@@ -56,7 +56,7 @@
     <!-- Workers -->
     <section class="panel" id="workers-panel">
       <div class="panel-header">
-        <h2>Workers <span class="count" id="worker-count">0 / 4</span></h2>
+        <h2>Workers <span class="count" id="worker-count" title="Running in this project" aria-label="Running in this project">0</span></h2>
         <div class="panel-actions">
           <button class="small" id="pause-btn" onclick="togglePause()">⏸ Pause</button>
           <button class="small" id="cancel-all-btn" onclick="cancelAllTasks()" style="display:none">Cancel all</button>
@@ -154,7 +154,7 @@
 <div class="modal-overlay hidden" id="add-task-modal">
   <div class="modal">
     <div class="modal-header">
-      <h3>Add Task</h3>
+      <h3>Add task</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('add-task-modal')">✕</button>
     </div>
     <div class="modal-body">
@@ -175,7 +175,7 @@
     </div>
     <div class="modal-footer">
       <button onclick="requestCloseModal('add-task-modal')">Cancel</button>
-      <button class="primary" onclick="submitAddTask()">Add Task</button>
+      <button class="primary" onclick="submitAddTask()">Add task</button>
     </div>
   </div>
 </div>
@@ -184,7 +184,7 @@
 <div class="modal-overlay hidden" id="fork-task-modal">
   <div class="modal">
     <div class="modal-header">
-      <h3>Fork Task</h3>
+      <h3>Fork task</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('fork-task-modal')">✕</button>
     </div>
     <div class="modal-body">
@@ -250,7 +250,7 @@
 <div class="modal-overlay hidden" id="retry-modal">
   <div class="modal" style="width:400px">
     <div class="modal-header">
-      <h3>Retry Task</h3>
+      <h3>Retry task</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('retry-modal')">✕</button>
     </div>
     <div class="modal-body">
@@ -374,12 +374,12 @@
       <hr class="settings-divider">
       <h4 id="templates-heading" class="settings-heading">Templates</h4>
       <div id="templates-list"></div>
-      <button class="small" onclick="addTemplateForm()" style="margin-top:8px">+ Add Template</button>
+      <button class="small" id="add-template-btn" onclick="addTemplateForm()" style="margin-top:8px">+ Add template</button>
 
       <hr class="settings-divider">
-      <h4 class="settings-heading">Review Sections</h4>
+      <h4 class="settings-heading">Review sections</h4>
       <div id="review-sections-list"></div>
-      <button class="small" onclick="addReviewSectionForm()" style="margin-top:8px">+ Add Review Section</button>
+      <button class="small" id="add-review-section-btn" onclick="addReviewSectionForm()" style="margin-top:8px">+ Add review section</button>
 
       <hr class="settings-divider">
       <h4 class="settings-heading">Output actions</h4>
@@ -392,30 +392,30 @@
     <div class="modal-body hidden" id="settings-pane-global" role="tabpanel">
       <div class="form-row">
         <div class="form-group">
-          <label>Max Parallel Workers</label>
+          <label>Max parallel workers</label>
           <input type="number" id="cfg-max-parallel" min="1" max="50" value="4">
         </div>
         <div class="form-group"></div>
       </div>
       <div class="form-group">
-        <label>Session Viewer URL</label>
+        <label>Session viewer URL</label>
         <input type="text" id="cfg-session-viewer-url" placeholder="Optional, e.g. http://localhost:3000 for claude-code-lens">
       </div>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
-        <input type="checkbox" id="cfg-prevent-sleep">
-        <span>Prevent system sleep while agents are running</span>
-      </label>
-      <div class="muted" id="cfg-prevent-sleep-help" style="font-size:12px;margin-top:4px">Keeps awake for 5 minutes after activity stops.</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
-        <input type="checkbox" id="cfg-show-task-cost">
-        <span>Show task cost</span>
-      </label>
-      <div class="muted" style="font-size:12px;margin-top:4px">Read from the harness's session transcript. Currently only Pi reports cost; other tasks show nothing.</div>
+      <div class="toggle-row">
+        <label class="switch"><input type="checkbox" id="cfg-prevent-sleep" aria-describedby="cfg-prevent-sleep-help"><span aria-hidden="true"></span></label>
+        <div><label for="cfg-prevent-sleep" class="toggle-title">Prevent system sleep while agents are running</label>
+          <div class="muted toggle-help" id="cfg-prevent-sleep-help">Keeps awake for 5 minutes after activity stops.</div></div>
+      </div>
+      <div class="toggle-row">
+        <label class="switch"><input type="checkbox" id="cfg-show-task-cost" aria-describedby="cfg-show-task-cost-help"><span aria-hidden="true"></span></label>
+        <div><label for="cfg-show-task-cost" class="toggle-title">Show task cost</label>
+          <div class="muted toggle-help" id="cfg-show-task-cost-help">Read from the harness's session transcript. Currently only Pi reports cost; other tasks show nothing.</div></div>
+      </div>
 
       <hr class="settings-divider">
       <h4 class="settings-heading" id="harnesses-heading">Harnesses</h4>
       <div id="harnesses-list"></div>
-      <button class="small" onclick="addHarnessForm()" style="margin-top:8px">+ Add harness</button>
+      <button class="small" id="add-harness-btn" onclick="addHarnessForm()" style="margin-top:8px">+ Add harness</button>
 
       <hr class="settings-divider">
       <h4 class="settings-heading">Output actions</h4>
@@ -441,12 +441,12 @@
 <div class="modal-overlay hidden" id="template-modal">
   <div class="modal">
     <div class="modal-header">
-      <h3 id="template-modal-title">Add Template</h3>
+      <h3 id="template-modal-title">Add template</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('template-modal')">✕</button>
     </div>
     <div class="modal-body">
       <div class="form-group">
-        <label>Template Name</label>
+        <label>Template name</label>
         <input type="text" id="tmpl-name" placeholder="e.g., explain-concept">
       </div>
       <div class="form-group">
@@ -454,11 +454,11 @@
         <textarea class="code" id="tmpl-body" rows="8" placeholder="Explain %{input} in simple terms.&#10;&#10;Include:&#10;- What it is&#10;- Why it matters&#10;- A practical example"></textarea>
       </div>
       <div class="form-group">
-        <label>Working Directory (optional, overrides the project's)</label>
+        <label>Working directory (optional, overrides the project's)</label>
         <input type="text" id="tmpl-work-dir" placeholder="Leave empty to use the project's working directory">
       </div>
       <div class="form-group">
-        <label>Extra Agent Args (optional, appended to the harness's args)</label>
+        <label>Extra agent args (optional, appended to the harness's args)</label>
         <input type="text" id="tmpl-agent-args" placeholder="e.g., --foo bar --baz">
       </div>
       <div class="form-group">
@@ -470,13 +470,15 @@
         <div id="tmpl-color-picker" class="color-picker"></div>
       </div>
       <div class="form-group">
-        <label>Attached Review Sections</label>
+        <label>Attached review sections</label>
         <div id="tmpl-review-sections"></div>
       </div>
     </div>
     <div class="modal-footer">
+      <button class="danger" id="template-delete-btn" onclick="deleteTemplate(editingTemplateId)" style="display:none">Delete template</button>
+      <div style="flex:1"></div>
       <button onclick="requestCloseModal('template-modal')">Cancel</button>
-      <button class="primary" onclick="saveTemplate()">Save Template</button>
+      <button class="primary" onclick="saveTemplate()">Save template</button>
     </div>
   </div>
 </div>
@@ -485,7 +487,7 @@
 <div class="modal-overlay hidden" id="review-section-modal">
   <div class="modal">
     <div class="modal-header">
-      <h3 id="review-section-modal-title">Add Review Section</h3>
+      <h3 id="review-section-modal-title">Add review section</h3>
       <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('review-section-modal')">✕</button>
     </div>
     <div class="modal-body">
@@ -499,8 +501,10 @@
       </div>
     </div>
     <div class="modal-footer">
+      <button class="danger" id="review-section-delete-btn" onclick="removeReviewSection(editingReviewSectionId)" style="display:none">Delete review section</button>
+      <div style="flex:1"></div>
       <button onclick="requestCloseModal('review-section-modal')">Cancel</button>
-      <button class="primary" onclick="saveReviewSection()">Save Review Section</button>
+      <button class="primary" onclick="saveReviewSection()">Save review section</button>
     </div>
   </div>
 </div>
@@ -532,11 +536,11 @@
         <input type="text" id="harness-command" placeholder="claude">
       </div>
       <div class="form-group">
-        <label>Default Args (space-separated)</label>
+        <label>Default args (space-separated)</label>
         <input type="text" id="harness-args" placeholder="e.g., --max-thinking-tokens 31999">
       </div>
       <div class="form-group" id="harness-sessions-dir-group">
-        <label>Sessions Directory (optional)</label>
+        <label>Sessions directory (optional)</label>
         <input type="text" id="harness-sessions-dir" placeholder="~/.pi/agent/sessions">
         <div class="muted" style="font-size:12px;margin-top:4px">Where this Pi writes its session transcripts, used for task cost. Set it when Pi runs with a different home, e.g. inside a container.</div>
       </div>
@@ -555,6 +559,8 @@
       </fieldset>
     </div>
     <div class="modal-footer">
+      <button class="danger" id="harness-delete-btn" onclick="deleteHarness(editingHarnessId)" style="display:none">Delete harness</button>
+      <div style="flex:1"></div>
       <button onclick="requestCloseModal('harness-modal')">Cancel</button>
       <button class="primary" onclick="saveHarness()">Save harness</button>
     </div>

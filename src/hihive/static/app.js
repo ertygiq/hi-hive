@@ -21,6 +21,17 @@ function colorDot(colorId) {
   return c ? `<span class="tmpl-color-dot" style="background:${c.swatch}"></span>` : '';
 }
 
+function harnessMarkerHtml(harness) {
+  const icon = (harness.icon || '').trim();
+  return icon && icon !== '◆' ? `<span class="harness-glyph">${esc(icon)}</span>`
+    : `<span class="harness-dot" style="--harness-accent:${harnessSwatch(harness.color)}" aria-hidden="true"></span>`;
+}
+
+function harnessOptionLabel(harness) {
+  const icon = (harness.icon || '').trim();
+  return `${icon && icon !== '◆' ? `${esc(icon)} ` : ''}${esc(harness.name)}`;
+}
+
 function harnessById(id) {
   return (configCache?.harnesses || []).find(h => h.id === id) || null;
 }
@@ -379,9 +390,7 @@ function syncDeepSearchButton() {
   const btn = document.getElementById('results-deep-search');
   btn.classList.toggle('is-active', deepSearch);
   btn.setAttribute('aria-pressed', deepSearch ? 'true' : 'false');
-  document.getElementById('results-search').placeholder = deepSearch
-    ? 'Search prompts, labels, responses & follow-ups…'
-    : 'Search prompts & labels…';
+  document.getElementById('results-search').placeholder = 'Search…';
 }
 
 function deepSearchActive() {
@@ -638,20 +647,18 @@ function render() {
 function renderHarnessOnboarding() {
   const empty = (configCache?.harnesses || []).length === 0;
   document.getElementById('harness-onboarding').style.display = empty ? 'flex' : 'none';
-  document.querySelectorAll('.header-controls button.primary, .header-controls button:nth-child(2)').forEach(button => {
+  document.querySelectorAll('#header-add-task, #header-run-template').forEach(button => {
     button.disabled = empty;
     button.title = empty ? 'Add a supported harness in Settings first' : '';
   });
 }
 
 function renderStats() {
-  // The worker limit is shared by all projects, so the count is too.
-  document.getElementById('worker-count').textContent = `${state.running_total ?? state.stats.running ?? 0} / ${state.max_parallel}`;
+  document.getElementById('worker-count').textContent = state.workers?.length || 0;
   document.getElementById('queue-count').textContent = state.stats.queued || 0;
   // Cancel all only has something to do while tasks are queued or running.
   const active = (state.queue?.length || 0) + (state.workers?.length || 0);
   document.getElementById('cancel-all-btn').style.display = active ? '' : 'none';
-  document.getElementById('results-count').textContent = (state.stats.completed || 0) + (state.stats.failed || 0) + (state.stats.cancelled || 0);
 
   const btn = document.getElementById('pause-btn');
   if (state.paused) {
@@ -697,10 +704,13 @@ function renderQueue() {
 }
 
 function renderWorkers() {
-  const elsewhere = Math.max(0, (state.running_total || 0) - state.workers.length);
+  const total = state.running_total || 0;
+  const elsewhere = Math.max(0, total - state.workers.length);
   const elsewhereEl = document.getElementById('workers-elsewhere');
-  elsewhereEl.textContent = `+ ${elsewhere} running in other projects`;
-  elsewhereEl.style.display = elsewhere ? '' : 'none';
+  const full = state.max_parallel > 0 && total >= state.max_parallel;
+  elsewhereEl.textContent = elsewhere ? `+ ${elsewhere} running in other projects · ${total} of ${state.max_parallel} slots in use`
+    : full ? `All ${state.max_parallel} worker slots in use` : '';
+  elsewhereEl.style.display = elsewhere || full ? '' : 'none';
   const list = document.getElementById('workers-list');
   document.getElementById('workers-panel').classList.toggle('is-empty', state.workers.length === 0);
   if (state.workers.length === 0) {
@@ -740,20 +750,31 @@ function renderWorkers() {
 function renderResults() {
   const list = document.getElementById('results-list');
   let results = state.results || [];
-  if (results.length === 0) {
+  const total = results.length;
+  if (hideDone) results = results.filter(t => !t.done);
+  if (resultsQuery) results = results.filter(t =>
+    (t.prompt || '').toLowerCase().includes(resultsQuery) ||
+    (t.label || '').toLowerCase().includes(resultsQuery) ||
+    (deepSearch && deepMatchesTask(t)));
+  const resultCount = document.getElementById('results-count');
+  resultCount.textContent = results.length;
+  if (results.length !== total) {
+    resultCount.title = `${results.length} shown of ${total}`;
+    resultCount.setAttribute('aria-label', resultCount.title);
+  } else {
+    resultCount.removeAttribute('title');
+    resultCount.removeAttribute('aria-label');
+  }
+  if (total === 0) {
     if (openResultMenu) closeResultCardMenu(false, true);
-    list.innerHTML = '<div class="empty">No results yet. Start an agent with + Add Task.</div>';
+    list.innerHTML = '<div class="empty">No results yet. Start a task with + Add task.</div>';
     return;
   }
-  // Hide-done filter: show only tasks not marked as done. A hidden done parent
-  // leaves its non-done children to surface as roots (parent no longer in byId).
-  if (hideDone) {
-    results = results.filter(t => !t.done);
-    if (results.length === 0) {
-      if (openResultMenu) closeResultCardMenu(false, true);
-      list.innerHTML = '<div class="empty">No tasks left to do</div>';
-      return;
-    }
+  // A hidden done parent leaves non-done children to surface as roots.
+  if (!resultsQuery && results.length === 0) {
+    if (openResultMenu) closeResultCardMenu(false, true);
+    list.innerHTML = '<div class="empty">No tasks left to do</div>';
+    return;
   }
 
   // Newest first by the selected sort key.
@@ -762,12 +783,7 @@ function renderResults() {
   // Search mode: match prompt or label (plus server-side full-text matches
   // when the toggle is on), render a flat list (no fork tree).
   if (resultsQuery) {
-    const matches = results
-      .filter(t =>
-        (t.prompt || '').toLowerCase().includes(resultsQuery) ||
-        (t.label || '').toLowerCase().includes(resultsQuery) ||
-        (deepSearch && deepMatchesTask(t)))
-      .sort(sortDesc);
+    const matches = results.sort(sortDesc);
     if (matches.length === 0) {
       if (openResultMenu) closeResultCardMenu(false, true);
       list.innerHTML = '<div class="empty">No results match your search</div>';
@@ -1199,7 +1215,7 @@ function renderDetail(task) {
     }
 
     case 'prompt':
-      body.innerHTML = `<pre>${esc((task.messages || []).find(m => m.role === 'user' && m.kind === 'initial')?.content || '')}</pre>`;
+      body.innerHTML = `<div class="prompt-text">${esc((task.messages || []).find(m => m.role === 'user' && m.kind === 'initial')?.content || '')}</div>`;
       break;
 
   }
@@ -1908,12 +1924,12 @@ function renderProjectHarnessSection(selectedDefault) {
   if (!project) return;
   const available = editedProjectHarnesses();
   document.getElementById('prj-harness-chips').innerHTML = available.length
-    ? available.map(h => `<span class="chip" style="--harness-accent:${harnessSwatch(h.color)}"><span class="harness-glyph">${esc(h.icon || '◆')}</span>${esc(h.name)}</span>`).join('')
+    ? available.map(h => `<span class="chip" style="--harness-accent:${harnessSwatch(h.color)}">${harnessMarkerHtml(h)}${esc(h.name)}</span>`).join('')
     : '<span class="muted">No harnesses. Turn on shared harnesses, or select this project in a harness under "All projects".</span>';
   const select = document.getElementById('prj-default-harness');
   const chosen = available.some(h => h.id === selectedDefault) ? selectedDefault : available[0]?.id;
   select.innerHTML = available.map(h =>
-    `<option value="${esc(h.id)}" ${h.id === chosen ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}</option>`).join('');
+    `<option value="${esc(h.id)}" ${h.id === chosen ? 'selected' : ''}>${harnessOptionLabel(h)}</option>`).join('');
   select.disabled = available.length === 0;
   const own = harnessesLocal.filter(h => h.only && h.only.includes(project.id)).map(h => h.name);
   document.getElementById('prj-use-shared-help').textContent =
@@ -2036,6 +2052,12 @@ async function confirmDeleteProject() {
   showMessage(`Project "${project.name}" deleted.`);
 }
 
+function focusSettingsRowAction(listId, deletedIndex, addId) {
+  const buttons = [...document.getElementById(listId).querySelectorAll('button')];
+  const next = buttons[Math.min(Math.max(0, deletedIndex), buttons.length - 1)];
+  (next || document.getElementById(addId)).focus();
+}
+
 function renderTemplatesList() {
   const list = document.getElementById('templates-list');
   const id = currentProject()?.id;
@@ -2051,7 +2073,6 @@ function renderTemplatesList() {
       <span class="template-name">${colorDot}${esc(t.name)}</span>
       <div>
         <button class="small" onclick="editTemplate('${t.id}')">Edit</button>
-        <button class="small danger" onclick="deleteTemplate('${t.id}')">Delete</button>
       </div>
     </div>
   `;
@@ -2075,7 +2096,6 @@ function renderReviewSectionsList() {
       <span class="template-name">${esc(section.name || '(no name)')}</span>
       <div>
         <button class="small" onclick="editReviewSection('${section.id}')">Edit</button>
-        <button class="small danger" onclick="removeReviewSection('${section.id}')">Delete</button>
       </div>
     </div>
   `).join('');
@@ -2085,7 +2105,8 @@ function renderReviewSectionsList() {
 // with the rest of Settings.
 function addReviewSectionForm() {
   editingReviewSectionId = null;
-  document.getElementById('review-section-modal-title').textContent = 'Add Review Section';
+  document.getElementById('review-section-modal-title').textContent = 'Add review section';
+  document.getElementById('review-section-delete-btn').style.display = 'none';
   document.getElementById('review-section-name').value = '';
   document.getElementById('review-section-prompt').value = '';
   openModal('review-section-modal');
@@ -2096,7 +2117,8 @@ function editReviewSection(id) {
   const section = reviewSectionsLocal.find(s => s.id === id);
   if (!section) return;
   editingReviewSectionId = id;
-  document.getElementById('review-section-modal-title').textContent = 'Edit Review Section';
+  document.getElementById('review-section-modal-title').textContent = 'Edit review section';
+  document.getElementById('review-section-delete-btn').style.display = '';
   document.getElementById('review-section-name').value = section.name || '';
   document.getElementById('review-section-prompt').value = section.prompt || '';
   openModal('review-section-modal');
@@ -2121,13 +2143,16 @@ function saveReviewSection() {
 }
 
 async function removeReviewSection(id) {
-  if (!await showConfirm('Delete this review section?')) return;
+  if (!id || !await showConfirm('Delete this review section?')) return;
+  const index = projectReviewSections().findIndex(section => section.id === id);
+  closeModal('review-section-modal');
   reviewSectionsLocal = reviewSectionsLocal.filter(s => s.id !== id);
   templatesLocal = templatesLocal.map(template => ({
     ...template,
     review_section_ids: (template.review_section_ids || []).filter(sectionId => sectionId !== id)
   }));
   renderReviewSectionsList();
+  focusSettingsRowAction('review-sections-list', index, 'add-review-section-btn');
 }
 
 function proposedHarnessAvailable(harness, project) {
@@ -2247,13 +2272,12 @@ function renderHarnessesList() {
   list.innerHTML = harnessesLocal.map(h => `
     <div class="template-item">
       <span class="template-name" style="--harness-accent:${harnessSwatch(h.color)}">
-        <span class="harness-glyph">${esc(h.icon || '◆')}</span>${esc(h.name)}
+        ${harnessMarkerHtml(h)}${esc(h.name)}
         <span class="harness-type-tag">${esc(harnessTypeLabel(h.type))}</span>
         ${availabilityTagHtml(h)}
       </span>
       <div>
         <button class="small" onclick="editHarness('${h.id}')">Edit</button>
-        <button class="small danger" onclick="deleteHarness('${h.id}')">Delete</button>
       </div>
     </div>
   `).join('');
@@ -2317,6 +2341,7 @@ function readHarnessAvailability() {
 function addHarnessForm() {
   editingHarnessId = null;
   document.getElementById('harness-modal-title').textContent = 'Add harness';
+  document.getElementById('harness-delete-btn').style.display = 'none';
   document.getElementById('harness-name').value = '';
   document.getElementById('harness-icon').value = '◆';
   document.getElementById('harness-command').value = '';
@@ -2333,6 +2358,7 @@ function editHarness(id) {
   if (!h) return;
   editingHarnessId = id;
   document.getElementById('harness-modal-title').textContent = 'Edit harness';
+  document.getElementById('harness-delete-btn').style.display = '';
   document.getElementById('harness-name').value = h.name || '';
   document.getElementById('harness-icon').value = h.icon || '◆';
   document.getElementById('harness-command').value = h.command || '';
@@ -2372,9 +2398,12 @@ function saveHarness() {
 }
 
 async function deleteHarness(id) {
-  if (!await showConfirm('Delete this harness?')) return;
+  if (!id || !await showConfirm('Delete this harness?')) return;
+  const index = harnessesLocal.findIndex(harness => harness.id === id);
+  closeModal('harness-modal');
   harnessesLocal = harnessesLocal.filter(h => h.id !== id);
   renderHarnessesList();
+  focusSettingsRowAction('harnesses-list', index, 'add-harness-btn');
 }
 
 // --- Output actions (availability only; the rest is set in config.json) ---
@@ -2432,7 +2461,7 @@ function renderTemplateHarnessOptions(selectedId) {
   const sel = document.getElementById('tmpl-harness');
   sel.innerHTML = ['<option value="">Use project default</option>']
     .concat(editedProjectHarnesses().map(h =>
-      `<option value="${esc(h.id)}" ${h.id === selectedId ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}</option>`))
+      `<option value="${esc(h.id)}" ${h.id === selectedId ? 'selected' : ''}>${harnessOptionLabel(h)}</option>`))
     .join('');
 }
 
@@ -2445,7 +2474,7 @@ function populateHarnessSelect(sel, selectedId) {
   const def = project?.default_harness;
   const chosen = available.has(selectedId) ? selectedId : def;
   sel.innerHTML = harnesses.map(h =>
-    `<option value="${esc(h.id)}" ${h.id === chosen ? 'selected' : ''}>${esc(h.icon || '◆')} ${esc(h.name)}${h.id === def ? ' (default)' : ''}</option>`
+    `<option value="${esc(h.id)}" ${h.id === chosen ? 'selected' : ''}>${harnessOptionLabel(h)}${h.id === def ? ' (default)' : ''}</option>`
   ).join('');
 }
 
@@ -2474,7 +2503,8 @@ function pickColor(id) {
 
 function addTemplateForm() {
   editingTemplateId = null;
-  document.getElementById('template-modal-title').textContent = 'Add Template';
+  document.getElementById('template-modal-title').textContent = 'Add template';
+  document.getElementById('template-delete-btn').style.display = 'none';
   document.getElementById('tmpl-name').value = '';
   document.getElementById('tmpl-body').value = '';
   document.getElementById('tmpl-work-dir').value = '';
@@ -2489,7 +2519,8 @@ function editTemplate(id) {
   const tmpl = templatesLocal.find(t => t.id === id);
   if (!tmpl) return;
   editingTemplateId = id;
-  document.getElementById('template-modal-title').textContent = 'Edit Template';
+  document.getElementById('template-modal-title').textContent = 'Edit template';
+  document.getElementById('template-delete-btn').style.display = '';
   document.getElementById('tmpl-name').value = tmpl.name;
   document.getElementById('tmpl-body').value = tmpl.template;
   document.getElementById('tmpl-work-dir').value = tmpl.work_dir || '';
@@ -2551,9 +2582,12 @@ function saveTemplate() {
 }
 
 async function deleteTemplate(id) {
-  if (!await showConfirm('Delete this template?')) return;
+  if (!id || !await showConfirm('Delete this template?')) return;
+  const index = templatesLocal.filter(template => template.project_id === currentProject()?.id).findIndex(template => template.id === id);
+  closeModal('template-modal');
   templatesLocal = templatesLocal.filter(t => t.id !== id);
   renderTemplatesList();
+  focusSettingsRowAction('templates-list', index, 'add-template-btn');
 }
 
 // --- Drag & Drop ---
