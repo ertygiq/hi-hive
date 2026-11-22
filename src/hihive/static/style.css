@@ -105,6 +105,7 @@ button.primary.danger {
   color: var(--error);
 }
 button.primary.danger:hover { background: var(--error); color: #fff; }
+.muted { color: var(--text-muted); }
 button.small { padding: 3px 8px; font-size: 12px; }
 #copy-login-link-btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 button.icon-btn {
@@ -595,6 +596,7 @@ main {
   font-size: 14px;
   line-height: 1.6;
 }
+.prompt-text { font-size: 13px; line-height: 1.5; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; }
 .detail-body .rendered-output > :first-child { margin-top: 0; }
 .detail-body .rendered-output > :last-child { margin-bottom: 0; }
 .detail-body .rendered-output h1,

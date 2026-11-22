@@ -9,7 +9,7 @@ function client(storage = new Map()) {
   const listeners = new Map();
   const element = () => ({ style: {}, value: '', textContent: '', innerHTML: '', scrollHeight: 34,
     offsetHeight: 36, clientHeight: 34,
-    classList: { add() {}, remove() {}, toggle() {} }, setAttribute(name, value) { this[name] = value; }, focus() {}, querySelectorAll() { return []; } });
+    classList: { add() {}, remove() {}, toggle() {} }, setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; }, focus() {}, querySelectorAll() { return []; } });
   const document = {
     visibilityState: 'visible',
     documentElement: { clientHeight: 800 },
@@ -32,6 +32,161 @@ function client(storage = new Map()) {
   vm.runInContext("selectedTaskId = 'task'; configCache = { harnesses: [] }; const originalPoll = poll; poll = () => {};", context);
   return { context, document, storage, listeners };
 }
+
+test('worker and Results counts follow project lists and active filters', () => {
+  const { context, document } = client();
+  context.snapshot = { stats: {}, queue: [], workers: [], results: [], running_total: 2, max_parallel: 4 };
+  vm.runInContext('state = snapshot; renderStats(); renderWorkers(); renderResults()', context);
+  assert.equal(document.getElementById('worker-count').textContent, 0);
+  assert.match(document.getElementById('workers-elsewhere').textContent, /\+ 2 running in other projects · 2 of 4 slots in use/);
+  context.snapshot.running_total = 4;
+  context.snapshot.workers = [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }, { id: 'd', label: 'D' }];
+  vm.runInContext('renderStats(); renderWorkers()', context);
+  assert.equal(document.getElementById('worker-count').textContent, 4);
+  assert.equal(document.getElementById('workers-elsewhere').textContent, 'All 4 worker slots in use');
+  context.snapshot.running_total = 3;
+  vm.runInContext('renderWorkers()', context);
+  assert.equal(document.getElementById('workers-elsewhere').style.display, 'none');
+  context.snapshot.results = [
+    { id: 'parent', label: 'alpha parent', status: 'completed', done: false },
+    { id: 'child', parent_task_id: 'parent', label: 'alpha child', status: 'completed', done: false },
+    { id: 'done', label: 'beta', status: 'completed', done: true }
+  ];
+  vm.runInContext("hideDone = false; resultsQuery = ''; collapsedForks.add('parent'); renderResults()", context);
+  assert.equal(document.getElementById('results-count').textContent, 3);
+  vm.runInContext('hideDone = true; renderResults()', context);
+  assert.equal(document.getElementById('results-count').textContent, 2);
+  assert.equal(document.getElementById('results-count').title, '2 shown of 3');
+  assert.equal(document.getElementById('results-count')['aria-label'], '2 shown of 3');
+  vm.runInContext("resultsQuery = 'child'; renderResults()", context);
+  assert.equal(document.getElementById('results-count').textContent, 1);
+  assert.equal(document.getElementById('results-count').title, '1 shown of 3');
+  vm.runInContext("hideDone = false; resultsQuery = ''; renderResults()", context);
+  assert.equal(document.getElementById('results-count').title, undefined);
+  assert.equal(document.getElementById('results-count')['aria-label'], undefined);
+});
+
+test('header task actions keep no-harness handling and template setup fallback', async () => {
+  const { context, document } = client();
+  const add = {}, batch = {};
+  document.querySelectorAll = selector => selector === '#header-add-task, #header-run-template' ? [add, batch] : [];
+  vm.runInContext('configCache = {harnesses: []}; renderHarnessOnboarding()', context);
+  assert.equal(add.disabled, true); assert.equal(batch.disabled, true);
+  context.loadConfig = async () => {};
+  let target;
+  context.openSettings = id => { target = id; };
+  vm.runInContext("configCache = {harnesses:[{id:'h'}], projects:[{id:'p'}], templates:[]}; renderHarnessOnboarding()", context);
+  assert.equal(add.disabled, false); assert.equal(batch.disabled, false);
+  await vm.runInContext('openBatchAdd()', context);
+  assert.equal(target, 'templates-heading');
+});
+
+test('prompt tab renders escaped prose and preserves whitespace', () => {
+  const { context, document } = client();
+  context.task = { id: 'task', status: 'completed', messages: [{ role: 'user', kind: 'initial', content: 'Hello\n<script>bad</script>' }] };
+  vm.runInContext("currentDetailTab = 'prompt'; renderDetail(task)", context);
+  const html = document.getElementById('detail-body').innerHTML;
+  assert.match(html, /<div class="prompt-text">Hello\n&lt;script&gt;bad&lt;\/script&gt;<\/div>/);
+  assert.doesNotMatch(html, /<pre>|<script>/);
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.prompt-text\s*\{[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere;[^}]*font-family:\s*inherit/s);
+});
+
+test('settings labels, native switches and edit-only delete controls remain accessible', () => {
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.ok(html.indexOf('id="header-add-task"') < html.indexOf('id="header-run-template"'));
+  assert.match(html, /class="primary" id="header-add-task"/);
+  assert.match(html, /id="cfg-prevent-sleep" aria-describedby="cfg-prevent-sleep-help"/);
+  assert.match(html, /id="cfg-show-task-cost" aria-describedby="cfg-show-task-cost-help"/);
+  assert.match(css, /\.switch input:focus-visible \+ span/);
+  assert.match(css, /\.muted\s*\{\s*color:\s*var\(--text-muted\)/);
+  for (const id of ['harness-delete-btn', 'template-delete-btn', 'review-section-delete-btn']) {
+    assert.match(html, new RegExp(`id="${id}"[^>]*style="display:none"`));
+  }
+  for (const label of ['Max parallel workers', 'Session viewer URL', 'Review sections', 'Attached review sections', 'Default args (space-separated)', 'Sessions directory (optional)']) assert.ok(html.includes(label));
+});
+
+test('delete controls are shown for edit but hidden for add', () => {
+  const { context, document } = client();
+  context.openModal = () => {};
+  for (const name of ['renderColorPicker', 'renderTemplateHarnessOptions', 'renderTemplateReviewSections',
+    'renderHarnessTypeOptions', 'renderHarnessColorPicker', 'renderHarnessAvailability']) context[name] = () => {};
+  vm.runInContext("harnessesLocal = [{id:'h',name:'H',args:[]}]; templatesLocal = [{id:'t',name:'T',template:'x'}]; reviewSectionsLocal = [{id:'r',name:'R',prompt:'p'}]", context);
+  for (const [add, edit, button] of [['addHarnessForm()', "editHarness('h')", 'harness-delete-btn'],
+    ['addTemplateForm()', "editTemplate('t')", 'template-delete-btn'],
+    ['addReviewSectionForm()', "editReviewSection('r')", 'review-section-delete-btn']]) {
+    vm.runInContext(add, context);
+    assert.equal(document.getElementById(button).style.display, 'none');
+    vm.runInContext(edit, context);
+    assert.equal(document.getElementById(button).style.display, '');
+  }
+});
+
+test('destructive Settings actions are only in edit modals and remain staged until Save', async () => {
+  const { context, document } = client();
+  context.showConfirm = async () => false;
+  context.openModal = () => {};
+  context.closeModal = id => { context.closed = id; };
+  context.renderHarnessesList = () => {};
+  context.renderTemplatesList = () => {};
+  context.renderReviewSectionsList = () => {};
+  vm.runInContext("harnessesLocal = [{id:'h',name:'Harness'}]; templatesLocal = [{id:'t', review_section_ids:['r']}]; reviewSectionsLocal = [{id:'r',name:'Review'}]", context);
+  await vm.runInContext("deleteHarness('h');", context);
+  assert.equal(vm.runInContext('harnessesLocal.length', context), 1);
+  assert.equal(context.closed, undefined);
+  context.showConfirm = async () => true;
+  await vm.runInContext("deleteHarness('h');", context);
+  assert.equal(context.closed, 'harness-modal');
+  assert.equal(vm.runInContext('harnessesLocal.length', context), 0);
+  await vm.runInContext("removeReviewSection('r');", context);
+  assert.equal(context.closed, 'review-section-modal');
+  assert.equal(vm.runInContext('reviewSectionsLocal.length', context), 0);
+  assert.equal(vm.runInContext('templatesLocal[0].review_section_ids.length', context), 0);
+  await vm.runInContext("deleteTemplate('t');", context);
+  assert.equal(context.closed, 'template-modal');
+  assert.equal(vm.runInContext('templatesLocal.length', context), 0);
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  for (const id of ['harness-delete-btn', 'template-delete-btn', 'review-section-delete-btn']) assert.ok(html.includes(id));
+  assert.ok(document.getElementById('settings-modal'));
+});
+
+test('confirmed Settings deletions restore focus to the next Edit or section Add', async () => {
+  const { context, document } = client();
+  context.showConfirm = async () => true;
+  context.closeModal = () => {};
+  context.renderHarnessesList = () => {};
+  context.renderTemplatesList = () => {};
+  context.renderReviewSectionsList = () => {};
+  vm.runInContext("configCache.projects = [{id:'p'}]; currentProjectId = 'p'", context);
+  for (const [list, add, setup, call] of [
+    ['harnesses-list', 'add-harness-btn', "harnessesLocal = [{id:'first'}, {id:'remove'}, {id:'next'}]", "deleteHarness('remove')"],
+    ['templates-list', 'add-template-btn', "templatesLocal = [{id:'first',project_id:'p'}, {id:'remove',project_id:'p'}, {id:'next',project_id:'p'}]", "deleteTemplate('remove')"],
+    ['review-sections-list', 'add-review-section-btn', "reviewSectionsLocal = [{id:'first',project_id:'p'}, {id:'remove',project_id:'p'}, {id:'next',project_id:'p'}]; templatesLocal = []", "removeReviewSection('remove')"]
+  ]) {
+    let focused = '';
+    const buttons = [{ focus() { focused = 'first'; } }, { focus() { focused = 'next'; } }];
+    document.getElementById(list).querySelectorAll = () => buttons;
+    document.getElementById(add).focus = () => { focused = 'add'; };
+    vm.runInContext(setup, context);
+    await vm.runInContext(call, context);
+    assert.equal(focused, 'next', list);
+    document.getElementById(list).querySelectorAll = () => [];
+    vm.runInContext(setup, context);
+    await vm.runInContext(call, context);
+    assert.equal(focused, 'add', list);
+  }
+});
+
+test('settings harness markers use dots or custom icons and selects omit default diamond', () => {
+  const { context } = client();
+  context.h = { name: '<Pi>', icon: '◆', color: 'rose' };
+  assert.match(vm.runInContext('harnessMarkerHtml(h)', context), /harness-dot/);
+  assert.equal(vm.runInContext('harnessOptionLabel(h)', context), '&lt;Pi&gt;');
+  context.h.icon = '★';
+  assert.match(vm.runInContext('harnessMarkerHtml(h)', context), /harness-glyph/);
+  assert.equal(vm.runInContext('harnessOptionLabel(h)', context), '★ &lt;Pi&gt;');
+});
 
 test('Done failures show a dialog, including non-JSON and network errors', async () => {
   for (const failure of ['json', 'text', 'network']) {
