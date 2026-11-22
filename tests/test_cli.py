@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import webbrowser
 
 import pytest
@@ -6,6 +9,78 @@ import pytest
 from hihive import cli as cli_module
 from hihive import paths, service
 from hihive.cli import HiHiveCLI, Exit
+
+
+def run_with_closed_stdout(code):
+    process = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process.stdout.close()  # Close the read end before the child can flush its buffered output.
+    stderr = process.stderr.read()
+    return process.wait(timeout=10), stderr.decode()
+
+
+@pytest.mark.parametrize('expression', ["'short output'", "'x' * 200000"])
+def test_cli_closed_pipe_is_quiet_for_buffered_and_large_output(expression):
+    code = ('from hihive.cli import main, HiHiveCLI\n'
+            f'HiHiveCLI.run = lambda self, argv: print({expression})\n'
+            'main([])\n')
+    status, stderr = run_with_closed_stdout(code)
+    assert status == 0
+    assert stderr == ''
+
+
+def test_show_followup_closed_pipe_is_quiet():
+    code = ('from hihive.cli import main, HiHiveCLI\n'
+            'HiHiveCLI.resolve_task_id = lambda self, value: value\n'
+            'HiHiveCLI.get = lambda self, path: {"messages": ['
+            '{"role": "user", "kind": "follow_up", "content": "hello"}, '
+            '{"role": "assistant", "kind": "follow_up", "content": "answer"}]}\n'
+            'main(["show", "task", "--followup", "--no-header"])\n')
+    status, stderr = run_with_closed_stdout(code)
+    assert status == 0
+    assert stderr == ''
+
+
+def test_cli_closed_pipe_does_not_mask_an_existing_command_failure():
+    code = ('from hihive.cli import main, HiHiveCLI, Exit\n'
+            'def run(self, argv):\n'
+            '    print("buffered output")\n'
+            '    raise Exit(3)\n'
+            'HiHiveCLI.run = run\n'
+            'main([])\n')
+    status, stderr = run_with_closed_stdout(code)
+    assert status == 3
+    assert stderr == ''
+
+
+def test_cli_preserves_non_pipe_flush_errors():
+    code = ('import sys\n'
+            'from hihive.cli import main, HiHiveCLI\n'
+            'class BadOutput:\n'
+            '    def __init__(self): self.failed = False\n'
+            '    def flush(self):\n'
+            '        if not self.failed:\n'
+            '            self.failed = True\n'
+            '            raise OSError(5, "output failure")\n'
+            'HiHiveCLI.run = lambda self, argv: None\n'
+            'sys.stdout = BadOutput()\n'
+            'main([])\n')
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert 'output failure' in result.stderr
+
+
+def test_pager_early_exit_stays_quiet_and_restores_stdout():
+    code = ('import sys\n'
+            'from hihive.cli import with_pager\n'
+            'original = sys.stdout\n'
+            'with_pager(lambda: print("x" * 200000))\n'
+            'assert sys.stdout is original\n'
+            'print("after pager")\n')
+    result = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'PAGER': 'exit 0'},
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert result.stdout == 'after pager\n'
+    assert result.stderr == ''
 
 
 class FakeCLI(HiHiveCLI):
