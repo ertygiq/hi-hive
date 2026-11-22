@@ -167,6 +167,24 @@ test('detail markup and CSS cover narrow layouts, tabs, and message styling', ()
   assert.match(css, /\.chat-message\s*\{[^}]*margin:\s*12px 0/s);
 });
 
+test('rendered inline code can wrap and the phone overlay can shrink below 400px', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.detail-body \.rendered-output code\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(css, /\.chat-message \.chat-content\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(css, /\.detail-body pre\s*\{[^}]*white-space:\s*pre-wrap/s);
+  assert.match(css, /\.detail-body \.rendered-output pre code\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(css, /\.detail-body \.rendered-output table\s*\{[^}]*display:\s*block;[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto/s);
+  assert.match(css, /\.detail-body \.rendered-output img\s*\{\s*max-width:\s*100%;\s*height:\s*auto/);
+  assert.match(css, /\.detail-panel\s*\{[^}]*min-width:\s*400px/s);
+  assert.match(css, /@media \(max-width: 899px\)[\s\S]*?\.detail-panel\s*\{[^}]*left:\s*0;[^}]*right:\s*0;[^}]*width:\s*auto !important;[^}]*min-width:\s*0;[^}]*max-width:\s*100%/);
+  const { context } = client();
+  for (const [viewport, maximum] of [[900, 536], [1079, 715], [1080, 416], [1440, 776]]) {
+    context.innerWidth = viewport;
+    assert.equal(vm.runInContext('clampDetailWidth(9999)', context), maximum);
+    assert.ok(vm.runInContext('clampDetailWidth(1)', context) >= 400);
+  }
+});
+
 test('responsive Results layout clamps widths and caps nested cards', () => {
   const { context } = client();
   for (const [width, expected] of [[899, 535], [900, 536], [1079, 715], [1080, 416], [1440, 776]]) {
