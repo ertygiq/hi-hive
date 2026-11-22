@@ -180,6 +180,109 @@ def api(setup):
     return Api(setup)
 
 
+def test_activity_snapshot_counts_and_scoped_tokens_do_not_reveal_global_aggregates(api, setup):
+    class Runner:
+        def __init__(self, activity):
+            self.activity = activity
+            self.state = 'idle'
+        def background_activity(self):
+            return self.activity
+        def stop_snapshot(self):
+            return {"state": "idle", "background_activity": self.activity, "stop_token": None}
+
+    own = setup.pool.add_task('own', project_id=setup.sandbox)
+    reply = setup.pool.add_task('reply', project_id=setup.sandbox)
+    other = setup.pool.add_task('other', project_id=setup.main)
+    background = setup.pool.add_task('background', project_id=setup.main)
+    queued = setup.pool.add_task('queued', project_id=setup.main)
+    setup.pool._tasks[own]['status'] = 'running'
+    setup.pool._tasks[reply].update(status='running', result_placement={'status':'completed', 'completed_at':None},
+                                    runner=Runner({'task_count':2, 'preparing_reply':False}))
+    setup.pool._tasks[other]['status'] = 'reviewing'
+    setup.pool._tasks[background].update(status='completed', runner=Runner({'task_count':0, 'preparing_reply':True}))
+    full = api.call('GET', f'/api/state?project={setup.sandbox}', TOKEN).json()
+    assert full['running_total'] == 3
+    assert full['restart_work_total'] == 4
+    assert full['running_by_project'] == {setup.sandbox:{'workers':1, 'results':1}, setup.main:{'workers':1, 'results':0}}
+    assert queued not in [task['id'] for task in full['workers']]
+    for suffix in ['', f'?project={setup.sandbox}']:
+        scoped = api.call('GET', '/api/state' + suffix, api.agent).json()
+        assert scoped['running_total'] == 2
+        assert 'running_by_project' not in scoped and 'restart_work_total' not in scoped
+        assert setup.main not in json.dumps(scoped)
+    version = f"{full['instance']}:{full['version']}"
+    assert api.call('GET', f'/api/state?since={version}', TOKEN).status_code == 204
+    setup.pool._tasks[background]['runner'].activity = {'task_count':0, 'preparing_reply':False}
+    setup.pool._bump_version()
+    changed = api.call('GET', f'/api/state?since={version}', TOKEN).json()
+    assert changed['restart_work_total'] == 3
+    runner = setup.pool._tasks[background]['runner']
+    runner.state = 'closing'
+    setup.pool._tasks[background]['stopping_work'] = True
+    setup.pool._bump_version()
+    assert api.call('GET', '/api/state', TOKEN).json()['restart_work_total'] == 4
+    runner.state = 'exited'
+    setup.pool._bump_version()
+    assert api.call('GET', '/api/state', TOKEN).json()['restart_work_total'] == 3
+    runner.state = 'closing'
+    setup.pool._tasks[background]['stopping_work'] = False
+    assert api.call('GET', '/api/state', TOKEN).json()['restart_work_total'] == 3
+
+
+def test_restart_count_tracks_stopping_background_work_until_exit(setup):
+    class Runner:
+        state = 'idle'
+        def background_activity(self):
+            return {'task_count': 1 if self.state == 'idle' else 0, 'preparing_reply': False}
+        def drain(self):
+            return []
+        def stop_snapshot(self):
+            return {'state': self.state, 'background_activity': self.background_activity(), 'stop_token': 'token'}
+        def stop_if_current(self, token, kind, message_id):
+            if token != 'token' or kind != 'background':
+                return False
+            self.state = 'closing'
+            return True
+
+    task = setup.pool.add_task('background', project_id=setup.main)
+    runner = Runner()
+    setup.pool._tasks[task].update(status='completed', runner=runner)
+    assert setup.pool.state()['restart_work_total'] == 1
+    assert setup.pool.stop_conversation_work(task, 'token', 'background')
+    assert setup.pool.state()['restart_work_total'] == 1
+    runner.state = 'exited'
+    assert setup.pool.state()['restart_work_total'] == 0
+
+
+def test_restart_count_tracks_stopping_reply_until_exit(setup):
+    class Runner:
+        state = 'active'
+        def background_activity(self):
+            return {'task_count': 0, 'preparing_reply': False}
+        def drain(self):
+            return []
+        def stop_snapshot(self):
+            return {'state': self.state, 'background_activity': self.background_activity(), 'stop_token': 'token'}
+        def stop_if_current(self, token, kind, message_id):
+            if token != 'token' or kind != 'reply' or message_id != 'message':
+                return False
+            self.state = 'closing'
+            return True
+
+    task_id = setup.pool.add_task('reply', project_id=setup.main)
+    task = setup.pool._tasks[task_id]
+    runner = Runner()
+    task.update(status='running', runner=runner, runner_kind='chat',
+                result_placement={'status':'completed', 'completed_at':None})
+    task['messages'].append({'id':'message', 'role':'user', 'kind':'follow_up', 'content':'hello', 'settled':False})
+    assert setup.pool.state()['restart_work_total'] == 1
+    assert setup.pool.stop_conversation_work(task_id, 'token', 'reply', 'message')
+    assert task['status'] == 'completed'
+    assert setup.pool.state()['restart_work_total'] == 1
+    runner.state = 'exited'
+    assert setup.pool.state()['restart_work_total'] == 0
+
+
 def test_agent_token_cannot_issue_browser_login_ticket(api):
     response = api.call('POST', '/api/login-ticket', api.agent, json={})
     assert response.status_code == 403

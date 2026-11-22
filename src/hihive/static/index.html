@@ -46,24 +46,24 @@
 <main>
   <div class="side-column">
     <!-- Queue -->
-    <section class="panel" id="queue-panel">
+    <section class="panel" id="queue-panel" style="display:none">
       <div class="panel-header">
         <h2>Queue <span class="count" id="queue-count">0</span></h2>
       </div>
+      <div class="queue-waiting" id="queue-waiting" style="display:none"></div>
       <div class="task-list" id="queue-list"></div>
     </section>
 
     <!-- Workers -->
     <section class="panel" id="workers-panel">
       <div class="panel-header">
-        <h2>Workers <span class="count" id="worker-count" title="Running in this project" aria-label="Running in this project">0</span></h2>
+        <h2 id="workers-heading" tabindex="-1">Workers <span class="count" id="worker-count" title="Running in this project" aria-label="Running in this project">0</span></h2>
         <div class="panel-actions">
           <button class="small toggle" id="pause-btn" onclick="togglePause()">Pause</button>
           <button class="small" id="cancel-all-btn" onclick="cancelAllTasks()" style="display:none">Cancel all</button>
         </div>
       </div>
       <div class="task-list" id="workers-list"></div>
-      <div class="workers-elsewhere" id="workers-elsewhere" style="display:none"></div>
     </section>
   </div>
 
@@ -392,8 +392,9 @@
     <div class="modal-body hidden" id="settings-pane-global" role="tabpanel">
       <div class="form-row">
         <div class="form-group">
-          <label>Max parallel workers</label>
-          <input type="number" id="cfg-max-parallel" min="1" max="50" value="4">
+          <label for="cfg-max-parallel">Running task slots</label>
+          <input type="number" id="cfg-max-parallel" min="1" max="50" value="4" aria-describedby="cfg-slots-help">
+          <div class="muted" id="cfg-slots-help">How many tasks can run at once. Replies to follow-ups use a slot too.</div>
         </div>
         <div class="form-group"></div>
       </div>

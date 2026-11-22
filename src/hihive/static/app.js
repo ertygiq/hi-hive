@@ -68,18 +68,29 @@ function costHtml(t) {
   return `<span class="task-cost" title="Session cost (USD)">${formatCost(t.cost)}</span>`;
 }
 
-// Badge for a follow-up that's been sent but not yet answered. Disappears the
-// moment the agent's reply lands, so an idle card means "replied".
-function replyStateHtml(task) {
-  let label, title, kind;
-  if (unreadReplies.ids.has(task.id)) {
-    [label, title, kind] = ['New reply', 'A reply arrived since you last opened this task', 'unread'];
-  } else if (task.activity_kind === 'reply' && (task.chat_pending || task.background_activity?.preparing_reply)) {
-    [label, title, kind] = ['Replying', 'The harness is replying to your message', 'active'];
-  } else if (task.background_activity?.task_count > 0) {
-    [label, title, kind] = ['Background work', 'Background tasks are still running', 'active'];
-  } else return '';
-  return `<span class="reply-state is-${kind}" title="${title}"><span class="state-dot" aria-hidden="true"></span>${label}</span>`;
+function replyFacts(task) {
+  return {
+    unread: unreadReplies.ids.has(task.id),
+    replying: ['reply', 'review'].includes(task.activity_kind) && Boolean(task.chat_pending || task.background_activity?.preparing_reply),
+    background: task.background_activity?.task_count > 0,
+  };
+}
+
+function replyStateHtml(task, suffix = '') {
+  const facts = replyFacts(task);
+  return replyFactsHtml(facts, suffix);
+}
+
+function replyFactsHtml(facts, suffix = '') {
+  const badge = (label, title, kind) => {
+    const tooltip = suffix ? `In a fork: ${title}` : title;
+    return `<span class="reply-state is-${kind}" title="${tooltip}"><span class="state-dot" aria-hidden="true"></span>${label}${suffix}</span>`;
+  };
+  let html = '';
+  if (facts.unread) html += badge('New reply', 'A reply arrived since you last opened this task', 'unread');
+  if (facts.replying) html += badge('Replying', 'The harness is replying to your message', 'active');
+  if (facts.background) html += badge('Background work', 'Background tasks are still running', 'active');
+  return html;
 }
 
 // Messenger-style status line above the chat input. It sits outside the chat
@@ -489,15 +500,16 @@ async function poll() {
     // The server answers 204 when the state named by `since` is still current.
     const since = hasLoadedState ? `?since=${encodeURIComponent(`${state.instance}:${state.version}`)}` : '';
     const res = await fetch(`/api/state${since}`);
-    if (res.status === 204) return;
+    if (res.status === 204) { renderQueue(); return true; }
     if (res.status === 401) {
       // The browser has no valid login cookie. Tell the user once per page load.
       if (!loginNoticeShown) {
         loginNoticeShown = true;
         showMessage('This browser is not logged in to Hive. In a browser where Hive is open, choose Settings → All projects → Copy one-time login link, then paste the link here. Or run `hihive open` to log in your default browser.', 'Login required');
       }
-      return;
+      return false;
     }
+    if (res.ok === false) return false;
     const data = await res.json();
     if (!hasLoadedState || data.version !== state.version || data.instance !== state.instance) {
       trackUnreadReplies(data);
@@ -508,9 +520,9 @@ async function poll() {
     }
   } catch (e) {
     console.error('Poll error:', e);
-    return;
+    return false;
   }
-  if (!stateChanged) return;
+  if (!stateChanged) return true;
   try {
     render();
   } catch (e) {
@@ -518,6 +530,7 @@ async function poll() {
   }
   // Output and chat history may have changed; refresh full-text matches.
   scheduleDeepSearch();
+  return true;
 }
 
 // --- Rendering ---
@@ -630,9 +643,19 @@ function cardKeydown(event, id) {
 }
 
 function render() {
+  const focused = document.activeElement;
+  const queue = document.getElementById('queue-panel');
+  const queueHadFocus = Boolean(focused && queue.contains?.(focused));
+  const focusedId = queueHadFocus ? focused.closest?.('[data-task-id]')?.dataset.taskId : null;
   renderStats();
   renderQueue();
   renderWorkers();
+  if (queueHadFocus && document.activeElement === document.body &&
+      (!state.queue.some(t => t.id === focusedId) || queue.style.display === 'none')) {
+    const worker = focusedId && [...document.querySelectorAll('#workers-list [data-task-id]')]
+      .find(card => card.dataset.taskId === focusedId);
+    (worker || document.getElementById('workers-heading')).focus();
+  }
   renderResults();
   renderPausedBanner();
   renderHarnessOnboarding();
@@ -688,13 +711,40 @@ function renderPausedBanner() {
   updateLayoutMetrics();
 }
 
+const queueFirstSeen = new Map();
+let visibleQueueProject = null;
 function renderQueue() {
   const list = document.getElementById('queue-list');
-  document.getElementById('queue-panel').classList.toggle('is-empty', state.queue.length === 0);
-  if (state.queue.length === 0) {
-    list.innerHTML = '<div class="empty">No tasks in queue</div>';
-    return;
+  const panel = document.getElementById('queue-panel');
+  const now = Date.now();
+  const ids = new Set(state.queue.map(t => t.id));
+  for (const id of queueFirstSeen.keys()) if (!ids.has(id)) queueFirstSeen.delete(id);
+  for (const id of ids) if (!queueFirstSeen.has(id)) queueFirstSeen.set(id, now);
+  const total = state.running_total || 0;
+  const full = state.max_parallel > 0 && total >= state.max_parallel;
+  const projectId = currentProject()?.id || null;
+  const visible = ids.size > 0 && (state.paused || full || (visibleQueueProject !== null && visibleQueueProject === projectId && panel.style.display !== 'none') ||
+    [...queueFirstSeen.values()].some(first => now - first >= 1000));
+  visibleQueueProject = visible ? projectId : null;
+  panel.style.display = visible ? '' : 'none';
+  panel.classList.toggle('is-visible', visible);
+  const reason = document.getElementById('queue-waiting');
+  const showReason = visible && full && !state.paused;
+  reason.style.display = showReason ? '' : 'none';
+  if (showReason) {
+    const counts = state.running_by_project?.[currentProject()?.id] || {};
+    const workers = counts.workers || 0;
+    const replies = counts.results || 0;
+    const others = Math.max(0, total - workers - replies);
+    const parts = [[workers, 'in Workers'], [replies, 'replying in Results'], [others, 'in other projects']]
+      .filter(([count]) => count).map(([count, label]) => `${count} ${label}`).join(', ');
+    const text = total > state.max_parallel
+      ? `Waiting for a free slot: ${total} in use, limit ${state.max_parallel}.`
+      : `Waiting for a free slot: ${total} of ${state.max_parallel} in use.`;
+    reason.innerHTML = `${esc(text)}<span class="visually-hidden"> ${esc(parts)}</span>`;
+    reason.title = parts;
   }
+  if (!ids.size) { list.innerHTML = ''; return; }
   renderListPreservingFocus(list, state.queue.map(t => `
     <div class="task-card ${t.id === selectedTaskId ? 'selected' : ''}"
          data-task-id="${t.id}" tabindex="0"
@@ -716,17 +766,10 @@ function renderQueue() {
 }
 
 function renderWorkers() {
-  const total = state.running_total || 0;
-  const elsewhere = Math.max(0, total - state.workers.length);
-  const elsewhereEl = document.getElementById('workers-elsewhere');
-  const full = state.max_parallel > 0 && total >= state.max_parallel;
-  elsewhereEl.textContent = elsewhere ? `+ ${elsewhere} running in other projects · ${total} of ${state.max_parallel} slots in use`
-    : full ? `All ${state.max_parallel} worker slots in use` : '';
-  elsewhereEl.style.display = elsewhere || full ? '' : 'none';
   const list = document.getElementById('workers-list');
   document.getElementById('workers-panel').classList.toggle('is-empty', state.workers.length === 0);
   if (state.workers.length === 0) {
-    list.innerHTML = '<div class="empty">No active workers</div>';
+    list.innerHTML = '';
     return;
   }
   renderListPreservingFocus(list, state.workers.map(t => {
@@ -763,7 +806,20 @@ function renderResults() {
   const list = document.getElementById('results-list');
   let results = state.results || [];
   const total = results.length;
-  if (hideDone) results = results.filter(t => !t.done);
+  if (hideDone) {
+    const byId = new Map(results.map(t => [t.id, t]));
+    const keep = new Set();
+    for (const task of results) {
+      const facts = replyFacts(task);
+      if (!facts.unread && !facts.replying && !facts.background) continue;
+      let current = task;
+      while (current && !keep.has(current.id)) {
+        keep.add(current.id);
+        current = byId.get(current.parent_task_id);
+      }
+    }
+    results = results.filter(t => !t.done || keep.has(t.id));
+  }
   if (resultsQuery) results = results.filter(t =>
     (t.prompt || '').toLowerCase().includes(resultsQuery) ||
     (t.label || '').toLowerCase().includes(resultsQuery) ||
@@ -869,6 +925,21 @@ function messageCountHtml(count) {
   return `<span class="message-count" title="${label}" aria-label="${label}"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M2 1.75h8c.69 0 1.25.56 1.25 1.25v4.5c0 .69-.56 1.25-1.25 1.25H5.75L3.25 10.75V8.75H2c-.69 0-1.25-.56-1.25-1.25V3c0-.69.56-1.25 1.25-1.25z"/></svg>${count}</span>`;
 }
 
+function descendantReplyFacts(id, childrenByParent) {
+  const facts = { unread: false, replying: false, background: false };
+  const pending = [...(childrenByParent.get(id) || [])];
+  const seen = new Set([id]);
+  while (pending.length) {
+    const child = pending.pop();
+    if (seen.has(child.id)) continue;
+    seen.add(child.id);
+    const childFacts = replyFacts(child);
+    for (const key of Object.keys(facts)) facts[key] ||= childFacts[key];
+    pending.push(...(childrenByParent.get(child.id) || []));
+  }
+  return facts;
+}
+
 function renderResultCard(t, depth, childrenByParent) {
   const status = t.status === 'failed' ? ['✗', 'Failed'] : t.status === 'cancelled' ? ['⊘', 'Cancelled'] : null;
   const statusIcon = status ? `<span class="result-status status-${t.status}" title="${status[1]}" aria-label="${status[1]}">${status[0]}</span>` : '';
@@ -907,6 +978,7 @@ function renderResultCard(t, depth, childrenByParent) {
         ${t.has_review ? '<span>reviewed</span>' : ''}
         ${messageCountHtml(t.chat_count)}
         ${replyStateHtml(t)}
+        ${isCollapsed ? replyFactsHtml(descendantReplyFacts(t.id, childrenByParent), ' in fork') : ''}
         ${forksLabel}
       </div>
       ${summary}
@@ -2218,7 +2290,11 @@ async function persistSettingsConfig() {
 }
 
 async function restartServer() {
-  if (!await showConfirm('Restart the server? Running tasks will be interrupted.', { cancelLabel: 'Not now', confirmLabel: 'Restart', danger: true })) return;
+  const refreshed = await poll();
+  const count = refreshed ? fullState.restart_work_total || 0 : 0;
+  const message = count ? `Restart the server? ${count} ${count === 1 ? 'task' : 'tasks'} in all projects ${count === 1 ? 'has' : 'have'} work in progress and may be interrupted.`
+    : 'Restart the server? Running tasks will be interrupted.';
+  if (!await showConfirm(message, { cancelLabel: 'Not now', confirmLabel: 'Restart', danger: true })) return;
   try {
     await fetch('/api/control/restart', {
       method: 'POST',

@@ -9,6 +9,10 @@ A group of tasks, templates, and review sections with its own working directory 
 Every task belongs to exactly one project.
 _Avoid_: Workspace, which is easy to confuse with the working directory.
 
+**Running task slots**:
+The shared capacity used to decide when queued tasks can start across all projects.
+Follow-up work also counts toward usage, but can start even when all slots are occupied.
+
 **Harness**:
 A named configuration that tells Hive how to start Claude Code, Pi, or another supported command.
 Use _harness_ in all user-facing UI, CLI, and documentation text.

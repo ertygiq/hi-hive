@@ -354,6 +354,7 @@ class PoolManager:
         if task["status"] in ACTIVE:
             if task.get("runner"):
                 task["runner"].close("Task cancelled")
+                task["stopping_work"] = True
             task["status"] = "cancelled"
             task["completed_at"] = now()
             task["cancel_requested"] = True
@@ -762,6 +763,7 @@ class PoolManager:
             if msg_id and not any(m["id"] == msg_id for m in tm.outstanding(task)):
                 return False
             runner.close("Conversation run cancelled")
+            task["stopping_work"] = True
             task["cancel_requested"] = True
             task["status"] = "cancelled"
             task["completed_at"] = now()
@@ -783,6 +785,7 @@ class PoolManager:
                 return False
             if not runner.stop_if_current(token, kind, message_id):
                 return False
+            task["stopping_work"] = True
             if kind == "reply":
                 task["cancel_requested"] = True
                 task["stop_reply_requested"] = True
@@ -937,10 +940,20 @@ class PoolManager:
     def _state_unlocked(self, project_id=None):
         queued, running, completed = [], [], []
         running_total = 0
+        restart_work_total = 0
+        running_by_project = {}
         for task_id in self._task_order:
             task = self._tasks[task_id]
-            if task["status"] in ACTIVE:
+            active = task["status"] in ACTIVE
+            if active:
                 running_total += 1
+                counts = running_by_project.setdefault(task["project_id"], {"workers": 0, "results": 0})
+                counts["results" if task.get("result_placement") else "workers"] += 1
+            runner = task.get("runner")
+            background = runner.background_activity() if runner else {}
+            stopping_work = runner and task.get("stopping_work") and runner.state != "exited"
+            if active or stopping_work or background.get("task_count", 0) > 0 or background.get("preparing_reply"):
+                restart_work_total += 1
             if project_id and task["project_id"] != project_id:
                 continue
             placement = "completed" if task.get("result_placement") else task["status"]
@@ -957,6 +970,8 @@ class PoolManager:
             "max_parallel": self._max_parallel,
             # Workers across all projects: the worker limit is shared.
             "running_total": running_total,
+            "running_by_project": running_by_project,
+            "restart_work_total": restart_work_total,
             "prevent_sleep_when_running": self._prevent_sleep_when_running,
             "show_task_cost": self._show_task_cost,
             "queue": queued,
@@ -1091,6 +1106,7 @@ class PoolManager:
             task["failure_details"] = None
             task["cancel_requested"] = False
             task["stop_reply_requested"] = False
+            task["stopping_work"] = False
             receipt = self._record_live_input(task, runner, message, message_id or str(uuid.uuid4()),
                                               "follow_up" if kind == "chat" else kind)
             runner.start()
@@ -1220,6 +1236,7 @@ class PoolManager:
                 task["status"] = "failed"
             task["completed_at"] = now()
         elif kind == "exited":
+            task["stopping_work"] = False
             if task.get("pending_review") and not task.get("cancel_requested"):
                 review_id = task.pop("pending_review")
                 review = next((m for m in task["messages"] if m["id"] == review_id), None)

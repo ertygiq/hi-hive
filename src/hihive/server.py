@@ -276,6 +276,10 @@ def create_app(pool, token, manage_pool=True):
     def state(request, _body):
         project = project_for(request, request.query_params.get("project"))
         snapshot = pool.state_since(request.query_params.get("since"), project)
+        if snapshot is not None and request.scope.get("hive_project"):
+            counts = snapshot.pop("running_by_project", {}).get(project, {})
+            snapshot["running_total"] = counts.get("workers", 0) + counts.get("results", 0)
+            snapshot.pop("restart_work_total", None)
         return Response(status_code=204) if snapshot is None else JSONResponse(snapshot)
 
     def task_detail(request, _body):
