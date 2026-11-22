@@ -487,7 +487,7 @@ async function poll() {
       // The browser has no valid login cookie. Tell the user once per page load.
       if (!loginNoticeShown) {
         loginNoticeShown = true;
-        showMessage('This browser is not logged in to Hive. Run `hihive open` in a terminal to open Hive with a login link.', 'Login required');
+        showMessage('This browser is not logged in to Hive. In a browser where Hive is open, choose Settings → All projects → Copy one-time login link, then paste the link here. Or run `hihive open` to log in your default browser.', 'Login required');
       }
       return;
     }
@@ -1775,6 +1775,69 @@ function editedProjectHarnesses() {
   return harnessesLocal.filter(h => harnessAvailableIn(h, project));
 }
 
+let loginLinkEpoch = 0;
+let loginLinkBusy = false;
+
+async function copyLoginLink() {
+  if (loginLinkBusy) return;
+  loginLinkBusy = true;
+  const epoch = ++loginLinkEpoch;
+  const button = document.getElementById('copy-login-link-btn');
+  const status = document.getElementById('copy-login-link-status');
+  const fallback = document.getElementById('login-link-fallback-area');
+  button.setAttribute('aria-disabled', 'true');
+  button.textContent = 'Copy one-time login link';
+  status.textContent = '';
+  fallback.replaceChildren();
+  let ticket;
+  try {
+    const response = await fetch('/api/login-ticket', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || 'Could not create a login link.');
+    }
+    ticket = (await response.json()).ticket;
+    if (typeof ticket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) throw new Error('Invalid server response.');
+  } catch (error) {
+    if (epoch !== loginLinkEpoch) return;
+    loginLinkBusy = false;
+    button.setAttribute('aria-disabled', 'false');
+    showMessage(error.message || 'Connection lost.', 'Could not create a login link');
+    return;
+  }
+  if (epoch !== loginLinkEpoch) return;
+  const link = `${location.origin}/login#ticket=${encodeURIComponent(ticket)}`;
+  try {
+    await navigator.clipboard.writeText(link);
+  } catch (_) {
+    if (epoch !== loginLinkEpoch) return;
+    const input = document.createElement('input');
+    input.type = 'text'; input.readOnly = true; input.id = 'login-link-fallback';
+    input.setAttribute('aria-label', 'One-time login link');
+    input.dataset.transient = 'true'; input.style.width = '100%'; input.value = link;
+    const help = document.createElement('div');
+    help.className = 'muted'; help.style.cssText = 'font-size:12px;margin-top:6px';
+    help.textContent = 'Copy this link now. Anyone with it gets full access to Hive until it is used or expires in 5 minutes.';
+    fallback.append(input, help);
+    loginLinkBusy = false;
+    button.setAttribute('aria-disabled', 'false');
+    input.focus(); input.select();
+    return;
+  }
+  if (epoch !== loginLinkEpoch) return;
+  button.textContent = 'Copied';
+  status.textContent = 'Login link copied';
+  setTimeout(() => {
+    if (epoch !== loginLinkEpoch) return;
+    button.textContent = 'Copy one-time login link';
+    loginLinkBusy = false;
+    button.setAttribute('aria-disabled', 'false');
+    status.textContent = '';
+  }, 2000);
+}
+
 async function openSettings(scrollToId, tab = 'project') {
   await loadConfig();
   const project = projectsLocal.find(p => p.id === currentProject()?.id);
@@ -2608,6 +2671,7 @@ const TEXT_ONLY_MODALS = new Set(['add-task-modal', 'fork-task-modal', 'batch-mo
 function modalState(id) {
   const selector = TEXT_ONLY_MODALS.has(id) ? 'input[type="text"], textarea' : 'input, textarea, select';
   const fields = [...document.getElementById(id).querySelectorAll(selector)]
+    .filter(el => el.dataset?.transient !== 'true')
     .map(el => (el.type === 'checkbox' ? el.checked : el.value));
   const local = {
     'settings-modal': () => [harnessesLocal, projectsLocal, reviewSectionsLocal, templatesLocal, outputActionsLocal,
@@ -2628,6 +2692,15 @@ function openModal(id) {
 
 // Close after the modal's work is done (saved or submitted).
 function closeModal(id) {
+  if (id === 'settings-modal') {
+    loginLinkEpoch++;
+    loginLinkBusy = false;
+    document.getElementById('login-link-fallback-area').replaceChildren();
+    const button = document.getElementById('copy-login-link-btn');
+    button.setAttribute('aria-disabled', 'false');
+    button.textContent = 'Copy one-time login link';
+    document.getElementById('copy-login-link-status').textContent = '';
+  }
   document.getElementById(id).classList.add('hidden');
   modalSnapshots.delete(id);
 }

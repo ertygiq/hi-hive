@@ -180,6 +180,16 @@ def api(setup):
     return Api(setup)
 
 
+def test_agent_token_cannot_issue_browser_login_ticket(api):
+    response = api.call('POST', '/api/login-ticket', api.agent, json={})
+    assert response.status_code == 403
+    assert 'ticket' not in response.json()
+    api.client.cookies.set('hive_token', TOKEN)
+    response = api.call('POST', '/api/login-ticket', api.agent, json={})
+    assert response.status_code == 403
+    assert 'ticket' not in response.json()
+
+
 def test_an_agent_token_sees_and_starts_tasks_only_in_its_project(api, setup):
     own = setup.pool.add_task("own", project_id=setup.sandbox)
     other = setup.pool.add_task("other", project_id=setup.main)

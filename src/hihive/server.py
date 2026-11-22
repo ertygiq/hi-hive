@@ -1,9 +1,11 @@
 """HTTP API and static UI."""
 
 import contextlib
+import hashlib
 import hmac
 import json
 import os
+import secrets
 import signal
 import threading
 import time
@@ -26,6 +28,37 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 COOKIE = "hive_token"
 COOKIE_MAX_AGE = 400 * 24 * 3600  # the longest lifetime browsers accept
+LOGIN_TICKET_LIFETIME = 5 * 60
+
+
+class LoginTickets:
+    """One newest, short-lived browser login ticket per server process."""
+
+    def __init__(self, clock=None):
+        self._lock = threading.Lock()
+        self._clock = clock or time.monotonic
+        self._digest = None
+        self._expires = 0
+
+    def issue(self):
+        with self._lock:
+            ticket = secrets.token_urlsafe(32)
+            self._digest = hashlib.sha256(ticket.encode('ascii')).digest()
+            self._expires = self._clock() + LOGIN_TICKET_LIFETIME
+            return ticket
+
+    def consume(self, ticket):
+        if not isinstance(ticket, str) or len(ticket) != 43 or not ticket.isascii():
+            return False
+        digest = hashlib.sha256(ticket.encode('ascii')).digest()
+        with self._lock:
+            if self._digest is None or self._clock() >= self._expires:
+                self._digest = None
+                return False
+            if not hmac.compare_digest(self._digest, digest):
+                return False
+            self._digest = None
+            return True
 
 
 class HttpError(Exception):
@@ -133,6 +166,16 @@ def _trusted_origin(request, allowed, request_port):
     return False
 
 
+def _same_request_origin(request):
+    value = request.headers.get("origin") or request.headers.get("referer") or ""
+    host, port = _request_host(request)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme == request.url.scheme and _origin_allowed(value, {host}, port)
+
+
 def _origin_allowed(value, allowed, request_port):
     try:
         parts = urlsplit(value)
@@ -177,16 +220,30 @@ def create_app(pool, token, manage_pool=True):
                 return error(500, str(failure))
         return endpoint
 
+    tickets = LoginTickets()
+
     def login_page(request):
-        """The page a `hihive open` link opens; its script reads the secret from the URL fragment."""
-        return FileResponse(STATIC_DIR / "login.html", headers=NO_CACHE)
+        """The page a login link opens; its script reads the URL fragment."""
+        return FileResponse(STATIC_DIR / "login.html", headers={**NO_CACHE, "Referrer-Policy": "no-referrer"})
+
+    def issue_login_ticket(request, _body):
+        # A full browser cookie, not a bearer or agent token, is required.
+        if not _same_secret(request.cookies.get(COOKIE, ""), token) or not _same_request_origin(request):
+            return error(403, "A logged-in browser is required")
+        return JSONResponse({"ticket": tickets.issue()}, headers={**NO_CACHE, "Referrer-Policy": "no-referrer"})
 
     def login(request, body):
-        """Exchange the secret for an HttpOnly cookie."""
-        if not _same_secret(str(body.get("token") or ""), token):
-            return error(403, "Wrong Hive token")
-        response = Response(status_code=204)
-        response.set_cookie(COOKIE, token, max_age=COOKIE_MAX_AGE, httponly=True, samesite="strict")
+        """Exchange a permanent CLI token or a one-use ticket for an HttpOnly cookie."""
+        ticket = body.get("ticket")
+        valid = tickets.consume(ticket) if ticket is not None else _same_secret(str(body.get("token") or ""), token)
+        if not valid:
+            body = {"error": "Login link is invalid or expired"}
+            if ticket is not None:
+                body["code"] = "invalid_login_ticket"
+            return JSONResponse(body, status_code=403, headers={**NO_CACHE, "Referrer-Policy": "no-referrer"})
+        response = Response(status_code=204, headers={**NO_CACHE, "Referrer-Policy": "no-referrer"})
+        response.set_cookie(COOKIE, token, max_age=COOKIE_MAX_AGE, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https")
         return response
 
     def index(request):
@@ -448,6 +505,7 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/control/pause", run(pause), methods=["POST"]),
         Route("/api/control/resume", run(resume), methods=["POST"]),
         Route("/api/control/restart", run(restart), methods=["POST"]),
+        Route("/api/login-ticket", run(issue_login_ticket), methods=["POST"]),
         Route("/api/config", run(get_config), methods=["GET"]),
         Route("/api/config", run(put_config), methods=["PUT"]),
         Route("/api/output_actions/{tag}/run", run(output_action), methods=["POST"]),

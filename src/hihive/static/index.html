@@ -421,6 +421,12 @@
       <h4 class="settings-heading">Output actions</h4>
       <div id="output-actions-list"></div>
       <div class="muted" style="font-size:12px;margin-top:6px">Buttons for tags in agent output. Add or change them in <code>config.json</code>. Agents can never run them; only a click here does.</div>
+      <hr class="settings-divider">
+      <h4 class="settings-heading">Other browsers</h4>
+      <button class="small" id="copy-login-link-btn" type="button" aria-disabled="false" onclick="copyLoginLink()">Copy one-time login link</button>
+      <div class="muted" id="copy-login-link-help" style="font-size:12px;margin-top:6px">Anyone with this link gets full access to Hive. Paste it only into another browser of yours. Works once, within 5 minutes.</div>
+      <div class="visually-hidden" aria-live="polite" id="copy-login-link-status"></div>
+      <div id="login-link-fallback-area"></div>
     </div>
     <div class="modal-footer">
       <button class="danger" id="restart-server-btn" onclick="restartServer()" title="Restart the installed service">↻ Restart server</button>

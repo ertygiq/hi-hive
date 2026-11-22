@@ -10,6 +10,14 @@ The browser logs in through a link that `hihive open` opens, with the secret in 
 Browsers never send a fragment to the server, so the secret stays out of server and proxy logs, and the login page removes it from the address bar before sending it.
 The server then sets a cookie with the secret; the cookie is `HttpOnly` and `SameSite=Strict`.
 
+A logged-in browser can also request a one-time login link for another browser.
+Issuance requires the full browser cookie and a same-origin request, not an agent token.
+The server keeps only a hash of the newest random ticket in memory for five minutes.
+The receiving browser removes the ticket from the URL fragment before submitting it, and the server consumes it atomically when setting the cookie.
+A new ticket replaces the old one, and a server restart invalidates unused tickets.
+Anyone who obtains an unused ticket can still get full Hive access before it expires, so the link must be kept private.
+On HTTPS the cookie is also `Secure`; plain HTTP does not protect the link or cookie from network observers.
+
 ## Considered Options
 
 - **Optional token, full access without one.**
