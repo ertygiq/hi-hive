@@ -201,15 +201,12 @@ test('worker and Results counts follow project lists and active filters', () => 
   context.snapshot = { stats: {}, queue: [], workers: [], results: [], running_total: 2, max_parallel: 4 };
   vm.runInContext('state = snapshot; renderStats(); renderWorkers(); renderResults()', context);
   assert.equal(document.getElementById('worker-count').textContent, 0);
-  assert.match(document.getElementById('workers-elsewhere').textContent, /\+ 2 running in other projects · 2 of 4 slots in use/);
+  assert.equal(document.getElementById('workers-list').innerHTML, '');
   context.snapshot.running_total = 4;
   context.snapshot.workers = [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }, { id: 'd', label: 'D' }];
   vm.runInContext('renderStats(); renderWorkers()', context);
   assert.equal(document.getElementById('worker-count').textContent, 4);
-  assert.equal(document.getElementById('workers-elsewhere').textContent, 'All 4 worker slots in use');
-  context.snapshot.running_total = 3;
-  vm.runInContext('renderWorkers()', context);
-  assert.equal(document.getElementById('workers-elsewhere').style.display, 'none');
+  assert.doesNotMatch(document.getElementById('workers-list').innerHTML, /other projects|slots in use/);
   context.snapshot.results = [
     { id: 'parent', label: 'alpha parent', status: 'completed', done: false },
     { id: 'child', parent_task_id: 'parent', label: 'alpha child', status: 'completed', done: false },
@@ -227,6 +224,101 @@ test('worker and Results counts follow project lists and active filters', () => 
   vm.runInContext("hideDone = false; resultsQuery = ''; renderResults()", context);
   assert.equal(document.getElementById('results-count').title, undefined);
   assert.equal(document.getElementById('results-count')['aria-label'], undefined);
+});
+
+test('queue appears after one second or immediately when blocked', () => {
+  const { context, document } = client();
+  context.now = 1000;
+  context.snapshot = { queue: [{id:'q', label:'Q'}], workers: [], results: [], stats: {}, running_total: 0, max_parallel: 2 };
+  vm.runInContext("Date.now = () => now; state = snapshot; configCache = {projects:[{id:'p'}]}; currentProjectId = 'p'; renderQueue()", context);
+  const panel = document.getElementById('queue-panel');
+  assert.equal(panel.style.display, 'none');
+  context.now = 1999; vm.runInContext('renderQueue()', context);
+  assert.equal(panel.style.display, 'none');
+  context.now = 2000; vm.runInContext('renderQueue()', context);
+  assert.equal(panel.style.display, '');
+  context.snapshot.queue = []; vm.runInContext('renderQueue()', context);
+  assert.equal(panel.style.display, 'none');
+  context.snapshot.queue = [{id:'new', label:'New'}]; context.snapshot.running_total = 3;
+  context.snapshot.running_by_project = {p:{workers:1, results:1}};
+  vm.runInContext('renderQueue()', context);
+  assert.equal(panel.style.display, '');
+  const reason = document.getElementById('queue-waiting');
+  assert.match(reason.innerHTML, /^Waiting for a free slot: 3 in use, limit 2\.<span class="visually-hidden"> 1 in Workers, 1 replying in Results, 1 in other projects<\/span>$/);
+  assert.equal(reason.title, '1 in Workers, 1 replying in Results, 1 in other projects');
+  context.snapshot.paused = true; vm.runInContext('renderQueue()', context);
+  assert.equal(reason.style.display, 'none');
+});
+
+test('an unchanged poll advances the queue visibility timer', async () => {
+  const { context, document } = client();
+  context.now = 1000;
+  context.fetch = async () => ({ status:204 });
+  vm.runInContext("Date.now = () => now; state.queue = [{id:'q', label:'Q'}]; state.max_parallel = 4; state.running_total = 0; renderQueue()", context);
+  assert.equal(document.getElementById('queue-panel').style.display, 'none');
+  context.now = 2001;
+  await vm.runInContext('originalPoll()', context);
+  assert.equal(document.getElementById('queue-panel').style.display, '');
+});
+
+test('queue focus moves only after a removed card loses focus', () => {
+  const { context, document } = client();
+  const queue = document.getElementById('queue-panel');
+  const heading = document.getElementById('workers-heading');
+  const worker = { dataset:{taskId:'q'}, focus() { document.activeElement = this; } };
+  document.body = {};
+  context.focused = { closest() { return { dataset:{taskId:'q'} }; } };
+  queue.contains = value => value === context.focused;
+  document.querySelectorAll = selector => selector === '#workers-list [data-task-id]' ? [worker] : [];
+  heading.focus = () => { document.activeElement = heading; };
+  context.queuePanel = queue;
+  vm.runInContext("state.queue = []; selectedTaskId = null; renderStats = () => {}; renderQueue = () => { document.activeElement = document.body; queuePanel.style.display = 'none'; }; renderWorkers = () => {}; renderResults = () => {}; renderPausedBanner = () => {}; renderHarnessOnboarding = () => {}", context);
+  document.activeElement = context.focused;
+  vm.runInContext('render()', context);
+  assert.equal(document.activeElement, worker);
+  document.querySelectorAll = () => [];
+  document.activeElement = context.focused;
+  vm.runInContext('render()', context);
+  assert.equal(document.activeElement, heading);
+});
+
+test('collapsed forks expose descendant states and Hide done retains their ancestors', () => {
+  const { context, document } = client();
+  context.cards = [
+    { id:'parent', label:'PARENT', status:'completed', done:true, activity_kind:'reply', chat_pending:true },
+    { id:'middle', label:'MIDDLE', parent_task_id:'parent', status:'completed', done:true },
+    { id:'child', label:'CHILD', parent_task_id:'middle', status:'completed', done:true,
+      background_activity:{task_count:1} },
+  ];
+  vm.runInContext("state.results = cards; fullState.results = cards; hideDone = true; resultsQuery = ''; collapsedForks.add('parent'); unreadReplies.ids.add('child'); renderResults()", context);
+  const html = document.getElementById('results-list').innerHTML;
+  assert.match(html, /PARENT/);
+  assert.doesNotMatch(html, />CHILD</);
+  assert.match(html, />Replying<\/span>[^]*>New reply in fork<\/span>[^]*>Background work in fork<\/span>/);
+  assert.match(html, /title="In a fork: A reply arrived since you last opened this task"/);
+  assert.match(html, /title="In a fork: Background tasks are still running"/);
+  vm.runInContext("collapsedForks.delete('parent'); renderResults()", context);
+  assert.match(document.getElementById('results-list').innerHTML, />CHILD</);
+  assert.doesNotMatch(document.getElementById('results-list').innerHTML, /in fork<\/span>/);
+});
+
+test('restart confirmation uses latest distinct-work count across projects', async () => {
+  const { context } = client();
+  const messages = [];
+  context.showConfirm = async message => { messages.push(message); return false; };
+  for (const count of [0, 1, 3]) {
+    context.nextCount = count;
+    context.poll = async () => { vm.runInContext('fullState.restart_work_total = nextCount', context); return true; };
+    await vm.runInContext('restartServer()', context);
+  }
+  assert.deepEqual(messages, [
+    'Restart the server? Running tasks will be interrupted.',
+    'Restart the server? 1 task in all projects has work in progress and may be interrupted.',
+    'Restart the server? 3 tasks in all projects have work in progress and may be interrupted.'
+  ]);
+  context.poll = async () => false;
+  await vm.runInContext('restartServer()', context);
+  assert.equal(messages.at(-1), 'Restart the server? Running tasks will be interrupted.');
 });
 
 test('header task actions keep no-harness handling and template setup fallback', async () => {
@@ -267,7 +359,7 @@ test('settings labels, native switches and edit-only delete controls remain acce
   for (const id of ['harness-delete-btn', 'template-delete-btn', 'review-section-delete-btn']) {
     assert.match(html, new RegExp(`id="${id}"[^>]*style="display:none"`));
   }
-  for (const label of ['Max parallel workers', 'Session viewer URL', 'Review sections', 'Attached review sections', 'Default args (space-separated)', 'Sessions directory (optional)']) assert.ok(html.includes(label));
+  for (const label of ['Running task slots', 'Session viewer URL', 'Review sections', 'Attached review sections', 'Default args (space-separated)', 'Sessions directory (optional)']) assert.ok(html.includes(label));
 });
 
 test('delete controls are shown for edit but hidden for add', () => {
@@ -575,18 +667,20 @@ test('narrow action menu supports keyboard, focus return, positioning, and condi
   assert.equal(document.activeElement, context.trigger);
 });
 
-test('reply states use one indicator and prioritize unread, reply, then background', () => {
+test('unread, replying and background states are independent and ordered', () => {
   const { context } = client();
-  context.task = { id: 'task', activity_kind: 'reply', chat_pending: true, background_activity: { task_count: 2 } };
-  vm.runInContext("unreadReplies.ids.add('task')", context);
-  assert.match(vm.runInContext('replyStateHtml(task)', context), /is-unread[^]*New reply/);
+  for (const unread of [false, true]) for (const replying of [false, true]) for (const background of [false, true]) {
+    context.task = { id: 'task', activity_kind: 'reply', chat_pending: replying,
+      background_activity: { task_count: background ? 2 : 0 } };
+    vm.runInContext(`unreadReplies.ids.${unread ? 'add' : 'delete'}('task')`, context);
+    const html = vm.runInContext('replyStateHtml(task)', context);
+    const labels = [...html.matchAll(/<\/span>(New reply|Replying|Background work)<\/span>/g)].map(m => m[1]);
+    assert.deepEqual(labels, [...(unread ? ['New reply'] : []), ...(replying ? ['Replying'] : []), ...(background ? ['Background work'] : [])]);
+  }
   vm.runInContext("unreadReplies.ids.delete('task')", context);
-  assert.match(vm.runInContext('replyStateHtml(task)', context), /is-active[^]*Replying/);
-  context.task.chat_pending = false;
-  assert.match(vm.runInContext('replyStateHtml(task)', context), /Background work/);
-  context.task.background_activity = { preparing_reply: true, task_count: 0 };
-  assert.match(vm.runInContext('replyStateHtml(task)', context), /Replying/);
-  context.task.activity_kind = 'original';
+  context.task = { id: 'task', activity_kind: 'review', background_activity: { preparing_reply: true, task_count: 2 } };
+  assert.match(vm.runInContext('replyStateHtml(task)', context), /Replying[^]*Background work/);
+  context.task.activity_kind = 'original'; context.task.background_activity.task_count = 0;
   assert.equal(vm.runInContext('replyStateHtml(task)', context), '');
   const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.reply-state\.is-active \.state-dot\s*\{\s*animation:\s*none/);
@@ -785,6 +879,29 @@ function unreadSnapshot(c, replyAt, extra = {}) {
   vm.runInContext('trackUnreadReplies(snapshot); state = fullState = snapshot;', c);
 }
 function unreadIds(c) { return Array.from(vm.runInContext('[...unreadReplies.ids]', c)); }
+
+test('unread and replying remain independent throughout the reply timeline', () => {
+  const { context } = client();
+  const labels = () => [...vm.runInContext('replyStateHtml(snapshot.results[0])', context)
+    .matchAll(/<\/span>(New reply|Replying|Background work)<\/span>/g)].map(m => m[1]);
+  unreadSnapshot(context, replyTime(1));
+  unreadSnapshot(context, replyTime(2), {activity_kind:'reply', chat_pending:false});
+  assert.deepEqual(labels(), ['New reply']);
+  unreadSnapshot(context, replyTime(2), {activity_kind:'reply', chat_pending:true});
+  assert.deepEqual(labels(), ['New reply', 'Replying']);
+  context.task = { ...context.snapshot.results[0], messages:[] };
+  vm.runInContext("selectedTaskId = 'task'; currentDetailTab = 'output'; renderDetail(task)", context);
+  assert.deepEqual(labels(), ['Replying']);
+  unreadSnapshot(context, replyTime(3), {activity_kind:'reply', chat_pending:false});
+  context.task = { ...context.snapshot.results[0], messages:[] };
+  vm.runInContext('renderDetail(task)', context);
+  assert.deepEqual(labels(), []);
+  vm.runInContext("selectedTaskId = 'elsewhere'", context);
+  unreadSnapshot(context, replyTime(4), {activity_kind:'reply', chat_pending:true});
+  assert.deepEqual(labels(), ['New reply', 'Replying']);
+  unreadSnapshot(context, replyTime(4), {activity_kind:'reply', chat_pending:false});
+  assert.deepEqual(labels(), ['New reply']);
+});
 
 test('unread storage contains only outstanding task IDs and one checkpoint', () => {
   const { context, storage } = client();

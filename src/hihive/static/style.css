@@ -166,6 +166,9 @@ main {
   min-height: 0;
   border-right: none;
 }
+#queue-panel { flex: 0 1 auto; }
+#queue-panel .task-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.queue-waiting { padding: 6px 12px; color: var(--text-muted); font-size: 12px; }
 .side-column .panel + .panel { border-top: 1px solid var(--border); }
 .side-column .panel.is-empty { flex: 0 0 auto; }
 .side-column .panel.is-empty .task-list { flex: none; overflow: visible; }
@@ -434,7 +437,7 @@ button.toggle.is-on:not(:disabled):not([aria-disabled="true"]):hover { backgroun
 /* A done task can still have a follow-up in flight — lift the .task-done
    dimming enough to notice, without losing the "done" read. */
 .task-card.awaiting-reply.task-done { opacity: 0.8; }
-.reply-state { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.reply-state { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; white-space: nowrap; }
 .reply-state .state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); }
 .reply-state.is-active { color: var(--text-muted); font-weight: 400; }
 .reply-state.is-active .state-dot { animation: pulse 1.5s infinite; }
@@ -453,7 +456,7 @@ button.toggle.is-on:not(:disabled):not([aria-disabled="true"]):hover { backgroun
 .task-card.result-card.selected { border-color: var(--primary); }
 .result-card .result-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-card .result-status { flex-shrink: 0; }
-.result-card .meta { min-width: 0; }
+.result-card .meta { min-width: 0; flex-wrap: wrap; row-gap: 2px; padding-right: var(--action-space, 0px); }
 .result-card .meta > * { flex-shrink: 0; }
 .result-card .meta > .harness-name {
   display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px;
@@ -1077,6 +1080,7 @@ textarea.code {
   .workspace:has(> .detail-panel:not(.hidden)) .side-column .panel .task-list {
     flex: 0 1 auto; min-height: 0; overflow-y: auto;
   }
+  .workspace:has(> .detail-panel:not(.hidden)) .side-column:has(#queue-panel.is-visible) .panel:not(.is-empty) { max-height: 50%; }
   .workspace:has(> .detail-panel:not(.hidden)) .side-column .panel.is-empty { flex: 0 0 auto; }
   .workspace:has(> .detail-panel:not(.hidden)) .side-column .panel.is-empty .task-list { display: none; }
 }
@@ -1098,6 +1102,7 @@ textarea.code {
   .side-column { max-height: 35vh; overflow: hidden; border-right: none; border-bottom: 1px solid var(--border); }
   .side-column .panel { flex: 0 1 auto; min-height: 0; }
   .side-column .panel .task-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+  .side-column:has(#queue-panel.is-visible) .panel:not(.is-empty) { max-height: 50%; }
   .side-column .panel.is-empty .task-list { display: none; }
 
   /* No room for two columns: the detail covers the board. */
