@@ -885,9 +885,30 @@ def main(argv=None):
         else:
             HiHiveCLI().run(argv)
     except Exit as done:
-        sys.exit(done.code)
+        raise SystemExit(done.code)
     except BrokenPipeError:
-        sys.exit(0)
+        _silence_broken_stdout()
+        raise SystemExit(0)
+    finally:
+        # A small output can stay buffered until interpreter shutdown, where an
+        # EPIPE would otherwise produce an unhandled flush error and status 120.
+        pending = sys.exception()
+        try:
+            sys.stdout.flush()
+        except BrokenPipeError:
+            _silence_broken_stdout()
+            if pending is None:
+                raise SystemExit(0)
+
+
+def _silence_broken_stdout():
+    # The buffer may still contain data; redirect the descriptor before Python
+    # flushes it again during shutdown. Do not suppress other output errors.
+    fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(fd, sys.stdout.fileno())
+    finally:
+        os.close(fd)
 
 
 if __name__ == "__main__":
