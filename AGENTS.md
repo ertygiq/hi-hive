@@ -16,7 +16,6 @@ In user-facing text, call a configured way to start Claude Code or Pi a **harnes
 
 For changes that affect a user workflow, passing automated tests is not enough.
 The Team lead assigns one appropriate teammate to run the actual software and exercise the changed user flow.
-Other teammates do not duplicate that validation.
 
 ## Testing
 
