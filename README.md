@@ -28,7 +28,7 @@ Create a batch by picking a template and providing inputs. hi-hive creates one t
 Once a task completes, you can:
 - Inspect the output and review answers
 - Send follow-up messages (chat-style conversation with the agent)
-- View the agent's full session (tool calls, thinking, etc.) — requires [claude-code-lens](https://github.com/ertygiq/claude-code-lens) to be installed separately
+- View the agent's full session (tool calls, thinking, etc.) — requires [claude-code-lens](https://github.com/olexvel/claude-code-lens) to be installed separately
 
 ### Under the Hood
 
@@ -45,7 +45,7 @@ See [Live steering](LIVE_STEERING.md) for supported versions, message states, vi
 Install on macOS or Ubuntu-tested Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olexvel/hi-hive/main/install.sh | sh
 ```
 
 The installer reports the exact hi-hive commit and any additional software it downloads.

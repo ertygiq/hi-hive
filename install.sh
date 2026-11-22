@@ -424,8 +424,8 @@ set -eu
 umask 077
 
 PACKAGE_VERSION=0.2.0
-REPOSITORY=https://github.com/ertygiq/hi-hive
-API_URL=https://api.github.com/repos/ertygiq/hi-hive/git/ref/heads/main
+REPOSITORY=https://github.com/olexvel/hi-hive
+API_URL=https://api.github.com/repos/olexvel/hi-hive/git/ref/heads/main
 UV_VERSION=0.10.0
 BEGIN_MARKER='# >>> hi-hive installer PATH >>>'
 END_MARKER='# <<< hi-hive installer PATH <<<'
@@ -787,7 +787,7 @@ if [ "$RUN_BACKGROUND" -eq 1 ] && [ "$SERVICE_OK" -eq 1 ]; then
     say 'It prints an ssh command for your computer and a private login link to open there.'
     if [ "$FRESH" -eq 1 ] && [ "$OS" = linux ]; then
       say 'It may stop when you log out of this server. To keep it running, see:'
-      say 'https://github.com/ertygiq/hi-hive/blob/main/docs/setup.md#background-service'
+      say 'https://github.com/olexvel/hi-hive/blob/main/docs/setup.md#background-service'
     fi
   else
     say "Open it later: $DISPLAY_COMMAND open"

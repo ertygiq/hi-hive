@@ -5,7 +5,7 @@
 Use the [one-line installer](install.md), or install manually with uv:
 
 ```bash
-uv tool install --python 3.14 git+https://github.com/ertygiq/hi-hive
+uv tool install --python 3.14 git+https://github.com/olexvel/hi-hive
 hihive setup-harnesses --fresh
 ```
 
@@ -84,7 +84,7 @@ Configure harnesses, projects, and templates in the settings panel (gear icon).
 ## Development
 
 ```bash
-git clone https://github.com/ertygiq/hi-hive.git
+git clone https://github.com/olexvel/hi-hive.git
 cd hi-hive
 uv tool install --editable .   # the hihive command runs your checkout
 ./tests/run                     # Python and UI tests

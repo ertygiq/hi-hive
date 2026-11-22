@@ -6,13 +6,13 @@ The installer supports macOS and Ubuntu-tested Linux.
 It installs only for the current user, refuses root, and never uses `sudo`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olexvel/hi-hive/main/install.sh | sh
 ```
 
 To inspect the installer before running it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
+curl -fsSL https://raw.githubusercontent.com/olexvel/hi-hive/main/install.sh -o install-hi-hive.sh
 less install-hi-hive.sh
 sh install-hi-hive.sh
 ```
@@ -152,7 +152,7 @@ See [setup details](setup.md) for SSH and service logs.
 If you prefer to manage uv and the service yourself:
 
 ```sh
-uv tool install --python 3.14 git+https://github.com/ertygiq/hi-hive
+uv tool install --python 3.14 git+https://github.com/olexvel/hi-hive
 hihive setup-harnesses --fresh
 hihive service install
 hihive open
@@ -161,7 +161,7 @@ hihive open
 For a reproducible manual install, replace the source with an exact commit SHA:
 
 ```sh
-uv tool install --python 3.14 https://github.com/ertygiq/hi-hive/archive/COMMIT_SHA.tar.gz
+uv tool install --python 3.14 https://github.com/olexvel/hi-hive/archive/COMMIT_SHA.tar.gz
 ```
 
 ## Uninstall
@@ -169,7 +169,7 @@ uv tool install --python 3.14 https://github.com/ertygiq/hi-hive/archive/COMMIT_
 Download the installer, inspect it if desired, and run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ertygiq/hi-hive/main/install.sh -o install-hi-hive.sh
+curl -fsSL https://raw.githubusercontent.com/olexvel/hi-hive/main/install.sh -o install-hi-hive.sh
 less install-hi-hive.sh
 sh install-hi-hive.sh --uninstall
 ```
