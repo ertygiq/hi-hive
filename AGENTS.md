@@ -12,6 +12,12 @@ Update that file when the project's documentation audience, structure, or level-
 Use the domain language in [CONTEXT.md](CONTEXT.md).
 In user-facing text, call a configured way to start Claude Code or Pi a **harness**, never a coding agent.
 
+## Team coordination
+
+For changes that affect a user workflow, passing automated tests is not enough.
+The Team lead assigns one appropriate teammate to run the actual software and exercise the changed user flow.
+Other teammates do not duplicate that validation.
+
 ## Testing
 
 During implementation, developers run focused tests only.
