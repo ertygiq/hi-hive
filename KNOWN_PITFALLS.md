@@ -37,3 +37,12 @@
 - **Build backups from a fixed file allowlist, never by copying the whole Hive home folder.**
   Include only the intended restore files so the login token, logs, diagnostics, and temporary files stay out of the archive.
   Treat the archive as sensitive because configuration and conversations may contain credentials, source code, or personal information.
+- **Keep hover- and focus-revealed controls in the focus order.**
+  Hiding them with `display: none` prevents keyboard focus from moving into them.
+  Keep them rendered with `opacity: 0` and `pointer-events: none`, then reveal them on the parent hover or focus state and on the controls' `:focus-within` state.
+- **Give stacked auto-height flex panels intrinsic height.**
+  A child with `flex: 1 1 0` contributes no intrinsic height to an auto-sized grid row and can collapse to zero pixels.
+  Use content-based sizing such as `flex: 0 1 auto` when the surrounding row must grow with the panel.
+- **Match animation-rule specificity in reduced-motion overrides.**
+  A less-specific `prefers-reduced-motion` selector loses to the normal animation rule and leaves motion enabled.
+  Target the same state selector, or a more specific one, when setting `animation: none`.
