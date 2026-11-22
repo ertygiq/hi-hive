@@ -33,6 +33,86 @@ function client(storage = new Map()) {
   return { context, document, storage, listeners };
 }
 
+test('paused banner Resume appears only for an open phone overlay without changing its height', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  assert.match(html, /Paused in all projects - queued tasks won't start\./);
+  assert.match(html, /id="detail-title" tabindex="-1"/);
+  assert.match(css, /@media \(max-width: 899px\)\s*\{\s*\.paused-banner\s*\{\s*min-height:\s*45px/);
+  assert.doesNotMatch(css.match(/\.paused-banner\s*\{[^}]*\}/s)[0], /min-height/);
+  assert.match(css, /#paused-banner button\s*\{\s*display:\s*none/);
+  assert.match(css, /@media \(max-width: 899px\)\s*\{[^]*?body:has\(#detail-panel:not\(\.hidden\)\) #paused-banner button\s*\{\s*display:\s*inline-flex/);
+});
+
+test('banner Resume restores keyboard focus on success, close and external resume', async () => {
+  const { context, document, listeners } = client();
+  const bannerButton = document.getElementById('banner-resume-btn');
+  const heading = document.getElementById('detail-title');
+  const toolbar = document.getElementById('pause-btn');
+  heading.focus = () => { document.activeElement = heading; };
+  toolbar.focus = () => { document.activeElement = toolbar; };
+  context.innerWidth = 390;
+  vm.runInContext('selectedTaskId = "task"; state.paused = true; updateLayoutMetrics = () => {}; render = () => {};', context);
+  context.postJson = async () => null;
+  document.activeElement = bannerButton;
+  await vm.runInContext('resumeFromBanner()', context);
+  assert.equal(document.activeElement, heading);
+  document.activeElement = bannerButton;
+  context.postJson = async () => 'offline';
+  const messages = []; context.showMessage = (...args) => messages.push(args);
+  await vm.runInContext('resumeFromBanner()', context);
+  assert.equal(document.activeElement, bannerButton);
+  assert.deepEqual(messages[0], ['offline', 'Could not resume']);
+  vm.runInContext('state.paused = false; renderPausedBanner()', context);
+  assert.equal(document.activeElement, heading);
+  document.activeElement = bannerButton;
+  vm.runInContext('selectedTaskId = "task"; closeDetail()', context);
+  assert.equal(document.activeElement, toolbar);
+  document.activeElement = heading;
+  vm.runInContext('selectedTaskId = "task"; closeDetail()', context);
+  assert.equal(document.activeElement, heading);
+  document.activeElement = bannerButton;
+  context.innerWidth = 1000;
+  // The production resize listener is installed in the initialization section;
+  // the same focus decision is exercised directly here.
+  vm.runInContext('focusAfterBannerResumeHidden()', context);
+  assert.equal(document.activeElement, toolbar);
+});
+
+test('banner focus recovers when the browser moves focus to BODY before resize', () => {
+  const { context, document } = client();
+  const banner = document.getElementById('paused-banner');
+  banner.classList = { contains: () => true };
+  const toolbar = document.getElementById('pause-btn');
+  let focused = false, scheduled;
+  toolbar.focus = () => { focused = true; };
+  document.body = {}; document.activeElement = document.body;
+  context.innerWidth = 1000;
+  context.getComputedStyle = () => ({ display: 'none' });
+  context.setTimeout = callback => { scheduled = callback; };
+  context.event = { relatedTarget: null };
+  vm.runInContext('onBannerResumeBlur(event)', context);
+  scheduled();
+  assert.equal(focused, true);
+  focused = false;
+  context.getComputedStyle = () => ({ display: 'inline-flex' });
+  vm.runInContext('onBannerResumeBlur(event)', context);
+  scheduled();
+  assert.equal(focused, false);
+});
+
+test('message dialog focuses OK and restores its connected opener', () => {
+  const { context, document } = client();
+  const opener = { isConnected: true, focus() { document.activeElement = this; } };
+  document.activeElement = opener;
+  const ok = document.getElementById('message-ok-btn');
+  ok.focus = () => { document.activeElement = ok; };
+  vm.runInContext("showMessage('offline', 'Could not resume')", context);
+  assert.equal(document.activeElement, ok);
+  vm.runInContext("closeModal('message-modal')", context);
+  assert.equal(document.activeElement, opener);
+});
+
 test('button variants, sizes, toggles and disabled hover share consistent rules', () => {
   const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
   const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');

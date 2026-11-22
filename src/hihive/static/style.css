@@ -1049,9 +1049,13 @@ textarea.code {
   color: var(--warning);
   text-align: center;
   display: none;
+  line-height: 16px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
-.paused-banner.visible { display: block; }
-.paused-banner button { margin-left: 10px; }
+.paused-banner.visible { display: flex; }
+#paused-banner button { display: none; flex-shrink: 0; }
 
 .panel-actions {
   display: flex;
@@ -1078,6 +1082,8 @@ textarea.code {
 }
 
 @media (max-width: 899px) {
+  .paused-banner { min-height: 45px; }
+  body:has(#detail-panel:not(.hidden)) #paused-banner button { display: inline-flex; }
   .header-summary {
     flex-basis: 100%;
     flex-wrap: wrap;

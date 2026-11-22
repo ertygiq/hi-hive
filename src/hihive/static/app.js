@@ -663,9 +663,28 @@ function renderStats() {
   btn.classList.toggle('is-on', Boolean(state.paused));
 }
 
+function onBannerResumeBlur(event) {
+  if (event.relatedTarget) return;
+  setTimeout(() => {
+    const banner = document.getElementById('paused-banner');
+    const button = document.getElementById('banner-resume-btn');
+    if (document.activeElement === document.body &&
+        (!banner.classList.contains('visible') || getComputedStyle(button).display === 'none')) {
+      focusAfterBannerResumeHidden();
+    }
+  }, 0);
+}
+
+function focusAfterBannerResumeHidden() {
+  const overlayOpen = selectedTaskId && (globalThis.innerWidth || 1200) <= 899;
+  document.getElementById(overlayOpen ? 'detail-title' : 'pause-btn').focus();
+}
+
 function renderPausedBanner() {
   const banner = document.getElementById('paused-banner');
+  const hadFocus = document.activeElement === document.getElementById('banner-resume-btn');
   banner.classList.toggle('visible', state.paused);
+  if (!state.paused && hadFocus) focusAfterBannerResumeHidden();
   updateLayoutMetrics();
 }
 
@@ -1291,6 +1310,7 @@ function detailMenuOpen() {
 }
 
 function closeDetail() {
+  const bannerHadFocus = document.activeElement === document.getElementById('banner-resume-btn');
   rememberDetailScroll();
   detailRenderedKey = null;
   closeDetailMenu();
@@ -1301,6 +1321,7 @@ function closeDetail() {
   document.getElementById('resize-handle').style.display = 'none';
   updateLayoutMetrics();
   render();
+  if (bannerHadFocus) document.getElementById('pause-btn').focus();
 }
 
 // --- Session fullscreen ---
@@ -1405,6 +1426,13 @@ async function postJson(url, body = {}) {
   } catch (e) {
     return 'Could not reach the server.';
   }
+}
+
+async function resumeFromBanner() {
+  const error = await postJson('/api/control/resume');
+  if (error) { showMessage(error, 'Could not resume'); return; }
+  focusAfterBannerResumeHidden();
+  poll();
 }
 
 async function togglePause() {
@@ -2662,10 +2690,14 @@ function updateLayoutMetrics() {
 }
 
 // --- Message / confirm modals ---
+let messageOpener = null;
+
 function showMessage(message, title = 'Notice') {
+  messageOpener = document.activeElement;
   document.getElementById('message-title').textContent = title;
   document.getElementById('message-text').textContent = message;
   openModal('message-modal');
+  document.getElementById('message-ok-btn').focus();
 }
 
 let confirmResolve = null;
@@ -2740,6 +2772,10 @@ function closeModal(id) {
   }
   document.getElementById(id).classList.add('hidden');
   modalSnapshots.delete(id);
+  if (id === 'message-modal') {
+    if (messageOpener?.isConnected) messageOpener.focus();
+    messageOpener = null;
+  }
 }
 
 async function requestCloseModal(id) {
@@ -2966,6 +3002,9 @@ syncDeepSearchButton();
 resizeChatInput();
 updateLayoutMetrics();
 window.addEventListener('resize', () => {
+  if ((globalThis.innerWidth || 1200) > 899 && document.activeElement === document.getElementById('banner-resume-btn')) {
+    focusAfterBannerResumeHidden();
+  }
   resizeChatInput();
   updateLayoutMetrics();
   if (selectedTaskId) applyDetailWidth();

@@ -32,8 +32,8 @@
 </header>
 
 <div class="paused-banner" id="paused-banner">
-  Pipeline paused - no new tasks will be started
-  <button class="small" onclick="togglePause()">Resume</button>
+  <span>Paused in all projects - queued tasks won't start.</span>
+  <button class="small" id="banner-resume-btn" onclick="resumeFromBanner()" onblur="onBannerResumeBlur(event)">Resume</button>
 </div>
 
 <div class="harness-onboarding" id="harness-onboarding" style="display:none">
@@ -98,7 +98,7 @@
 <aside class="detail-panel hidden" id="detail-panel" aria-label="Task detail">
   <div class="detail-header">
     <div class="detail-title-row">
-      <h3 id="detail-title">—</h3>
+      <h3 id="detail-title" tabindex="-1">—</h3>
       <div class="menu-wrap">
         <button class="icon-btn" id="detail-menu-btn" onclick="toggleDetailMenu()" onkeydown="detailMenuTriggerKey(event)" aria-haspopup="menu"
                 aria-expanded="false" aria-controls="detail-menu" title="More actions" aria-label="More actions">⋯</button>
@@ -584,7 +584,7 @@
       <p id="message-text" style="font-size:14px;line-height:1.5"></p>
     </div>
     <div class="modal-footer">
-      <button class="primary" onclick="requestCloseModal('message-modal')">OK</button>
+      <button class="primary" id="message-ok-btn" onclick="requestCloseModal('message-modal')">OK</button>
     </div>
   </div>
 </div>
