@@ -33,6 +33,89 @@ function client(storage = new Map()) {
   return { context, document, storage, listeners };
 }
 
+test('button variants, sizes, toggles and disabled hover share consistent rules', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
+  assert.match(css, /button\s*\{[^}]*font-size:\s*13px;[^}]*line-height:\s*15px;[^}]*min-height:\s*29px/s);
+  assert.match(css, /button\.small\s*\{[^}]*font-size:\s*12px;[^}]*line-height:\s*16px;[^}]*min-height:\s*24px/s);
+  assert.match(css, /button\.icon-btn\.small\s*\{[^}]*width:\s*20px;[^}]*height:\s*20px/s);
+  assert.match(css, /button\.primary:not\(:disabled\):not\(\[aria-disabled="true"\]\):hover/);
+  assert.match(css, /button\.danger:not\(:disabled\):not\(\[aria-disabled="true"\]\):hover/);
+  assert.match(css, /button:disabled, button\[aria-disabled="true"\], select:disabled\s*\{[^}]*opacity:\s*0\.5/s);
+  assert.match(css, /button:focus-visible, select:focus-visible/);
+  assert.match(css, /button\.toggle\[aria-pressed="true"\]/);
+  assert.match(css, /\.results-sort\s*\{[^}]*height:\s*24px/s);
+  assert.match(html, /id="results-hide-done" class="small toggle"[^]*?aria-pressed="false"/);
+  assert.match(html, /id="results-deep-search" class="small toggle"[^]*?aria-pressed="false"/);
+  assert.match(html, /class="small toggle" id="pause-btn"[^>]*>Pause/);
+  assert.doesNotMatch(html.match(/<button[^>]*id="pause-btn"[^>]*>/)[0], /aria-pressed/);
+  assert.match(html, /id="detail-cancel-btn"[^>]*>Cancel task/);
+  assert.match(html, /id="header-run-template"[^>]*>Run template/);
+  assert.match(html, /id="restart-server-btn"[^>]*>Restart server/);
+});
+
+test('Results toggles expose aria-pressed and Pause swaps labels without a pressed state', () => {
+  const { context, document } = client();
+  const pause = document.getElementById('pause-btn');
+  const classes = new Set();
+  pause.classList = { toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); } };
+  context.snapshot = { workers: [], queue: [], stats: {}, max_parallel: 4, paused: false };
+  vm.runInContext('state = snapshot; renderStats(); hideDone = false; deepSearch = false; syncHideDoneButton(); syncDeepSearchButton()', context);
+  assert.equal(pause.textContent, 'Pause'); assert.equal(classes.has('is-on'), false);
+  assert.equal(document.getElementById('results-hide-done')['aria-pressed'], 'false');
+  assert.equal(document.getElementById('results-deep-search')['aria-pressed'], 'false');
+  context.snapshot.paused = true;
+  vm.runInContext('renderStats(); hideDone = true; deepSearch = true; syncHideDoneButton(); syncDeepSearchButton()', context);
+  assert.equal(pause.textContent, 'Resume'); assert.equal(classes.has('is-on'), true);
+  assert.equal(pause['aria-pressed'], undefined);
+  assert.equal(document.getElementById('results-hide-done')['aria-pressed'], 'true');
+  assert.equal(document.getElementById('results-deep-search')['aria-pressed'], 'true');
+});
+
+test('confirm severity, labels and safe focus are set per invocation', async () => {
+  const { context, document } = client();
+  let focused = '';
+  document.activeElement = { isConnected: true, focus() { focused = 'opener'; } };
+  const accept = document.getElementById('confirm-accept-btn');
+  accept.classList = { toggle(name, value) { assert.equal(name, 'danger'); accept.danger = value; } };
+  document.getElementById('confirm-cancel-btn').focus = () => { focused = 'cancel'; };
+  context.options = { confirmLabel: 'Delete', cancelLabel: 'Keep', danger: true };
+  let pending = vm.runInContext("showConfirm('Delete?', options)", context);
+  assert.equal(focused, 'cancel');
+  assert.equal(accept.textContent, 'Delete'); assert.equal(accept.danger, true);
+  assert.equal(document.getElementById('confirm-cancel-btn').textContent, 'Keep');
+  vm.runInContext('resolveConfirm(true)', context);
+  assert.equal(await pending, true); assert.equal(focused, 'opener');
+  pending = vm.runInContext("showConfirm('Continue?')", context);
+  assert.equal(accept.danger, false); assert.equal(accept.textContent, 'Yes');
+  assert.equal(document.getElementById('confirm-cancel-btn').textContent, 'No');
+  vm.runInContext('resolveConfirm(false)', context);
+  assert.equal(await pending, false);
+  const source = fs.readFileSync('src/hihive/static/app.js', 'utf8');
+  for (const text of ['Cancel task', 'Cancel all', 'Delete', 'Restart', 'Discard', 'Discard changes']) {
+    assert.match(source, new RegExp(`confirmLabel: '${text}', danger: true`));
+  }
+  assert.match(source, /confirmLabel: 'Mark not done'/);
+  assert.match(source, /confirmLabel: 'Save anyway'/);
+});
+
+test('composer one-line, focus, disabled and growth retain aligned sizing', () => {
+  const { context, document } = client();
+  const input = document.getElementById('chat-input');
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.chat-input-area\s*\{[^}]*align-items:\s*flex-end/s);
+  assert.match(css, /\.chat-input-area textarea\s*\{[^}]*min-height:\s*36px/s);
+  assert.match(css, /#chat-send-btn\s*\{[^}]*min-height:\s*36px;[^}]*padding:\s*0 14px;[^}]*align-items:\s*center;[^}]*border-radius:\s*var\(--radius\)/s);
+  assert.match(css, /\.chat-input-area textarea:focus\s*\{[^}]*border-color:\s*var\(--primary\)/s);
+  assert.match(css, /button:disabled, button\[aria-disabled="true"\]/);
+  input.scrollHeight = 20; vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '36px');
+  input.scrollHeight = 100; vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '102px');
+  input.scrollHeight = 1000; vm.runInContext('resizeChatInput()', context);
+  assert.equal(input.style.height, '240px'); assert.equal(input.style.overflowY, 'auto');
+});
+
 test('worker and Results counts follow project lists and active filters', () => {
   const { context, document } = client();
   context.snapshot = { stats: {}, queue: [], workers: [], results: [], running_total: 2, max_parallel: 4 };
@@ -349,7 +432,7 @@ test('responsive Results layout clamps widths and caps nested cards', () => {
   context.innerWidth = 1080;
   assert.equal(vm.runInContext('clampDetailWidth(1)', context), 400);
   context.task = { id: 'task', label: 'Result', status: 'completed' };
-  assert.match(vm.runInContext('renderResultCard(task, 2, new Map())', context), /--fork-indent:32px;--action-space:106px/);
+  assert.match(vm.runInContext('renderResultCard(task, 2, new Map())', context), /--fork-indent:32px;--action-space:90px/);
   const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
   const html = fs.readFileSync('src/hihive/static/index.html', 'utf8');
   assert.match(css, /grid-template-columns:\s*300px minmax\(360px, 1fr\)/);
@@ -364,7 +447,7 @@ test('responsive Results layout clamps widths and caps nested cards', () => {
   assert.match(css, /@container \(max-width: 460px\)/);
   assert.match(css, /\.result-card \.actions \.card-action\s*\{\s*display:\s*none/);
   assert.match(css, /\.result-card \.harness-name-text, \.result-card \.harness-glyph\s*\{\s*display:\s*none/);
-  assert.match(css, /max-width:\s*140px;\s*text-overflow:\s*ellipsis/);
+  assert.match(css, /\.results-sort\s*\{[^}]*max-width:\s*140px;[^}]*text-overflow:\s*ellipsis/s);
   assert.match(html, /placeholder="Search…"/);
 });
 
@@ -589,7 +672,7 @@ test('reply Stop sends the visible input and state, preserving drafts and handli
 
 test('Send has visible disabled styling during stop', () => {
   const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
-  assert.match(css, /#chat-send-btn:disabled\s*\{[^}]*opacity:\s*0\.5;[^}]*cursor:\s*default;/);
+  assert.match(css, /button:disabled, button\[aria-disabled="true"\], select:disabled\s*\{[^}]*opacity:\s*0\.5;[^}]*cursor:\s*default;/);
 });
 
 test('original work has no stop or typing line, idle background has only background stop', () => {

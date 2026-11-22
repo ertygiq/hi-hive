@@ -82,7 +82,9 @@ header h1 {
 button {
   font-family: inherit;
   font-size: 13px;
+  line-height: 15px;
   padding: 6px 12px;
+  min-height: 29px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface2);
@@ -90,32 +92,32 @@ button {
   cursor: pointer;
   transition: all 0.15s;
 }
-button:hover { background: var(--border); }
+button:not(:disabled):not([aria-disabled="true"]):hover { background: var(--border); }
 button.primary {
   background: var(--primary-dim);
   border-color: var(--primary);
   color: #fff;
 }
-button.primary:hover { background: var(--primary); }
+button.primary:not(:disabled):not([aria-disabled="true"]):hover { background: var(--primary); }
 button.danger { color: var(--error); }
-button.danger:hover { background: var(--error); color: #fff; }
+button.danger:not(:disabled):not([aria-disabled="true"]):hover { background: var(--error); color: #fff; }
 button.primary.danger {
   background: rgba(248, 81, 73, 0.15);
   border-color: var(--error);
   color: var(--error);
 }
-button.primary.danger:hover { background: var(--error); color: #fff; }
+button.primary.danger:not(:disabled):not([aria-disabled="true"]):hover { background: var(--error); color: #fff; }
 .muted { color: var(--text-muted); }
-button.small { padding: 3px 8px; font-size: 12px; }
-#copy-login-link-btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+button.small { padding: 3px 8px; font-size: 12px; line-height: 16px; min-height: 24px; }
+button:disabled, button[aria-disabled="true"], select:disabled { opacity: 0.5; cursor: default; }
+button.quiet, button.icon-btn { background: transparent; border: none; }
 button.icon-btn {
-  padding: 4px 8px;
-  background: transparent;
-  border: none;
-  font-size: 16px;
-  opacity: 0.6;
+  width: 24px; height: 24px; min-height: 24px; padding: 0; font-size: 16px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; opacity: 0.6;
 }
-button.icon-btn:hover { opacity: 1; background: var(--border); }
+button.icon-btn.small { width: 20px; height: 20px; min-height: 20px; font-size: 14px; }
+button.icon-btn:not(:disabled):not([aria-disabled="true"]):hover { opacity: 1; background: var(--border); }
+button.icon-btn:disabled, button.icon-btn[aria-disabled="true"] { opacity: 0.5; }
 
 /* Keyboard focus. Text fields keep their border highlight instead. */
 button:focus-visible, select:focus-visible, a:focus-visible, .task-card:focus-visible {
@@ -224,23 +226,24 @@ main {
   gap: 8px;
   margin-left: auto;
 }
-.filter-toggle {
-  padding: 3px 8px;
-  font-size: 12px;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.filter-toggle.is-active {
+button.toggle { white-space: nowrap; }
+button.toggle[aria-pressed="true"], button.toggle.is-on {
   background: rgba(88, 166, 255, 0.12);
   border-color: var(--primary);
   color: var(--primary);
 }
-.filter-toggle.is-active:hover { background: rgba(88, 166, 255, 0.2); }
+button.toggle[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):hover,
+button.toggle.is-on:not(:disabled):not([aria-disabled="true"]):hover { background: rgba(88, 166, 255, 0.2); }
 .results-sort {
   width: auto;
   padding: 3px 6px;
   font-size: 12px;
   max-width: 140px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  color: var(--text);
   text-overflow: ellipsis;
 }
 .results-search-row {
@@ -460,23 +463,23 @@ main {
 .harness-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--harness-accent); flex-shrink: 0; }
 .harness-name.has-glyph .harness-dot { display: none; }
 .result-card .fork-count {
-  font: inherit; color: inherit; background: transparent; border: none; padding: 0 3px; margin: 0 -3px;
+  font: inherit; color: inherit; background: transparent; border: none; min-height: 0; padding: 0 3px; margin: 0 -3px;
   border-radius: 3px; display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0;
 }
-.result-card .fork-count:hover { color: var(--text); background: var(--border); }
+.result-card .fork-count:not(:disabled):not([aria-disabled="true"]):hover { color: var(--text); background: var(--border); }
 .fork-chevron { font-size: 9px; }
 .task-card.result-card .actions { display: flex; opacity: 0; pointer-events: none; }
 .task-card.result-card:hover .actions,
 .task-card.result-card:focus-visible .actions,
 .task-card.result-card .actions:focus-within,
 .task-card.result-card.menu-open .actions { opacity: 1; pointer-events: auto; }
-.result-card .actions button { box-sizing: border-box; width: 24px; height: 20px; padding: 2px 5px; font-size: 14px; line-height: 1; }
+.result-card .actions button { box-sizing: border-box; width: 20px; height: 20px; min-height: 20px; padding: 0; font-size: 14px; line-height: 1; }
 .result-card .actions .card-menu-btn { display: none; }
 .result-card-menu-container { position: fixed; z-index: 200; }
 .result-card-menu-container.hidden { display: none; }
 .result-card-menu-container .result-card-menu { position: static; }
 @container (max-width: 460px) {
-  .result-card { --action-space: 28px !important; }
+  .result-card { --action-space: 24px !important; }
   .result-card .actions .card-action { display: none; }
   .result-card .actions .card-menu-btn { display: inline-flex; align-items: center; justify-content: center; }
   .result-card .harness-name-text, .result-card .harness-glyph { display: none; }
@@ -528,12 +531,12 @@ main {
 #detail-template { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 0; border: 0; border-radius: 0; background: none; color: var(--text-muted); font-size: 12px; }
 .detail-tabs { display: flex; gap: 0; }
-.detail-tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 4px 2px;
+.detail-tab { background: none; border: none; border-bottom: 2px solid transparent; min-height: 0; padding: 4px 2px;
   margin-right: 14px; font-size: 12px; font-weight: 500; color: var(--text-muted); border-radius: 0; }
-.detail-tab:hover { color: var(--text); background: none; }
+.detail-tab:not(:disabled):not([aria-disabled="true"]):hover { color: var(--text); background: none; }
 .detail-tab.active { color: var(--text); border-bottom-color: var(--primary); }
-.text-btn { background: none; border: none; padding: 3px 6px; border-radius: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.text-btn:hover { color: var(--text); background: var(--border); }
+.text-btn { background: none; border: none; min-height: 24px; padding: 3px 6px; border-radius: 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.text-btn:not(:disabled):not([aria-disabled="true"]):hover { color: var(--text); background: var(--border); }
 .done-tag { font-size: 12px; color: var(--success); white-space: nowrap; }
 @container (max-width: 560px) {
   .detail-toolbar-right { flex-basis: 100%; margin-left: 0; }
@@ -562,9 +565,11 @@ main {
   text-align: left;
   background: transparent;
   border: none;
+  min-height: 0;
+  line-height: normal;
   padding: 6px 10px;
 }
-.menu button:hover { background: var(--border); }
+.menu button:not(:disabled):not([aria-disabled="true"]):hover { background: var(--border); }
 
 .detail-scroll-region {
   display: flex;
@@ -662,7 +667,7 @@ main {
   padding: 0 6px;
   cursor: pointer;
 }
-.detail-body .output-action:hover { background: rgba(88, 166, 255, 0.24); }
+.detail-body .output-action:not(:disabled):not([aria-disabled="true"]):hover { background: rgba(88, 166, 255, 0.24); }
 .detail-body .output-action:disabled { opacity: 0.5; cursor: wait; }
 .detail-body .rendered-output pre {
   background: var(--bg);
@@ -736,9 +741,10 @@ main {
   font-size: 13px;
   resize: none;
   min-height: 36px;
-  max-height: min(240px, 35vh);
+  max-height: max(36px, min(240px, 35vh));
   overflow-y: hidden;
 }
+#chat-send-btn { min-height: 36px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: var(--radius); }
 .chat-input-area textarea:focus {
   outline: none;
   border-color: var(--primary);
@@ -784,26 +790,6 @@ main {
   top: calc(var(--header-height, 49px) + 8px);
   right: 16px;
   z-index: 201;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 18px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  opacity: 0.7;
-  transition: all 0.15s;
-}
-.session-close-btn:hover {
-  opacity: 1;
-  background: var(--error);
-  border-color: var(--error);
-  color: #fff;
 }
 
 .section-divider {
@@ -892,9 +878,7 @@ main {
   flex-shrink: 0;
 }
 .stop-icon { display: inline-block; width: 8px; height: 8px; border-radius: 1px; background: currentColor; }
-button.icon-btn.chat-stop-btn { font-size: 12px; padding: 3px 6px; line-height: 1; display: inline-flex; align-items: center; }
-button.icon-btn.chat-stop-btn:disabled { opacity: 0.5; cursor: default; }
-#chat-send-btn:disabled { opacity: 0.5; cursor: default; }
+button.icon-btn.chat-stop-btn { width: 20px; height: 20px; min-height: 20px; padding: 0; font-size: 14px; }
 .chat-typing .chat-stop-btn { margin-left: 2px; }
 #detail-background-stop-btn { margin-left: -4px; }
 #detail-background-activity { font-size: 12px; }
@@ -1258,6 +1242,7 @@ textarea.code {
   padding: 8px 0;
 }
 .color-swatch {
+  min-height: 0;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -1267,7 +1252,7 @@ textarea.code {
   transition: all 0.15s;
   position: relative;
 }
-.color-swatch:hover {
+.color-swatch:not(:disabled):not([aria-disabled="true"]):hover {
   transform: scale(1.15);
   border-color: var(--text-dim);
 }
@@ -1347,6 +1332,8 @@ textarea.code {
 /* Projects */
 .project-switcher { margin-left: 6px; }
 .project-btn {
+  min-height: 0;
+  line-height: normal;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1430,6 +1417,8 @@ textarea.code {
   border-bottom: 1px solid var(--border);
 }
 .settings-tab {
+  font-size: 13px;
+  font-weight: 500;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1438,11 +1427,11 @@ textarea.code {
   border-bottom: 2px solid transparent;
   border-radius: 0;
   padding: 10px 10px 8px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   max-width: 60%;
 }
 .settings-tab span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-tab:hover { background: none; color: var(--text); }
+.settings-tab:not(:disabled):not([aria-disabled="true"]):hover { background: none; color: var(--text); }
 .settings-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--primary); }
 .modal-body.hidden { display: none; }
 .settings-divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }

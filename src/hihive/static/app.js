@@ -388,7 +388,6 @@ function onDeepSearchToggle() {
 
 function syncDeepSearchButton() {
   const btn = document.getElementById('results-deep-search');
-  btn.classList.toggle('is-active', deepSearch);
   btn.setAttribute('aria-pressed', deepSearch ? 'true' : 'false');
   document.getElementById('results-search').placeholder = 'Search…';
 }
@@ -443,7 +442,6 @@ function onHideDoneToggle() {
 
 function syncHideDoneButton() {
   const btn = document.getElementById('results-hide-done');
-  btn.classList.toggle('is-active', hideDone);
   btn.setAttribute('aria-pressed', hideDone ? 'true' : 'false');
 }
 
@@ -661,13 +659,8 @@ function renderStats() {
   document.getElementById('cancel-all-btn').style.display = active ? '' : 'none';
 
   const btn = document.getElementById('pause-btn');
-  if (state.paused) {
-    btn.textContent = '▶ Resume';
-    btn.classList.add('primary');
-  } else {
-    btn.textContent = '⏸ Pause';
-    btn.classList.remove('primary');
-  }
+  btn.textContent = state.paused ? 'Resume' : 'Pause';
+  btn.classList.toggle('is-on', Boolean(state.paused));
 }
 
 function renderPausedBanner() {
@@ -874,7 +867,7 @@ function renderResultCard(t, depth, childrenByParent) {
   const isCollapsed = hasChildren && collapsedForks.has(t.id);
   const forkPrefix = depth > 0 ? '<span class="fork-tree-prefix">└─</span>' : '';
   const actionCount = 3 + (hasChildren ? 0 : 1) + (['failed', 'cancelled'].includes(t.status) ? 1 : 0);
-  const indentStyle = `style="--fork-indent:${depth * 16}px;--action-space:${actionCount * 24 + (actionCount - 1) * 2 + 4}px"`;
+  const indentStyle = `style="--fork-indent:${depth * 16}px;--action-space:${actionCount * 20 + (actionCount - 1) * 2 + 4}px"`;
   const forkAction = isCollapsed ? 'Show forks' : 'Hide forks';
   const forksLabel = hasChildren ? `<button class="fork-count" aria-expanded="${!isCollapsed}" title="${forkAction}" aria-label="${forkAction}" onclick="event.stopPropagation();toggleForkCollapse('${t.id}')">⑂ ${children.length} <span class="fork-chevron" aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span></button>` : '';
   const activityHtml = backgroundActivityHtml(t);
@@ -901,8 +894,8 @@ function renderResultCard(t, depth, childrenByParent) {
       <div class="actions">
         <button class="icon-btn small card-action done-btn${t.done ? ' is-done' : ''}" onclick="event.stopPropagation();toggleDone('${t.id}')" title="${doneTitle}" aria-label="${doneTitle}">${doneIcon}</button>
         <button class="icon-btn small card-action" onclick="event.stopPropagation();openForkTask('${t.id}')" title="Fork" aria-label="Fork">⑂</button>
-        ${['failed', 'cancelled'].includes(t.status) ? `<button class="icon-btn small card-action" onclick="event.stopPropagation();continueTask('${t.id}')" title="Continue" aria-label="Continue">▶</button>` : ''}
-        ${hasChildren ? '' : `<button class="icon-btn small card-action" onclick="event.stopPropagation();retryTask('${t.id}')" title="Retry" aria-label="Retry">↻</button>`}
+        ${['failed', 'cancelled'].includes(t.status) ? `<button class="icon-btn small card-action" onclick="event.stopPropagation();continueTask('${t.id}')" title="Continue" aria-label="Continue">▶︎</button>` : ''}
+        ${hasChildren ? '' : `<button class="icon-btn small card-action" onclick="event.stopPropagation();retryTask('${t.id}')" title="Retry" aria-label="Retry">↻︎</button>`}
         <button class="icon-btn small card-action" onclick="event.stopPropagation();deleteResultTask('${t.id}')" title="Delete" aria-label="Delete">✕</button>
         <button class="icon-btn small card-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="result-menu-${t.id}" title="Actions" aria-label="Actions" onclick="openResultCardMenu(event, '${t.id}', ${hasChildren})" onkeydown="resultMenuTriggerKey(event, '${t.id}', ${hasChildren})">⋯</button>
       </div>
@@ -1437,7 +1430,7 @@ async function removeTask(id) {
 
 async function cancelTask(id) {
   if (!id) return;
-  if (!await showConfirm('Cancel this task?')) return;
+  if (!await showConfirm('Cancel this task?', { cancelLabel: 'Keep running', confirmLabel: 'Cancel task', danger: true })) return;
   const error = await postJson(`/api/tasks/${id}/cancel`);
   if (error) showMessage(error, 'Task not cancelled');
   poll();
@@ -1446,7 +1439,7 @@ async function cancelTask(id) {
 async function cancelAllTasks() {
   const activeCount = (state.queue?.length || 0) + (state.workers?.length || 0);
   if (activeCount === 0) return;
-  if (!await showConfirm(`Cancel all queued and running tasks in ${currentProject()?.name || 'this project'}?`)) return;
+  if (!await showConfirm(`Cancel all queued and running tasks in ${currentProject()?.name || 'this project'}?`, { cancelLabel: 'Keep running', confirmLabel: 'Cancel all', danger: true })) return;
   await fetch('/api/tasks/cancel_all', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1487,7 +1480,7 @@ async function deleteResultTask(id) {
   const message = childCount > 0
     ? `This task has ${childCount} fork${childCount === 1 ? '' : 's'}. Deleting will delete the entire subtree. Continue?`
     : 'Delete this task result?';
-  if (!await showConfirm(message)) return;
+  if (!await showConfirm(message, { cancelLabel: 'Keep', confirmLabel: 'Delete', danger: true })) return;
   await removeTask(id);
 }
 
@@ -1516,7 +1509,7 @@ async function continueTask(id) {
 async function toggleDone(id) {
   const task = (state.results || []).find(t => t.id === id);
   if (task && task.done) {
-    if (!await showConfirm('Mark this task as not done?')) return;
+    if (!await showConfirm('Mark this task as not done?', { cancelLabel: 'Keep done', confirmLabel: 'Mark not done' })) return;
   }
   try {
     const res = await fetch(`/api/tasks/${id}/done`, {
@@ -1580,8 +1573,8 @@ function resizeChatInput(input = document.getElementById('chat-input')) {
   input.style.height = '0px';
   const naturalHeight = input.scrollHeight + borderHeight;
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-  const maxHeight = Math.min(240, viewportHeight * 0.35);
-  input.style.height = `${Math.min(naturalHeight, maxHeight)}px`;
+  const maxHeight = Math.max(36, Math.min(240, viewportHeight * 0.35));
+  input.style.height = `${Math.max(36, Math.min(naturalHeight, maxHeight))}px`;
   input.style.overflowY = naturalHeight > maxHeight ? 'auto' : 'hidden';
   setDetailScroll(atBottom ? body.scrollHeight : previousTop);
 }
@@ -1973,7 +1966,7 @@ async function deleteCurrentProject() {
   }
   const snapshot = modalSnapshots.get('settings-modal');
   if (snapshot !== undefined && snapshot !== modalState('settings-modal')
-      && !await showConfirm('Discard unsaved Settings changes before deleting this project?')) return;
+      && !await showConfirm('Discard unsaved Settings changes before deleting this project?', { cancelLabel: 'Keep editing', confirmLabel: 'Discard changes', danger: true })) return;
   closeModal('settings-modal');
   deletingProjectId = project.id;
   const tasks = boardTasks(fullState).filter(t => t.project_id === project.id).length;
@@ -2143,7 +2136,7 @@ function saveReviewSection() {
 }
 
 async function removeReviewSection(id) {
-  if (!id || !await showConfirm('Delete this review section?')) return;
+  if (!id || !await showConfirm('Delete this review section?', { cancelLabel: 'Keep', confirmLabel: 'Delete', danger: true })) return;
   const index = projectReviewSections().findIndex(section => section.id === id);
   closeModal('review-section-modal');
   reviewSectionsLocal = reviewSectionsLocal.filter(s => s.id !== id);
@@ -2197,7 +2190,7 @@ async function persistSettingsConfig() {
 }
 
 async function restartServer() {
-  if (!await showConfirm('Restart the server? Running tasks will be interrupted.')) return;
+  if (!await showConfirm('Restart the server? Running tasks will be interrupted.', { cancelLabel: 'Not now', confirmLabel: 'Restart', danger: true })) return;
   try {
     await fetch('/api/control/restart', {
       method: 'POST',
@@ -2226,7 +2219,7 @@ async function saveSettings() {
   }
   applyProjectForm();
   const availabilityWarning = harnessAvailabilityWarning();
-  if (availabilityWarning && !await showConfirm(availabilityWarning)) return;
+  if (availabilityWarning && !await showConfirm(availabilityWarning, { cancelLabel: 'Go back', confirmLabel: 'Save anyway' })) return;
   try {
     await persistSettingsConfig();
   } catch (e) {
@@ -2398,7 +2391,7 @@ function saveHarness() {
 }
 
 async function deleteHarness(id) {
-  if (!id || !await showConfirm('Delete this harness?')) return;
+  if (!id || !await showConfirm('Delete this harness?', { cancelLabel: 'Keep', confirmLabel: 'Delete', danger: true })) return;
   const index = harnessesLocal.findIndex(harness => harness.id === id);
   closeModal('harness-modal');
   harnessesLocal = harnessesLocal.filter(h => h.id !== id);
@@ -2582,7 +2575,7 @@ function saveTemplate() {
 }
 
 async function deleteTemplate(id) {
-  if (!id || !await showConfirm('Delete this template?')) return;
+  if (!id || !await showConfirm('Delete this template?', { cancelLabel: 'Keep', confirmLabel: 'Delete', danger: true })) return;
   const index = templatesLocal.filter(template => template.project_id === currentProject()?.id).findIndex(template => template.id === id);
   closeModal('template-modal');
   templatesLocal = templatesLocal.filter(t => t.id !== id);
@@ -2676,17 +2669,27 @@ function showMessage(message, title = 'Notice') {
 }
 
 let confirmResolve = null;
+let confirmOpener = null;
 
-function showConfirm(message) {
+function showConfirm(message, { confirmLabel = 'Yes', cancelLabel = 'No', danger = false } = {}) {
   return new Promise(resolve => {
     confirmResolve = resolve;
+    confirmOpener = document.activeElement;
     document.getElementById('confirm-message').textContent = message;
+    const accept = document.getElementById('confirm-accept-btn');
+    const cancel = document.getElementById('confirm-cancel-btn');
+    accept.textContent = confirmLabel;
+    accept.classList.toggle('danger', danger);
+    cancel.textContent = cancelLabel;
     document.getElementById('confirm-modal').classList.remove('hidden');
+    cancel.focus();
   });
 }
 
 function resolveConfirm(value) {
   document.getElementById('confirm-modal').classList.add('hidden');
+  if (confirmOpener?.isConnected) confirmOpener.focus();
+  confirmOpener = null;
   if (confirmResolve) {
     confirmResolve(value);
     confirmResolve = null;
@@ -2743,7 +2746,7 @@ async function requestCloseModal(id) {
   if (id === 'delete-project-modal') return closeDeleteProjectModal();
   const snapshot = modalSnapshots.get(id);
   if (snapshot !== undefined && snapshot !== modalState(id) &&
-      !await showConfirm('Discard unsaved changes?')) return;
+      !await showConfirm('Discard unsaved changes?', { cancelLabel: 'Keep editing', confirmLabel: 'Discard', danger: true })) return;
   closeModal(id);
 }
 

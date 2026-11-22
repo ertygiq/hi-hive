@@ -26,14 +26,14 @@
   </div>
   <div class="header-controls">
     <button class="primary" id="header-add-task" onclick="openAddTask()">+ Add task</button>
-    <button id="header-run-template" onclick="openBatchAdd()">▶ Run template</button>
-    <button onclick="openSettings()">⚙ Settings</button>
+    <button id="header-run-template" onclick="openBatchAdd()">Run template</button>
+    <button onclick="openSettings()">Settings</button>
   </div>
 </header>
 
 <div class="paused-banner" id="paused-banner">
   Pipeline paused - no new tasks will be started
-  <button class="small" onclick="togglePause()">▶ Resume</button>
+  <button class="small" onclick="togglePause()">Resume</button>
 </div>
 
 <div class="harness-onboarding" id="harness-onboarding" style="display:none">
@@ -58,7 +58,7 @@
       <div class="panel-header">
         <h2>Workers <span class="count" id="worker-count" title="Running in this project" aria-label="Running in this project">0</span></h2>
         <div class="panel-actions">
-          <button class="small" id="pause-btn" onclick="togglePause()">⏸ Pause</button>
+          <button class="small toggle" id="pause-btn" onclick="togglePause()">Pause</button>
           <button class="small" id="cancel-all-btn" onclick="cancelAllTasks()" style="display:none">Cancel all</button>
         </div>
       </div>
@@ -73,7 +73,7 @@
       <div class="results-header-top">
         <h2>Results <span class="count" id="results-count">0</span></h2>
         <div class="results-controls">
-          <button id="results-hide-done" class="filter-toggle" onclick="onHideDoneToggle()"
+          <button id="results-hide-done" class="small toggle" onclick="onHideDoneToggle()"
                   aria-pressed="false" title="Show only tasks not marked as done">Hide done</button>
           <select id="results-sort" class="results-sort" onchange="onResultsSortChange()" title="Sort order" aria-label="Sort order">
             <option value="completed">Completion date</option>
@@ -84,7 +84,7 @@
       <div class="results-search-row">
         <input type="text" id="results-search" class="results-search" placeholder="Search…"
                aria-label="Search results" oninput="onResultsSearchInput()">
-        <button id="results-deep-search" class="filter-toggle" onclick="onDeepSearchToggle()"
+        <button id="results-deep-search" class="small toggle" onclick="onDeepSearchToggle()"
                 aria-pressed="false" title="Also search model responses and user follow-ups">Full text</button>
       </div>
     </div>
@@ -124,11 +124,11 @@
         <span id="detail-status"></span>
         <span class="done-tag" id="detail-done-tag" style="display:none" title="Marked as done">✓ Done</span>
         <span id="detail-background-activity" style="display:none" aria-live="polite"></span>
-        <button class="icon-btn chat-stop-btn" id="detail-background-stop-btn" title="Stop background work" aria-label="Stop background work" onclick="stopWork('background')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
+        <button class="icon-btn small chat-stop-btn" id="detail-background-stop-btn" title="Stop background work" aria-label="Stop background work" onclick="stopWork('background')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
         </div>
         <button class="text-btn" id="detail-session-btn" onclick="openSession()">Open session</button>
-        <button class="small" id="detail-continue-btn" onclick="continueTask(selectedTaskId)" style="display:none">▶ Continue</button>
-        <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
+        <button class="small" id="detail-continue-btn" onclick="continueTask(selectedTaskId)" style="display:none">Continue</button>
+        <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel task</button>
       </div>
     </div>
   </div>
@@ -139,7 +139,7 @@
   <div class="chat-typing" id="chat-typing" role="status" style="display:none">
     <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
     <span id="chat-typing-label">Agent is replying</span>
-    <button class="icon-btn chat-stop-btn" id="chat-stop-btn" title="Stop reply" aria-label="Stop reply" onclick="stopWork('reply')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
+    <button class="icon-btn small chat-stop-btn" id="chat-stop-btn" title="Stop reply" aria-label="Stop reply" onclick="stopWork('reply')" style="display:none"><span class="stop-icon" aria-hidden="true"></span></button>
   </div>
   <div class="chat-input-area" id="chat-area" style="display:none">
     <textarea id="chat-input" placeholder="Send a message to this session..." rows="1" aria-label="Message to this session"
@@ -429,7 +429,7 @@
       <div id="login-link-fallback-area"></div>
     </div>
     <div class="modal-footer">
-      <button class="danger" id="restart-server-btn" onclick="restartServer()" title="Restart the installed service">↻ Restart server</button>
+      <button class="danger" id="restart-server-btn" onclick="restartServer()" title="Restart the installed service">Restart server</button>
       <div style="flex:1"></div>
       <button onclick="requestCloseModal('settings-modal')">Cancel</button>
       <button class="primary" onclick="saveSettings()">Save</button>
@@ -569,7 +569,7 @@
 
 <!-- Session Fullscreen Overlay -->
 <div class="session-overlay hidden" id="session-overlay">
-  <button class="session-close-btn" onclick="closeSession()">✕</button>
+  <button class="icon-btn session-close-btn" onclick="closeSession()" aria-label="Close session">✕</button>
   <div id="session-frame-host" class="session-frame-host"></div>
 </div>
 
@@ -600,8 +600,8 @@
       <p id="confirm-message" style="font-size:14px;line-height:1.5"></p>
     </div>
     <div class="modal-footer">
-      <button onclick="resolveConfirm(false)">No</button>
-      <button class="primary danger" onclick="resolveConfirm(true)">Yes</button>
+      <button id="confirm-cancel-btn" onclick="resolveConfirm(false)">No</button>
+      <button class="primary" id="confirm-accept-btn" onclick="resolveConfirm(true)">Yes</button>
     </div>
   </div>
 </div>
