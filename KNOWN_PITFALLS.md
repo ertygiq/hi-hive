@@ -27,6 +27,9 @@
 - **The launchd service starts with an almost empty environment.** Without the variables a terminal has, output actions failed (for example, Ruby tools could not find their gems without `GEM_HOME`).
   The service runs `hihive serve --shell-env`, which loads the login shell's environment once at startup and passes it to agents and output actions.
   Start agents directly, not through a shell: text that shell startup files print would mix with the agent's protocol output on stdout and break it.
+- **Keep one-time login links temporary and single-use.**
+  A link is a temporary full-access bearer capability, so never log or persist it, never retry redemption automatically, and enforce both expiry and atomic single use.
+  These rules prevent future changes from weakening browser authentication.
 - **Listening on localhost and checking Host and Origin don't stop local programs.** On Docker Desktop for Mac (tested), a container reaches Hive through `host.docker.internal`, Hive sees a local connection, and the container can fake both headers.
   Other setups can do the same, for example a container started with `--network host` on Linux.
   Every API request must carry the secret from `~/.hihive/token` (see `docs/adr/0002-local-authentication.md`).

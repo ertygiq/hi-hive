@@ -5,12 +5,13 @@ import os
 import re
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from starlette.testclient import TestClient
 
 from hihive.pool import PoolManager
-from hihive.server import create_app
+from hihive.server import LoginTickets, create_app
 
 TRUSTED = {"Origin": "http://localhost"}
 TOKEN = "test-secret"
@@ -254,6 +255,101 @@ def test_api_requires_the_secret(api):
     response = api.client.post("/api/control/pause", json={}, headers={**TRUSTED, "Authorization": ""})
     assert response.status_code == 401
     assert api.pool.state()["paused"] is False
+
+
+def test_login_ticket_requires_full_cookie_and_same_origin(api):
+    app = api.client.app
+    anonymous = TestClient(app, base_url='http://localhost')
+    bearer = TestClient(app, base_url='http://localhost', headers={'Authorization': f'Bearer {TOKEN}'})
+    browser = TestClient(app, base_url='http://localhost', cookies={'hive_token': TOKEN})
+    assert anonymous.post('/api/login-ticket', json={}, headers=TRUSTED).status_code == 401
+    assert bearer.post('/api/login-ticket', json={}, headers=TRUSTED).status_code == 403
+    assert browser.post('/api/login-ticket', json={}).status_code == 403
+    assert browser.post('/api/login-ticket', json={}, headers={'Origin': 'http://127.0.0.1'}).status_code == 403
+    assert browser.post('/api/login-ticket', json={}, headers={'Origin': 'https://localhost:80'}).status_code == 403
+    assert browser.post('/api/login-ticket', json={}, headers={'Origin': 'http://evil.example'}).status_code == 403
+    assert browser.post('/api/login-ticket', json={}, headers={'Origin': 'http://localhost', 'Host': 'evil.example'}).status_code == 403
+    assert browser.post('/api/login-ticket', content='{}', headers=TRUSTED).status_code == 415
+    response = browser.post('/api/login-ticket', json={}, headers=TRUSTED)
+    assert response.status_code == 200
+    assert TOKEN not in response.text
+    assert re.fullmatch(r'[A-Za-z0-9_-]{43}', response.json()['ticket'])
+    assert 'no-store' in response.headers['cache-control']
+    assert response.headers['referrer-policy'] == 'no-referrer'
+
+
+def test_login_ticket_redeems_once_replaces_previous_and_dies_on_restart(api):
+    app = api.client.app
+    browser = TestClient(app, base_url='http://localhost', cookies={'hive_token': TOKEN})
+    other = TestClient(app, base_url='http://localhost')
+    first = browser.post('/api/login-ticket', json={}, headers=TRUSTED).json()['ticket']
+    second = browser.post('/api/login-ticket', json={}, headers=TRUSTED).json()['ticket']
+    invalid = other.post('/login', json={'ticket': first}, headers=TRUSTED)
+    assert invalid.status_code == 403
+    assert invalid.json()['code'] == 'invalid_login_ticket'
+    assert invalid.headers['referrer-policy'] == 'no-referrer'
+    login = other.post('/login', json={'ticket': second}, headers=TRUSTED)
+    assert login.status_code == 204
+    assert 'httponly' in login.headers['set-cookie'].lower()
+    assert 'samesite=strict' in login.headers['set-cookie'].lower()
+    assert 'no-store' in login.headers['cache-control']
+    assert other.post('/login', json={'ticket': second}, headers=TRUSTED).status_code == 403
+    pending = browser.post('/api/login-ticket', json={}, headers=TRUSTED).json()['ticket']
+    restarted = TestClient(create_app(api.pool, TOKEN, manage_pool=False), base_url='http://localhost')
+    assert restarted.post('/login', json={'ticket': pending}, headers=TRUSTED).status_code == 403
+    assert other.post('/login', json={'ticket': 'invalid'}, headers=TRUSTED).status_code == 403
+    assert other.post('/login', json={'ticket': pending}).status_code == 403
+
+
+def test_login_ticket_concurrent_http_redemption_has_one_winner(api, capsys):
+    app = api.client.app
+    issuer = TestClient(app, base_url='http://localhost', cookies={'hive_token': TOKEN})
+    ticket = issuer.post('/api/login-ticket', json={}, headers=TRUSTED).json()['ticket']
+
+    def redeem(_):
+        client = TestClient(app, base_url='http://localhost')
+        response = client.post('/login', json={'ticket': ticket}, headers=TRUSTED)
+        return response.status_code, response.headers.get('set-cookie', ''), response.text
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        outcomes = list(executor.map(redeem, range(16)))
+    assert sum(status == 204 for status, _, _ in outcomes) == 1
+    assert sum(bool(cookie) for _, cookie, _ in outcomes) == 1
+    assert all(ticket not in text and TOKEN not in text for _, _, text in outcomes)
+    output = capsys.readouterr()
+    assert ticket not in output.out + output.err
+    assert TOKEN not in output.out + output.err
+
+
+def test_login_ticket_expiry_boundary_and_concurrent_redemption():
+    now = [100.0]
+    tickets = LoginTickets(clock=lambda: now[0])
+    first = tickets.issue()
+    assert first not in repr(tickets.__dict__)
+    now[0] = 399.999
+    assert tickets.consume(first)
+    ticket = tickets.issue()
+    now[0] += 300
+    assert not tickets.consume(ticket)
+    newest = tickets.issue()
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        outcomes = list(executor.map(tickets.consume, [newest] * 16))
+    assert outcomes.count(True) == 1
+    assert outcomes.count(False) == 15
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        issued = list(executor.map(lambda _: tickets.issue(), range(16)))
+    assert len(set(issued)) == 16
+    assert sum(tickets.consume(value) for value in issued) == 1
+
+
+def test_login_ticket_sets_secure_cookie_over_https(api):
+    browser = TestClient(api.client.app, base_url='https://localhost', cookies={'hive_token': TOKEN})
+    headers = {'Origin': 'https://localhost'}
+    ticket = browser.post('/api/login-ticket', json={}, headers=headers).json()['ticket']
+    other = TestClient(api.client.app, base_url='https://localhost')
+    response = other.post('/login', json={'ticket': ticket}, headers=headers)
+    assert response.status_code == 204
+    assert 'secure' in response.headers['set-cookie'].lower()
 
 
 def test_login_link_sets_a_cookie_that_authorizes_the_browser(api):

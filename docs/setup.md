@@ -71,7 +71,12 @@ The existing five-minute grace period applies on both platforms.
 Every API request needs the secret hi-hive keeps in `~/.hihive/token`.
 The `hihive` CLI sends it automatically.
 Agents started by hi-hive get a separate token limited to their task's project instead; see [Projects](features.md#a-project-for-sandboxed-agents).
-`hihive open` logs your browser in with a one-time link; a browser that isn't logged in shows a "Login required" message.
+`hihive open` logs in the default browser using a link that contains the full secret.
+Keep that link private.
+To log in another browser, open Settings > All projects in a browser already logged in and choose **Copy one-time login link**.
+Paste the link into your other browser within five minutes.
+Anyone with the link can get full access to hi-hive until it is used or expires.
+Only the newest link works, and restarting the server invalidates unused links.
 See [adr/0002-local-authentication.md](adr/0002-local-authentication.md) for why.
 
 ## Data location

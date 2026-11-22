@@ -9,7 +9,7 @@ function client(storage = new Map()) {
   const listeners = new Map();
   const element = () => ({ style: {}, value: '', textContent: '', innerHTML: '', scrollHeight: 34,
     offsetHeight: 36, clientHeight: 34,
-    classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, focus() {}, querySelectorAll() { return []; } });
+    classList: { add() {}, remove() {}, toggle() {} }, setAttribute(name, value) { this[name] = value; }, focus() {}, querySelectorAll() { return []; } });
   const document = {
     visibilityState: 'visible',
     documentElement: { clientHeight: 800 },
@@ -1036,6 +1036,111 @@ test('output action failures are shown and successes are silent', async () => {
   }
 });
 
+test('one-time login link copies the current origin and clears the success state', async () => {
+  const { context, document } = client();
+  const ticket = 'A'.repeat(43), calls = [], timers = [];
+  const button = document.getElementById('copy-login-link-btn');
+  button.disabled = false;
+  document.activeElement = button;
+  const fallback = document.getElementById('login-link-fallback-area');
+  fallback.replaceChildren = () => {};
+  context.location = { origin: 'http://127.0.0.1:4567' };
+  context.navigator = { clipboard: { writeText: async value => calls.push(value) } };
+  context.fetch = async (url, options) => { assert.equal(url, '/api/login-ticket'); assert.equal(options.method, 'POST'); return { ok: true, json: async () => ({ ticket }) }; };
+  context.setTimeout = (fn, ms) => timers.push([fn, ms]);
+  await vm.runInContext('copyLoginLink()', context);
+  assert.deepEqual(calls, [`http://127.0.0.1:4567/login#ticket=${ticket}`]);
+  assert.equal(document.getElementById('copy-login-link-btn').textContent, 'Copied');
+  assert.equal(button['aria-disabled'], 'true');
+  assert.equal(button.disabled, false);
+  assert.equal(document.activeElement, button);
+  assert.equal(document.getElementById('copy-login-link-status').textContent, 'Login link copied');
+  assert.equal(timers[0][1], 2000); timers[0][0]();
+  assert.equal(button['aria-disabled'], 'false');
+  assert.equal(button.disabled, false);
+  assert.equal(document.activeElement, button);
+  assert.equal(document.getElementById('copy-login-link-status').textContent, '');
+});
+
+test('copy link ignores repeated activation while working or showing Copied', async () => {
+  const { context, document } = client();
+  document.getElementById('login-link-fallback-area').replaceChildren = () => {};
+  const button = document.getElementById('copy-login-link-btn');
+  button.disabled = false; document.activeElement = button;
+  context.location = { origin: 'http://localhost' };
+  context.navigator = { clipboard: { writeText: async () => {} } };
+  let resolveRequest, requests = 0, timer;
+  context.fetch = () => { requests++; return new Promise(resolve => { resolveRequest = resolve; }); };
+  context.setTimeout = fn => { timer = fn; };
+  const first = vm.runInContext('copyLoginLink()', context);
+  await vm.runInContext('copyLoginLink()', context);
+  assert.equal(requests, 1);
+  assert.equal(button['aria-disabled'], 'true');
+  assert.equal(button.disabled, false);
+  assert.equal(document.activeElement, button);
+  resolveRequest({ ok: true, json: async () => ({ ticket: 'D'.repeat(43) }) });
+  await first;
+  await vm.runInContext('copyLoginLink()', context);
+  assert.equal(requests, 1);
+  assert.equal(document.activeElement, button);
+  timer();
+  assert.equal(button['aria-disabled'], 'false');
+});
+
+test('one-time login clipboard failure provides a transient selected field, removed on close', async () => {
+  const { context, document } = client();
+  const ticket = 'B'.repeat(43), children = [];
+  const fallback = document.getElementById('login-link-fallback-area');
+  fallback.replaceChildren = () => { children.length = 0; };
+  fallback.append = (...elements) => children.push(...elements);
+  document.createElement = () => ({ dataset: {}, style: {}, setAttribute(name, value) { this[name] = value; },
+    focus() { this.focused = true; }, select() { this.selected = true; } });
+  context.location = { origin: 'http://localhost:4567' };
+  context.navigator = { clipboard: { writeText: async () => { throw new Error('denied'); } } };
+  context.fetch = async () => ({ ok: true, json: async () => ({ ticket }) });
+  await vm.runInContext('copyLoginLink()', context);
+  assert.equal(children[0].value, `http://localhost:4567/login#ticket=${ticket}`);
+  assert.equal(children[0].readOnly, true);
+  assert.equal(children[0]['aria-label'], 'One-time login link');
+  assert.equal(children[0].focused, true); assert.equal(children[0].selected, true);
+  assert.equal(children[0].dataset.transient, 'true');
+  assert.match(children[1].textContent, /full access/);
+  vm.runInContext("closeModal('settings-modal')", context);
+  assert.equal(children.length, 0);
+});
+
+test('one-time link fallback does not dirty Settings and late requests cannot restore it', async () => {
+  const { context, document } = client();
+  const fallback = document.getElementById('login-link-fallback-area');
+  fallback.replaceChildren = () => {};
+  const settings = document.getElementById('settings-modal');
+  const saved = { type: 'text', value: 'unchanged', dataset: {} };
+  settings.querySelectorAll = () => [saved];
+  const before = vm.runInContext("modalState('settings-modal')", context);
+  settings.querySelectorAll = () => [saved, { type: 'text', value: 'ticket-url', dataset: { transient: 'true' } }];
+  assert.equal(vm.runInContext("modalState('settings-modal')", context), before);
+  let resolveRequest, copied = false;
+  context.location = { origin: 'http://localhost' };
+  context.navigator = { clipboard: { writeText: async () => { copied = true; } } };
+  context.fetch = () => new Promise(resolve => { resolveRequest = resolve; });
+  const pending = vm.runInContext('copyLoginLink()', context);
+  vm.runInContext("closeModal('settings-modal')", context);
+  resolveRequest({ ok: true, json: async () => ({ ticket: 'C'.repeat(43) }) });
+  await pending;
+  assert.equal(copied, false);
+  assert.equal(document.getElementById('copy-login-link-btn')['aria-disabled'], 'false');
+});
+
+test('one-time login issuance failure is visible and restores the button', async () => {
+  const { context, document } = client();
+  document.getElementById('login-link-fallback-area').replaceChildren = () => {};
+  const dialogs = []; context.showMessage = (...args) => dialogs.push(args);
+  context.fetch = async () => ({ ok: false, json: async () => ({ error: 'Not logged in' }) });
+  await vm.runInContext('copyLoginLink()', context);
+  assert.equal(document.getElementById('copy-login-link-btn')['aria-disabled'], 'false');
+  assert.deepEqual(dialogs[0], ['Not logged in', 'Could not create a login link']);
+});
+
 test('a missing login asks once to run hihive open and keeps the board', async () => {
   const { context } = client();
   const dialogs = [];
@@ -1057,7 +1162,7 @@ async function runLogin(hash, response) {
     location: { hash, replace(url) { steps.push(`go ${url}`); } },
     history: { replaceState(_s, _t, url) { steps.push(`address ${url}`); } },
     document: { getElementById: () => status },
-    fetch: async (url, options) => { steps.push(`post ${options.body}`); return response; }
+    fetch: async (url, options) => { steps.push(`post ${options.body}`); if (response instanceof Error) throw response; return response; }
   });
   vm.runInContext(fs.readFileSync('src/hihive/static/login.js', 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
@@ -1069,8 +1174,29 @@ test('login page clears the secret from the address bar before sending it, then 
   assert.deepEqual(steps, ['address /login', 'post {"token":"s3cret"}', 'go /']);
 });
 
+test('one-time login page removes the ticket before exchange and explains expired links', async () => {
+  const valid = await runLogin('#ticket=oneuse', { ok: true });
+  assert.deepEqual(valid.steps, ['address /login', 'post {"ticket":"oneuse"}', 'go /']);
+  const expired = await runLogin('#ticket=oneuse', { ok: false, status: 403, json: async () => ({ code: 'invalid_login_ticket' }) });
+  assert.match(expired.status, /expired or was already used/);
+  assert.match(expired.status, /Copy one-time login link/);
+  assert.ok(!expired.steps.includes('go /'));
+  for (const response of [
+    { ok: false, status: 403, json: async () => ({ error: 'untrusted Origin oneuse' }) },
+    { ok: false, status: 500, json: async () => ({ code: 'invalid_login_ticket', error: 'oneuse' }) },
+    { ok: false, status: 415, json: async () => { throw new Error('oneuse'); } },
+    new Error('network oneuse')
+  ]) {
+    const failure = await runLogin('#ticket=oneuse', response);
+    assert.doesNotMatch(failure.status, /expired or was already used|oneuse/);
+    assert.match(failure.status, /Could not/);
+    assert.ok(!failure.steps.includes('go /'));
+  }
+});
+
 test('login page explains a missing or wrong secret', async () => {
-  assert.match((await runLogin('', { ok: true })).status, /no Hive token/);
+  assert.match((await runLogin('', { ok: true })).status, /This page needs a login link/);
+  assert.match((await runLogin('#token=abc', new Error('secret'))).status, /run `hihive open` again/);
   const wrong = await runLogin('#token=bad', { ok: false });
   assert.match(wrong.status, /wrong/);
   assert.ok(!wrong.steps.includes('go /'));
