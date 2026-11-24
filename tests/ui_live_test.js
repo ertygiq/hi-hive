@@ -862,13 +862,173 @@ test('original work has no stop or typing line, idle background has only backgro
   assert.equal(document.getElementById('detail-background-stop-btn').style.display, 'inline-flex');
 });
 
+test('quiet Workers show harness, elapsed time and only exception labels', () => {
+  const { context, document } = client();
+  context.snapshot = { workers: [{ id: 'task', label: 'Long <title> "quoted"', harness: 'h', status: 'reviewing',
+    activity_kind: 'review', chat_pending: true, background_activity: { task_count: 1 },
+    started_at: '2026-01-01T00:00:00Z', output_tail: 'PRIVATE PREVIEW' }], show_task_cost: false };
+  vm.runInContext("Date.now = () => new Date('2026-01-01T01:01:02Z').getTime(); configCache.harnesses = [{id:'h',name:'Harness',color:'rose'}]; state = snapshot; unreadReplies.ids.add('task'); renderWorkers()", context);
+  const html = document.getElementById('workers-list').innerHTML;
+  assert.match(html, /title="Long &lt;title&gt; &quot;quoted&quot;"/);
+  assert.match(html, /class="harness-name"[^>]*>[^]*Harness/);
+  assert.match(html, /class="worker-row"[^]*class="meta"[^]*class="elapsed" title="Running time"/);
+  assert.match(html, /class="visually-hidden">Running time /);
+  assert.match(html, /class="elapsed-time">1:01:02/);
+  assert.match(html, />Reviewing<\/span>/);
+  assert.match(html, />New reply<\/span>/);
+  assert.match(html, />Background work<\/span>/);
+  assert.doesNotMatch(html, />Replying<\/span>|status-running|output-preview|PRIVATE PREVIEW|class="pulse"/);
+  assert.match(html, /title="Cancel task" aria-label="Cancel task"/);
+  context.snapshot.workers[0].status = 'running';
+  context.snapshot.workers[0].background_activity = {};
+  vm.runInContext("unreadReplies.ids.delete('task'); renderWorkers()", context);
+  assert.doesNotMatch(document.getElementById('workers-list').innerHTML, />Reviewing<\/span>|>Background work<\/span>|>New reply<\/span>/);
+});
+
+test('worker elapsed clock formats hours, clamps future times and updates text only', () => {
+  const { context, document } = client();
+  vm.runInContext("Date.now = () => new Date('2026-01-01T01:01:02Z').getTime()", context);
+  assert.equal(vm.runInContext("formatElapsed(new Date('2026-01-01T01:00:03Z'))", context), '0:59');
+  assert.equal(vm.runInContext("formatElapsed(new Date('2026-01-01T00:01:02Z'))", context), '1:00:00');
+  assert.equal(vm.runInContext("formatElapsed(new Date('2026-01-01T02:00:00Z'))", context), '0:00');
+  assert.equal(vm.runInContext("formatElapsed(new Date('invalid'))", context), '');
+  const clock = { textContent: '', innerHTML: 'unchanged' };
+  document.querySelectorAll = selector => selector === '.worker-card[data-started-at]' ? [{ dataset: { startedAt: '2026-01-01T00:01:02Z' },
+    querySelector(name) { assert.equal(name, '.elapsed-time'); return clock; } }] : [];
+  vm.runInContext('updateWorkerElapsedTimes()', context);
+  assert.equal(clock.textContent, '1:00:00'); assert.equal(clock.innerHTML, 'unchanged');
+  const source = fs.readFileSync('src/hihive/static/app.js', 'utf8');
+  assert.match(source, /updateWorkerElapsedTimes\(\);\s*\}, 1000\)/);
+  assert.match(source, /refreshDetail\(\);\s*\}, 2000\)/);
+});
+
+test('quiet Queue retains drag reorder and keyboard-accessible removal', async () => {
+  const { context, document } = client();
+  context.snapshot = { queue: [{ id: 'first', label: 'First <item>', harness: 'h' }, { id: 'second', label: 'Second' }],
+    workers: [], results: [], paused: true, stats: {}, max_parallel: 2 };
+  vm.runInContext("state = snapshot; configCache = {harnesses:[{id:'h',name:'Harness',color:'rose'}], projects:[{id:'p'}]}; currentProjectId = 'p'; renderQueue()", context);
+  const html = document.getElementById('queue-list').innerHTML;
+  assert.match(html, /class="task-card queue-card/);
+  assert.match(html, /title="First &lt;item&gt;"/);
+  assert.match(html, /draggable="true"[^]*ondragstart="dragStart\(event, 'first'\)"[^]*ondragover="dragOver\(event\)"[^]*ondrop="drop\(event, 'first'\)"/);
+  assert.match(html, /class="harness-name"[^]*Harness/);
+  assert.match(html, /title="Remove" aria-label="Remove"/);
+  assert.doesNotMatch(html, /status-queued|harness-badge/);
+  const actions = [];
+  context.fetch = async (url, options) => { actions.push([url, JSON.parse(options.body)]); return { ok: true }; };
+  const classes = new Set();
+  context.event = { dataTransfer: {}, target: { dataset: { taskId: 'second' }, classList: { add(value) { classes.add(value); }, remove(value) { classes.delete(value); } }, closest() { return this; } }, preventDefault() {} };
+  vm.runInContext("dragStart(event, 'first'); dragOver(event); drop(event, 'second')", context);
+  assert.equal(context.event.dataTransfer.effectAllowed, 'move');
+  assert.equal(context.event.dataTransfer.dropEffect, 'move');
+  assert.ok(classes.has('drag-over-after'));
+  assert.equal(actions[0][0], '/api/queue/reorder');
+  assert.deepEqual(actions[0][1], { order: ['second', 'first'], project_id: 'p' });
+});
+
+test('unchanged queue polls preserve card identity, hover, click and active drag', () => {
+  const { context, document } = client();
+  const list = document.getElementById('queue-list');
+  let html = '', writes = 0, node;
+  Object.defineProperty(list, 'innerHTML', { get() { return html; }, set(value) {
+    writes++; html = value;
+    node = { dataset: { taskId: 'first' }, hovered: false, clicked: false,
+      classList: { toggle() {} }, click() { this.clicked = true; } };
+  } });
+  list.querySelectorAll = () => node ? [node] : [];
+  context.snapshot = { queue: [{ id: 'first', label: 'First' }, { id: 'second', label: 'Second' }],
+    workers: [], results: [], paused: true, stats: {}, max_parallel: 2 };
+  vm.runInContext('state = snapshot; renderQueue()', context);
+  const original = node; original.hovered = true;
+  vm.runInContext('renderQueue(); renderQueue()', context);
+  assert.equal(writes, 1); assert.equal(node, original); assert.equal(node.hovered, true);
+  node.click(); assert.equal(original.clicked, true);
+  context.event = { target: { classList: { add() {} } }, dataTransfer: {} };
+  vm.runInContext("dragStart(event, 'first')", context);
+  context.snapshot.queue[0].label = 'Changed during drag';
+  vm.runInContext('renderQueue()', context);
+  assert.equal(writes, 1); assert.equal(node, original);
+  assert.equal(vm.runInContext('draggedId', context), 'first');
+  vm.runInContext('dragEnd()', context);
+  assert.equal(writes, 2); assert.notEqual(node, original);
+  assert.match(html, /Changed during drag/);
+});
+
+test('queue drag indicators match reorder direction', () => {
+  const { context, document } = client();
+  context.snapshot = { queue: [{ id: 'first' }, { id: 'middle' }, { id: 'last' }], workers: [] };
+  vm.runInContext('state = snapshot', context);
+  const marks = new Set();
+  const target = { dataset: { taskId: 'last' }, classList: { add(name) { marks.add(name); },
+    remove(...names) { names.forEach(name => marks.delete(name)); } }, closest() { return this; } };
+  document.querySelectorAll = selector => selector.includes('.drag-over') ? [target] : [];
+  context.event = { target, dataTransfer: {}, preventDefault() {} };
+  vm.runInContext("draggedId = 'first'; dragOver(event)", context);
+  assert.deepEqual([...marks], ['drag-over-after']);
+  target.dataset.taskId = 'first';
+  vm.runInContext("draggedId = 'last'; dragOver(event)", context);
+  assert.deepEqual([...marks], ['drag-over']);
+});
+
+test('keyboard Worker cancellation focuses the next card or Workers heading', async () => {
+  const { context, document } = client();
+  const worker = { dataset: { taskId: 'first' } };
+  const opener = { matches: () => true, closest: () => worker };
+  const heading = document.getElementById('workers-heading');
+  const list = document.getElementById('workers-list');
+  let focused = '';
+  heading.focus = () => { focused = 'heading'; };
+  list.querySelectorAll = () => [{ focus() { focused = 'next'; } }];
+  document.body = {}; document.activeElement = opener;
+  context.snapshot = { workers: [{ id: 'first' }, { id: 'second' }] };
+  context.showConfirm = async () => true;
+  context.postJson = async () => null;
+  context.poll = async () => { document.activeElement = document.body; return true; };
+  vm.runInContext('state = snapshot', context);
+  await vm.runInContext("cancelTask('first')", context);
+  assert.equal(focused, 'next');
+  document.activeElement = opener;
+  list.querySelectorAll = () => [];
+  await vm.runInContext("cancelTask('first')", context);
+  assert.equal(focused, 'heading');
+  focused = '';
+  document.activeElement = opener;
+  context.postJson = async () => 'failed'; context.showMessage = () => {};
+  await vm.runInContext("cancelTask('first')", context);
+  assert.equal(focused, '');
+});
+
+test('stacked Queue and Workers use bounded shares and preserve room at short heights', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.side-column:has\(#queue-panel\.is-visible\) \.panel:not\(\.is-empty\)\s*\{\s*max-height:\s*50%/);
+  assert.match(css, /#queue-panel\.is-visible\s*\{[^}]*min-height:\s*180px;[^}]*max-height:\s*max\(50%, 180px\)/s);
+  assert.match(css, /#workers-panel:not\(\.is-empty\)\s*\{[^}]*min-height:\s*130px;[^}]*max-height:\s*max\(50%, 130px\)/s);
+  assert.match(css, /height:\s*max\(35vh, 310px\);\s*max-height:\s*max\(35vh, 310px\)/);
+  assert.match(css, /@media \(min-width: 900px\) and \(max-width: 1079px\)[^]*?\.workspace:has\(> \.detail-panel:not\(\.hidden\)\) #queue-panel\.is-visible/);
+  assert.match(css, /@media \(max-width: 899px\)[^]*?#queue-panel\.is-visible/);
+  assert.doesNotMatch(css, /#queue-panel\.is-visible\s*\{[^}]*min-height:\s*min-content/s);
+});
+
+test('quiet Queue and Workers retain focus reveal, drop feedback and stacked alignment', () => {
+  const css = fs.readFileSync('src/hihive/static/style.css', 'utf8');
+  assert.match(css, /\.task-card\.worker-card, \.task-card\.queue-card\s*\{[^}]*border-color:\s*transparent;[^}]*padding:\s*8px 12px;[^}]*margin-bottom:\s*2px/s);
+  assert.match(css, /\.worker-card \.worker-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto/);
+  assert.match(css, /\.worker-card \.elapsed\s*\{[^}]*color:\s*var\(--text\);[^}]*font-variant-numeric:\s*tabular-nums/s);
+  assert.match(css, /\.task-card\.worker-card \.actions, \.task-card\.queue-card \.actions\s*\{[^}]*display:\s*flex;[^}]*opacity:\s*0;[^}]*pointer-events:\s*none/);
+  assert.match(css, /\.task-card\.worker-card:focus-visible \.actions/);
+  assert.match(css, /\.task-card\.queue-card \.actions:focus-within/);
+  assert.match(css, /\.task-card\.drag-over, \.task-card\.queue-card\.drag-over\s*\{\s*border-top:\s*2px solid var\(--primary\)/);
+  assert.match(css, /#workers-list, #queue-list\s*\{\s*padding-left:\s*16px;\s*padding-right:\s*16px/);
+  assert.match(css, /\.reply-state\.is-active \.state-dot\s*\{\s*animation:\s*none/);
+});
+
 test('active task cards do not show output byte counts', () => {
   const { context, document } = client();
   context.snapshot = { workers: [{ id: 'task', label: 'Task', status: 'running', output_length: 2048, output_tail: 'Hello' }], running_total: 1 };
   vm.runInContext('state = snapshot; renderWorkers()', context);
   const html = document.getElementById('workers-list').innerHTML;
-  assert.match(html, /Hello/);
-  assert.doesNotMatch(html, /2\.0KB|2048B| output<\/span>/);
+  assert.match(html, /Task/);
+  assert.doesNotMatch(html, /Hello|output-preview|2\.0KB|2048B| output<\/span>/);
 });
 
 const unreadKey = 'hive-unread-follow-up-replies';
