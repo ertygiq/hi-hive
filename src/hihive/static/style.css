@@ -365,44 +365,40 @@ button.toggle.is-on:not(:disabled):not([aria-disabled="true"]):hover { backgroun
 .done-btn.is-done { color: var(--success); }
 .success { color: var(--success); border-color: var(--success); }
 
-/* Worker cards */
-.worker-card {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 8px;
+/* Quiet Workers and Queue cards share the Results card language. */
+.task-card.worker-card, .task-card.queue-card {
+  border-color: transparent; padding: 8px 12px; margin-bottom: 2px; max-width: 880px;
 }
-.worker-card .worker-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+.task-card.worker-card:hover, .task-card.queue-card:hover { border-color: transparent; background: var(--surface2); }
+.task-card.worker-card.selected, .task-card.queue-card.selected {
+  border-color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, var(--bg));
 }
-.worker-card .label { font-size: 13px; font-weight: 500; }
-.worker-card .elapsed {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+.worker-card .label, .queue-card .label { min-width: 0; }
+.worker-card .worker-title, .queue-card .queue-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.worker-card .output-preview {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 11px;
-  color: var(--text-dim);
-  max-height: 120px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
+.worker-card .worker-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-items: start; }
+.worker-card .meta, .queue-card .meta { min-width: 0; flex-wrap: wrap; row-gap: 2px; }
+.worker-card .meta > *, .queue-card .meta > * { flex-shrink: 0; }
+.worker-card .meta > .harness-name, .queue-card .meta > .harness-name {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 130px; overflow: hidden; white-space: nowrap;
 }
-.worker-card .pulse {
-  display: inline-block;
-  width: 8px; height: 8px;
-  background: var(--primary);
-  border-radius: 50%;
-  animation: pulse 1.5s infinite;
+.worker-card .elapsed { font-size: 11px; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.task-card.worker-card .actions, .task-card.queue-card .actions { display: flex; opacity: 0; pointer-events: none; }
+.task-card.worker-card:hover .actions, .task-card.queue-card:hover .actions,
+.task-card.worker-card:focus-visible .actions, .task-card.queue-card:focus-visible .actions,
+.task-card.worker-card .actions:focus-within, .task-card.queue-card .actions:focus-within { opacity: 1; pointer-events: auto; }
+.worker-card:hover .label, .queue-card:hover .label,
+.worker-card:focus-visible .label, .queue-card:focus-visible .label,
+.worker-card:has(.actions:focus-within) .label, .queue-card:has(.actions:focus-within) .label { padding-right: 24px; }
+@media (max-width: 899px) {
+  #workers-list, #queue-list { padding-left: 16px; padding-right: 16px; }
+  .worker-card .meta > .harness-name, .queue-card .meta > .harness-name { max-width: 180px; }
+}
+@media (min-width: 900px) and (max-width: 1079px) {
+  body:has(#detail-panel:not(.hidden)) #workers-list, body:has(#detail-panel:not(.hidden)) #queue-list { padding-left: 16px; padding-right: 16px; }
+  body:has(#detail-panel:not(.hidden)) .worker-card .meta > .harness-name,
+  body:has(#detail-panel:not(.hidden)) .queue-card .meta > .harness-name { max-width: 180px; }
 }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -1023,7 +1019,8 @@ textarea.code {
 
 /* Drag states */
 .task-card.dragging { opacity: 0.4; }
-.task-card.drag-over { border-top: 2px solid var(--primary); }
+.task-card.drag-over, .task-card.queue-card.drag-over { border-top: 2px solid var(--primary); }
+.task-card.queue-card.drag-over-after { border-bottom: 2px solid var(--primary); }
 
 /* Resize handle between board and detail panel */
 .resize-handle {
@@ -1081,6 +1078,15 @@ textarea.code {
     flex: 0 1 auto; min-height: 0; overflow-y: auto;
   }
   .workspace:has(> .detail-panel:not(.hidden)) .side-column:has(#queue-panel.is-visible) .panel:not(.is-empty) { max-height: 50%; }
+  .workspace:has(> .detail-panel:not(.hidden)) .side-column:has(#queue-panel.is-visible) {
+    min-height: 230px; max-height: max(35vh, 230px); overflow-y: auto;
+  }
+  .workspace:has(> .detail-panel:not(.hidden)) .side-column:has(#queue-panel.is-visible):has(#workers-panel:not(.is-empty)) {
+    height: max(35vh, 310px); max-height: max(35vh, 310px);
+  }
+  .workspace:has(> .detail-panel:not(.hidden)) .side-column:has(#queue-panel.is-visible):has(#workers-panel:not(.is-empty)) .panel:not(.is-empty) { flex: 1 1 0; }
+  .workspace:has(> .detail-panel:not(.hidden)) #queue-panel.is-visible { min-height: 180px; max-height: max(50%, 180px); }
+  .workspace:has(> .detail-panel:not(.hidden)) .side-column:has(#queue-panel.is-visible) #workers-panel:not(.is-empty) { min-height: 130px; max-height: max(50%, 130px); }
   .workspace:has(> .detail-panel:not(.hidden)) .side-column .panel.is-empty { flex: 0 0 auto; }
   .workspace:has(> .detail-panel:not(.hidden)) .side-column .panel.is-empty .task-list { display: none; }
 }
@@ -1103,6 +1109,11 @@ textarea.code {
   .side-column .panel { flex: 0 1 auto; min-height: 0; }
   .side-column .panel .task-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
   .side-column:has(#queue-panel.is-visible) .panel:not(.is-empty) { max-height: 50%; }
+  .side-column:has(#queue-panel.is-visible) { min-height: 230px; max-height: max(35vh, 230px); overflow-y: auto; }
+  .side-column:has(#queue-panel.is-visible):has(#workers-panel:not(.is-empty)) { height: max(35vh, 310px); max-height: max(35vh, 310px); }
+  .side-column:has(#queue-panel.is-visible):has(#workers-panel:not(.is-empty)) .panel:not(.is-empty) { flex: 1 1 0; }
+  #queue-panel.is-visible { min-height: 180px; max-height: max(50%, 180px); }
+  .side-column:has(#queue-panel.is-visible) #workers-panel:not(.is-empty) { min-height: 130px; max-height: max(50%, 130px); }
   .side-column .panel.is-empty .task-list { display: none; }
 
   /* No room for two columns: the detail covers the board. */

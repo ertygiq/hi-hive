@@ -713,6 +713,7 @@ function renderPausedBanner() {
 
 const queueFirstSeen = new Map();
 let visibleQueueProject = null;
+let queueRenderedHtml = '';
 function renderQueue() {
   const list = document.getElementById('queue-list');
   const panel = document.getElementById('queue-panel');
@@ -744,25 +745,31 @@ function renderQueue() {
     reason.innerHTML = `${esc(text)}<span class="visually-hidden"> ${esc(parts)}</span>`;
     reason.title = parts;
   }
-  if (!ids.size) { list.innerHTML = ''; return; }
-  renderListPreservingFocus(list, state.queue.map(t => `
-    <div class="task-card ${t.id === selectedTaskId ? 'selected' : ''}"
+  if (!ids.size) {
+    if (!draggedId && queueRenderedHtml) { list.innerHTML = ''; queueRenderedHtml = ''; }
+    return;
+  }
+  const html = state.queue.map(t => `
+    <div class="task-card queue-card"
          data-task-id="${t.id}" tabindex="0"
          onclick="selectTask('${t.id}')" onkeydown="cardKeydown(event, '${t.id}')"
          draggable="true"
          ondragstart="dragStart(event, '${t.id}')"
          ondragover="dragOver(event)"
-         ondrop="drop(event, '${t.id}')">
-      <div class="label">${colorDot(t.color)}${esc(t.label)}</div>
-      <div class="meta">
-        <span class="status-badge status-queued">queued</span>
-        ${harnessBadgeHtml(t.harness)}
-      </div>
+         ondrop="drop(event, '${t.id}')"
+         ondragend="dragEnd()">
+      <div class="label">${colorDot(t.color)}<span class="queue-title" title="${escapeAttribute(t.label)}">${esc(t.label)}</span></div>
+      <div class="meta">${resultHarnessHtml(t.harness)}</div>
       <div class="actions">
         <button class="icon-btn small" onclick="event.stopPropagation();removeTask('${t.id}')" title="Remove" aria-label="Remove">✕</button>
       </div>
     </div>
-  `).join(''));
+  `).join('');
+  if (!draggedId && html !== queueRenderedHtml) {
+    renderListPreservingFocus(list, html);
+    queueRenderedHtml = html;
+  }
+  list.querySelectorAll('.queue-card').forEach(card => card.classList.toggle('selected', card.dataset.taskId === selectedTaskId));
 }
 
 function renderWorkers() {
@@ -774,28 +781,21 @@ function renderWorkers() {
   }
   renderListPreservingFocus(list, state.workers.map(t => {
     const elapsed = t.started_at ? formatElapsed(new Date(t.started_at)) : '';
-    const tail = t.output_tail || '';
-    const lastLines = tail.split('\n').slice(-6).join('\n');
-    const statusClass = t.status === 'reviewing' ? 'status-reviewing' : 'status-running';
-    const statusText = t.status === 'reviewing' ? 'reviewing' : 'running';
+    const reviewing = t.status === 'reviewing'
+      ? '<span class="reply-state is-active"><span class="state-dot" aria-hidden="true"></span>Reviewing</span>' : '';
+    const facts = { ...replyFacts(t), replying: false };
     return `
       <div class="worker-card task-card ${t.id === selectedTaskId ? 'selected' : ''}"
            onclick="selectTask('${t.id}')" onkeydown="cardKeydown(event, '${t.id}')"
            data-task-id="${t.id}" tabindex="0"
-           data-started-at="${t.started_at || ''}">
-        <div class="worker-header">
-          <span class="label">${colorDot(t.color)}${esc(t.label)}</span>
-          <span class="elapsed"><span class="pulse"></span> ${elapsed}</span>
+           data-started-at="${escapeAttribute(t.started_at)}">
+        <div class="label">${colorDot(t.color)}<span class="worker-title" title="${escapeAttribute(t.label)}">${esc(t.label)}</span></div>
+        <div class="worker-row">
+          <div class="meta">${resultHarnessHtml(t.harness)}${costHtml(t)}${reviewing}${replyFactsHtml(facts)}</div>
+          ${elapsed ? `<span class="elapsed" title="Running time"><span class="visually-hidden">Running time </span><span class="elapsed-time">${elapsed}</span></span>` : ''}
         </div>
-        <div class="meta" style="margin-bottom:6px">
-          <span class="status-badge ${statusClass}">${statusText}</span>
-          ${harnessBadgeHtml(t.harness)}
-          ${costHtml(t)}
-          ${replyStateHtml(t)}
-        </div>
-        <div class="output-preview">${esc(lastLines) || '...'}</div>
         <div class="actions">
-          <button class="icon-btn small" onclick="event.stopPropagation();cancelTask('${t.id}')" title="Cancel" aria-label="Cancel">✕</button>
+          <button class="icon-btn small" onclick="event.stopPropagation();cancelTask('${t.id}')" title="Cancel task" aria-label="Cancel task">✕</button>
         </div>
       </div>
     `;
@@ -1530,10 +1530,19 @@ async function removeTask(id) {
 
 async function cancelTask(id) {
   if (!id) return;
+  const opener = document.activeElement;
+  const keyboardWorker = opener?.matches?.(':focus-visible') && opener.closest?.('.worker-card')?.dataset.taskId === id;
+  const oldIndex = keyboardWorker ? state.workers.findIndex(task => task.id === id) : -1;
   if (!await showConfirm('Cancel this task?', { cancelLabel: 'Keep running', confirmLabel: 'Cancel task', danger: true })) return;
   const error = await postJson(`/api/tasks/${id}/cancel`);
   if (error) showMessage(error, 'Task not cancelled');
-  poll();
+  const refreshed = await poll();
+  const active = document.activeElement;
+  const stillInOldCard = active === opener || active === document.body || active?.closest?.('.worker-card')?.dataset.taskId === id;
+  if (!error && refreshed !== false && oldIndex >= 0 && stillInOldCard) {
+    const cards = [...document.getElementById('workers-list').querySelectorAll('.worker-card')];
+    (cards[Math.min(oldIndex, cards.length - 1)] || document.getElementById('workers-heading')).focus();
+  }
 }
 
 async function cancelAllTasks() {
@@ -2696,24 +2705,39 @@ function dragStart(e, id) {
   e.dataTransfer.effectAllowed = 'move';
 }
 
+function clearQueueDragStyles() {
+  document.querySelectorAll('.drag-over, .drag-over-after').forEach(el => el.classList.remove('drag-over', 'drag-over-after'));
+  document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+}
+
 function dragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  const card = e.target.closest('.task-card');
-  if (card) card.classList.add('drag-over');
+  document.querySelectorAll('.drag-over, .drag-over-after').forEach(el => el.classList.remove('drag-over', 'drag-over-after'));
+  const card = e.target.closest('.queue-card');
+  if (!card) return;
+  const from = state.queue.findIndex(task => task.id === draggedId);
+  const to = state.queue.findIndex(task => task.id === card.dataset.taskId);
+  if (from < 0 || to < 0 || from === to) return;
+  card.classList.add(from < to ? 'drag-over-after' : 'drag-over');
+}
+
+function dragEnd() {
+  clearQueueDragStyles();
+  draggedId = null;
+  renderQueue();
 }
 
 function drop(e, targetId) {
   e.preventDefault();
-  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-  document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+  clearQueueDragStyles();
 
-  if (!draggedId || draggedId === targetId) return;
+  if (!draggedId || draggedId === targetId) { dragEnd(); return; }
 
   const queueIds = state.queue.map(t => t.id);
   const fromIdx = queueIds.indexOf(draggedId);
   const toIdx = queueIds.indexOf(targetId);
-  if (fromIdx === -1 || toIdx === -1) return;
+  if (fromIdx === -1 || toIdx === -1) { dragEnd(); return; }
 
   queueIds.splice(fromIdx, 1);
   queueIds.splice(toIdx, 0, draggedId);
@@ -2725,6 +2749,7 @@ function drop(e, targetId) {
   }).then(() => poll());
 
   draggedId = null;
+  renderQueue();
 }
 
 // --- Resize ---
@@ -2907,6 +2932,10 @@ document.addEventListener('keydown', (e) => {
 });
 
 // --- Utility ---
+function escapeAttribute(value) {
+  return esc(value == null ? '' : String(value)).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function esc(str) {
   if (!str) return '';
   const div = document.createElement('div');
@@ -3028,10 +3057,12 @@ function escDecodedEntities(str) {
 }
 
 function formatElapsed(start) {
-  const secs = Math.floor((Date.now() - start.getTime()) / 1000);
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
+  const timestamp = start.getTime();
+  if (!Number.isFinite(timestamp)) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  const pad = value => String(value).padStart(2, '0');
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}:${pad(Math.floor(seconds % 3600 / 60))}:${pad(seconds % 60)}`;
+  return `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`;
 }
 
 function formatDuration(start, end) {
@@ -3049,14 +3080,16 @@ function updateWorkerElapsedTimes() {
   document.querySelectorAll('.worker-card[data-started-at]').forEach(card => {
     const startedAt = card.dataset.startedAt;
     if (!startedAt) return;
-    const elapsedEl = card.querySelector('.elapsed');
+    const elapsedEl = card.querySelector('.elapsed-time');
     if (!elapsedEl) return;
-    elapsedEl.innerHTML = `<span class="pulse"></span> ${formatElapsed(new Date(startedAt))}`;
+    elapsedEl.textContent = formatElapsed(new Date(startedAt));
   });
 }
 
 setInterval(() => {
   if (state.workers.length > 0) updateWorkerElapsedTimes();
+}, 1000);
+setInterval(() => {
   if (selectedTaskId && state.workers.some(w => w.id === selectedTaskId)) refreshDetail();
 }, 2000);
 
