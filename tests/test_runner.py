@@ -562,3 +562,90 @@ def test_version_and_conflicting_flags():
         PiRpcProtocol().validate_args(["--mode=json"])
     with pytest.raises(HiveError):
         ClaudeStreamProtocol().validate_args(["--resume", "other"])
+
+
+def test_pi_compaction_extends_only_first_pending_receipt_with_absolute_cap(monkeypatch, test_dir):
+    now = [100.0]
+    monkeypatch.setattr("hihive.runner.time.monotonic", lambda: now[0])
+    runner = LiveRunner(PiRpcProtocol(), "pi", [], "session", test_dir, receipt_timeout=30)
+    first = runner.submit("first")["id"]
+    second = runner.submit("second")["id"]
+    runner._messages[first]["written"] = True
+    runner._messages[second]["written"] = True
+    runner._receipt_deadlines.update({first: 130.0, second: 135.0, "control": 120.0})
+    runner._handle_line(b'{"type":"compaction_start"}')
+    assert runner.stop_snapshot()["compacting"]
+    assert runner._receipt_deadlines == {first: 430.0, second: 135.0, "control": 120.0}
+    runner._handle_line(b'{"type":"compaction_start"}')
+    now[0] = 200.0
+    runner._handle_line(b'{"type":"compaction_end"}')
+    assert not runner.stop_snapshot()["compacting"]
+    assert runner._receipt_deadlines[first] == 230.0
+    now[0] = 225.0
+    runner._handle_line(b'{"type":"compaction_start"}')
+    assert runner._receipt_deadlines[first] == 430.0
+    now[0] = 425.0
+    runner._handle_line(b'{"type":"compaction_end"}')
+    assert runner._receipt_deadlines[first] == 430.0
+    assert not runner._messages[first]["harness_accepted"]
+    runner.close()
+    assert not runner.stop_snapshot()["compacting"]
+
+
+def test_pi_compaction_response_does_not_extend_later_receipt(test_dir):
+    runner = LiveRunner(PiRpcProtocol(), "pi", [], "session", test_dir)
+    first = runner.submit("first")["id"]
+    second = runner.submit("second")["id"]
+    for message_id in (first, second):
+        runner._messages[message_id]["written"] = True
+        runner._receipt_deadlines[message_id] = 100
+    runner._handle_line(b'{"type":"compaction_start"}')
+    runner._handle_line(json.dumps({"type": "response", "id": first, "success": True}).encode())
+    runner._handle_line(b'{"type":"compaction_start"}')
+    assert runner._receipt_deadlines[second] == 100
+    runner._handle_line(b'{"type":"compaction_end"}')
+    assert runner._receipt_deadlines[second] == 100
+
+
+def test_pi_compaction_waits_past_normal_receipt_timeout(h):
+    h.launch("pi", receipt_timeout=0.2)
+    h.release()
+    h.wait(lambda: h.settled(h.base["id"]))
+    sent = h.runner.submit("COMPACT")
+    h.wait(lambda: h.runner.stop_snapshot()["compacting"])
+    time.sleep(0.25)
+    assert h.runner.state == "active"
+    assert not h.accepted(sent["id"])
+    h.wait(lambda: h.settled(sent["id"]))
+    assert h.accepted(sent["id"])
+    assert not h.runner.stop_snapshot()["compacting"]
+    assert sum(item.get("id") == sent["id"] for item in h.inputs()) == 1
+
+
+@pytest.mark.parametrize("text", ["COMPACT_FAILED", "COMPACT_STUCK"])
+def test_pi_compaction_missing_receipt_times_out_without_resending(h, monkeypatch, text):
+    monkeypatch.setattr("hihive.runner.PI_COMPACTION_ALLOWANCE", 0.25)
+    h.launch("pi", receipt_timeout=0.2)
+    h.release()
+    h.wait(lambda: h.settled(h.base["id"]))
+    sent = h.runner.submit(text)
+    h.wait(lambda: h.runner.state == "exited")
+    assert h.receipt(sent["id"])["status"] == "unknown"
+    assert not h.receipt(sent["id"])["harness_accepted"]
+    assert not h.runner.stop_snapshot()["compacting"]
+    assert any("receipt deadline" in error for error in h.of("error"))
+    assert sum(item.get("id") == sent["id"] for item in h.inputs()) == 1
+
+
+def test_stop_during_pi_compaction_closes_without_resending(h):
+    h.launch("pi", receipt_timeout=0.2)
+    h.release()
+    h.wait(lambda: h.settled(h.base["id"]))
+    sent = h.runner.submit("COMPACT_STUCK")
+    h.wait(lambda: h.runner.stop_snapshot()["compacting"])
+    snapshot = h.runner.stop_snapshot()
+    assert h.runner.stop_if_current(snapshot["stop_token"], "reply", sent["id"])
+    assert not h.runner.stop_snapshot()["compacting"]
+    h.wait(lambda: h.runner.state == "exited")
+    assert h.receipt(sent["id"])["status"] == "unknown"
+    assert sum(item.get("id") == sent["id"] for item in h.inputs()) == 1

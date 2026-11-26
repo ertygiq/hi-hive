@@ -126,6 +126,8 @@ class PiRpcProtocol(LiveProtocol):
                 runner.answer(self.text(message.get("content")))
                 failed = message.get("stopReason") in ("error", "aborted")
                 runner.run_error((message.get("errorMessage") or message.get("stopReason")) if failed else None)
+        elif kind in ("compaction_start", "compaction_end"):
+            runner.pi_compaction(kind == "compaction_start")
         elif kind == "agent_settled":
             runner.probe_pi_settlement()
         elif kind == "extension_ui_request":

@@ -1001,6 +1001,7 @@ class PoolManager:
             "status": task["status"],
             "session_id": task.get("session_id"),
             "runner_state": snapshot["state"],
+            "compacting": snapshot.get("compacting", False),
             "background_activity": snapshot["background_activity"],
             "stop_token": snapshot["stop_token"],
             "activity_kind": {"chat": "reply", "review": "review"}.get(task.get("runner_kind"), "original"),
@@ -1185,7 +1186,7 @@ class PoolManager:
         """Apply one runner event. Returns False when the event changed nothing visible."""
         if kind == "diagnostic":
             return False  # RunnerDiagnostics already wrote this event to the journal.
-        if kind == "background_activity":
+        if kind in ("background_activity", "compaction"):
             return True  # Read live from the runner when serializing; only the version changes.
         if kind == "warning":
             task["messages"].append(tm.message("system", "notice", data, timestamp=iso_micro()))

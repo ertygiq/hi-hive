@@ -686,6 +686,14 @@ test('unread, replying and background states are independent and ordered', () =>
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.reply-state\.is-active \.state-dot\s*\{\s*animation:\s*none/);
 });
 
+test('compaction has a transient visible activity badge', () => {
+  const { context } = client();
+  context.task = { id: 'task', activity_kind: 'original', compacting: true };
+  assert.match(vm.runInContext('replyStateHtml(task)', context), /Compacting/);
+  context.task.compacting = false;
+  assert.doesNotMatch(vm.runInContext('replyStateHtml(task)', context), /Compacting/);
+});
+
 test('result harness names are full, escaped, and use only configured colors or icons', () => {
   const { context } = client();
   context.harnesses = [

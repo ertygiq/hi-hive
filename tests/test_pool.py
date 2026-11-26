@@ -223,6 +223,17 @@ def test_completed_task_with_idle_process_is_deleted_in_one_call(p):
         assert p.task not in json.load(file)["tasks"]
 
 
+def test_compaction_progress_is_transient_in_pool_snapshot(p):
+    runner = p.internal()["runner"]
+    runner._handle_line(b'{"type":"compaction_start"}')
+    p.wait(lambda: p.detail()["compacting"])
+    runner._handle_line(b'{"type":"compaction_end"}')
+    p.wait(lambda: not p.detail()["compacting"])
+    p.settle()
+    with open(p.persist) as file:
+        assert "compacting" not in json.load(file)["tasks"][p.task]
+
+
 def test_deleting_active_task_warns_without_stopping_it(p):
     runner = p.internal()["runner"]
     assert p.pool.remove_task(p.task) == "running_in_subtree"
