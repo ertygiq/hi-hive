@@ -686,6 +686,16 @@ test('unread, replying and background states are independent and ordered', () =>
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.reply-state\.is-active \.state-dot\s*\{\s*animation:\s*none/);
 });
 
+test('attention and activity badges appear in priority order', () => {
+  const { context } = client();
+  context.task = { id: 'task', activity_kind: 'reply', chat_pending: true, compacting: true,
+    background_activity: { task_count: 1 } };
+  vm.runInContext("unreadReplies.ids.add('task')", context);
+  const html = vm.runInContext('replyStateHtml(task)', context);
+  const labels = [...html.matchAll(/<\/span>(New reply|Replying|Compacting|Background work)<\/span>/g)].map(m => m[1]);
+  assert.deepEqual(labels, ['New reply', 'Replying', 'Compacting', 'Background work']);
+});
+
 test('compaction has a transient visible activity badge', () => {
   const { context } = client();
   context.task = { id: 'task', activity_kind: 'original', compacting: true };

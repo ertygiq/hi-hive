@@ -88,9 +88,9 @@ function replyFactsHtml(facts, suffix = '') {
     return `<span class="reply-state is-${kind}" title="${tooltip}"><span class="state-dot" aria-hidden="true"></span>${label}${suffix}</span>`;
   };
   let html = '';
-  if (facts.compacting) html += badge('Compacting', 'The harness is summarizing the conversation to free context', 'active');
   if (facts.unread) html += badge('New reply', 'A reply arrived since you last opened this task', 'unread');
   if (facts.replying) html += badge('Replying', 'The harness is replying to your message', 'active');
+  if (facts.compacting) html += badge('Compacting', 'The harness is summarizing the conversation to free context', 'active');
   if (facts.background) html += badge('Background work', 'Background tasks are still running', 'active');
   return html;
 }
