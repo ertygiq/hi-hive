@@ -14,6 +14,8 @@ In user-facing text, call a configured way to start Claude Code or Pi a **harnes
 
 ## Team coordination
 
+Any change that touches UI or UX must be reviewed and approved by a Product designer before merging.
+
 For changes that affect a user workflow, passing automated tests is not enough.
 The Team lead assigns one appropriate teammate to run the actual software and exercise the changed user flow.
 
