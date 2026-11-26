@@ -167,6 +167,17 @@ for line in sys.stdin.buffer:
         reject = text == "REJECT"
         if text == "NO_ACK":
             pass  # Deliberately omit the transport receipt.
+        elif text.startswith("COMPACT") and kind == "pi":
+            emit({"type": "compaction_start", "reason": "threshold"})
+            if text == "COMPACT_FAILED":
+                emit({"type": "compaction_end", "reason": "threshold", "aborted": True, "errorMessage": "failed"})
+                continue
+            if text == "COMPACT_STUCK":
+                time.sleep(30)
+                continue
+            time.sleep(0.4)
+            emit({"type": "compaction_end", "reason": "threshold"})
+            emit({"type": "response", "id": message_id, "command": "prompt", "success": True})
         elif kind == "pi":
             emit({"type": "response", "id": message_id, "command": "prompt", "success": not reject,
                   "error": "rejected" if reject else None})

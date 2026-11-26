@@ -22,6 +22,7 @@ from .protocol import IDLE_BACKGROUND, find_version
 GUARDIAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guardian.py")
 MAX_MESSAGE = 262_144
 MAX_PENDING = 100
+PI_COMPACTION_ALLOWANCE = 300
 
 
 def clock():
@@ -58,6 +59,9 @@ class LiveRunner:
         self.activity_version = 0
         self._stop_id = str(uuid.uuid4())
         self._receipt_deadlines = {}
+        self._compaction_caps = {}
+        self._compaction_input = None
+        self._compacting = False
         self._lock = threading.Lock()
         self._events = queue.SimpleQueue()
         self._messages = {}
@@ -126,8 +130,31 @@ class LiveRunner:
     def stop_snapshot(self):
         with self._lock:
             return {"state": self._state,
+                    "compacting": self._compacting and self._state not in ("closing", "exited"),
                     "background_activity": self.protocol.background_activity() if self._state not in ("closing", "exited") else dict(IDLE_BACKGROUND),
                     "stop_token": f"{self._stop_id}:{self.activity_version}"}
+
+    def pi_compaction(self, started):
+        # Pi does not identify the prompt in compaction events. Only the oldest
+        # unacknowledged written input can have started preflight compaction.
+        if self._compacting == started:
+            return
+        self._compacting = started
+        if started:
+            candidate = next((m["id"] for m in self._messages.values()
+                              if m.get("written") and m["id"] in self._receipt_deadlines), None)
+            if candidate is not None:
+                deadline = self._receipt_deadlines[candidate]
+                cap = self._compaction_caps.setdefault(candidate, deadline + PI_COMPACTION_ALLOWANCE)
+                self._receipt_deadlines[candidate] = cap
+                self._compaction_input = candidate
+        elif not started:
+            candidate = self._compaction_input
+            if candidate in self._receipt_deadlines:
+                self._receipt_deadlines[candidate] = min(self._compaction_caps[candidate],
+                                                         time.monotonic() + self.receipt_timeout)
+            self._compaction_input = None
+        self._emit("compaction", {"compacting": started})
 
     def stop_if_current(self, token, kind, message_id=None):
         with self._lock:
@@ -562,6 +589,9 @@ class LiveRunner:
             raise HiveError("Protocol record must be a JSON object with a string type")
         if event["type"] == "response":
             self._receipt_deadlines.pop(event.get("id"), None)
+            self._compaction_caps.pop(event.get("id"), None)
+            if self._compaction_input == event.get("id"):
+                self._compaction_input = None
         self._phase = "protocol_event"
         self._last_event = {key: event[key] for key in ("type", "subtype") if key in event}
         with self._lock:

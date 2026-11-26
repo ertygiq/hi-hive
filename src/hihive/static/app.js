@@ -71,6 +71,7 @@ function costHtml(t) {
 function replyFacts(task) {
   return {
     unread: unreadReplies.ids.has(task.id),
+    compacting: Boolean(task.compacting),
     replying: ['reply', 'review'].includes(task.activity_kind) && Boolean(task.chat_pending || task.background_activity?.preparing_reply),
     background: task.background_activity?.task_count > 0,
   };
@@ -89,6 +90,7 @@ function replyFactsHtml(facts, suffix = '') {
   let html = '';
   if (facts.unread) html += badge('New reply', 'A reply arrived since you last opened this task', 'unread');
   if (facts.replying) html += badge('Replying', 'The harness is replying to your message', 'active');
+  if (facts.compacting) html += badge('Compacting', 'The harness is summarizing the conversation to free context', 'active');
   if (facts.background) html += badge('Background work', 'Background tasks are still running', 'active');
   return html;
 }
@@ -1212,7 +1214,7 @@ function renderDetail(task) {
   const replyTitle = count ? `Stop reply and ${count} background task${count === 1 ? '' : 's'}` : 'Stop reply';
   replyBtn.title = replyTitle;
   replyBtn.setAttribute('aria-label', replyTitle);
-  document.getElementById('chat-typing-label').textContent = stopping === 'reply' ? 'Stopping…' : 'Agent is replying';
+  document.getElementById('chat-typing-label').textContent = stopping === 'reply' ? 'Stopping…' : task.compacting ? 'Compacting conversation…' : 'Agent is replying';
   const sendBtn = document.getElementById('chat-send-btn');
   sendBtn.disabled = Boolean(stopping || closing);
   sendBtn.title = stopping || closing ? `Wait until ${stopping === 'background' ? 'background work' : 'the reply'} stops` : '';
