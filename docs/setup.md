@@ -15,6 +15,15 @@ The setup command detects only supported commands already installed in the login
 A configuration with no harnesses is valid, so hi-hive can start before Claude Code or Pi is installed, but it cannot run tasks yet.
 Rerun the installer after installing Claude Code or Pi, or add a harness manually in Settings.
 
+## Imported sessions
+
+Hive can import a local Pi or Claude Code session that belongs to the project working directory.
+Import requires a supported native harness and the full session ID.
+Hive may leave the initial prompt or answer empty when it cannot identify them safely.
+Follow-ups continue the original harness session, so do not use the same session in another process at the same time.
+Retry is unavailable for imported sessions.
+Deleting an imported task from Hive never deletes or changes the original harness session file.
+
 ## Background service
 
 ```bash

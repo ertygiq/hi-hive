@@ -22,6 +22,7 @@ from .diagnostics import redact
 from .harness import adapter_for
 from .protocol import IDLE_BACKGROUND, protocol_for
 from .runner import LiveRunner, valid_message
+from . import session_import
 
 SAVE_INTERVAL = 2  # seconds between auto-saves (debounced)
 SLEEP_PREVENTION_GRACE_SECS = 5 * 60
@@ -241,6 +242,68 @@ class PoolManager:
             self._bump_version()
             return task_id
 
+    def preview_session_import(self, project_id, harness_id, session_id):
+        with self._lock:
+            project = self._project_for_new_task(project_id)
+            harness = self._find_harness(harness_id)
+            self._require_available(harness, project)
+            if not session_import.native_harness(harness):
+                raise HiveError("Session import requires a supported native local harness")
+            cwd = os.path.realpath(os.path.expanduser(project["work_dir"]))
+            if not os.path.isdir(cwd):
+                raise HiveError("Project working directory is unavailable")
+            args = list(harness.get("args") or [])
+            if any(t.get("session_id") == session_id for t in self._tasks.values()):
+                raise HiveError("Session is already imported or owned by a Hive task")
+            if harness["type"] == "pi":
+                result = session_import.read_pi(cwd, args, session_id)
+            else:
+                result = session_import.read_claude(cwd, session_id)
+            executable = os.path.realpath(shutil.which(harness["command"]))
+            executable_stat = os.stat(executable)
+            result["source"].update(cwd=cwd, harness_id=harness_id, executable=executable,
+                                    executable_device=executable_stat.st_dev, executable_inode=executable_stat.st_ino,
+                                    command=harness["command"], args=args, kind=harness["type"])
+            return result
+
+    def import_session(self, project_id, harness_id, session_id, label=None):
+        with self._lock:
+            project_id = self._project_for_new_task(project_id)["id"]
+            preview = self.preview_session_import(project_id, harness_id, session_id)
+            source = preview["source"]
+            created = now()
+            task_id = str(uuid.uuid4())
+            messages = [tm.message("user", "initial", preview["prompt"], timestamp=iso_micro(created))]
+            if preview["answer"]:
+                messages.append(tm.message("assistant", "initial", preview["answer"], timestamp=iso_micro(created)))
+            task = self._build_task(task_id, messages=messages, label=_clean_label(label) or _derive_label(preview["prompt"]) or "Imported session",
+                                    created_at=created, completed_at=created, status="completed",
+                                    harness=harness_id, project_id=project_id, session_id=session_id)
+            task["imported_source"] = source
+            self._tasks[task_id] = task
+            self._task_order.append(task_id)
+            self._bump_version()
+            return task_id
+
+    def _verify_import_source(self, task):
+        source = task["imported_source"]
+        harness = self._task_harness(task)
+        cwd = os.path.realpath(os.path.expanduser(self._projects[task["project_id"]]["work_dir"]))
+        args = list(harness.get("args") or [])
+        if not session_import.native_harness(harness):
+            raise HiveError("Session import requires a supported native local harness")
+        if harness["type"] == "pi":
+            current = session_import.read_pi(cwd, args, task["session_id"])["source"]
+        else:
+            current = session_import.read_claude(cwd, task["session_id"])["source"]
+        executable = os.path.realpath(shutil.which(harness["command"]))
+        executable_stat = os.stat(executable)
+        current.update(cwd=cwd, harness_id=_task_harness_id(task), command=harness["command"], args=args,
+                       kind=harness["type"], executable=executable, executable_device=executable_stat.st_dev,
+                       executable_inode=executable_stat.st_ino)
+        if current != source:
+            raise HiveError("Imported session source or harness changed; cannot resume safely")
+
     def set_task_label(self, task_id, label):
         cleaned = _clean_label(label)
         if not cleaned:
@@ -366,7 +429,7 @@ class PoolManager:
         with self._lock:
             self._poll_live_runners()
             task = self._tasks.get(task_id)
-            if not task or task["status"] not in FINISHED:
+            if not task or task["status"] not in FINISHED or task.get("imported_source"):
                 return False
             if any(t.get("parent_task_id") == task_id for t in self._tasks.values()):
                 return "has_children"
@@ -475,7 +538,7 @@ class PoolManager:
                 "sleep_prevention_requirement": self._sleep_prevention_requirement(),
                 "show_task_cost": self._show_task_cost,
                 "projects": [self._project_summary(p) for p in self._projects.values()],
-                "harnesses": self._harnesses,
+                "harnesses": [{**h, "session_import_supported": session_import.native_harness(h)} for h in self._harnesses],
                 "harness_types": HARNESS_TYPES,
                 "review_sections": list(self._review_sections.values()),
                 "templates": list(self._templates.values()),
@@ -920,6 +983,7 @@ class PoolManager:
                 template_id=stored.get("template_id"), parent_task_id=stored.get("parent_task_id"),
                 created_by_task_id=stored.get("created_by_task_id"),
                 harness=stored.get("harness"), project_id=stored["project_id"])
+            task["imported_source"] = stored.get("imported_source")
             task["result_placement"] = stored.get("result_placement")
             task["done"] = bool(stored.get("done"))
             task["message_receipts"] = stored.get("message_receipts") or []
@@ -1019,6 +1083,7 @@ class PoolManager:
             "template_id": task.get("template_id"),
             "parent_task_id": task.get("parent_task_id"),
             "created_by_task_id": task.get("created_by_task_id"),
+            "imported_session": bool(task.get("imported_source")),
             "harness": _task_harness_id(task),
             # Derived from the harness transcript, held in memory only.
             "cost": task.get("cost"),
@@ -1067,7 +1132,11 @@ class PoolManager:
     def _spawn_task(self, task):
         try:
             parent_id = task.get("parent_task_id")
+            if parent_id and self._tasks[parent_id].get("imported_source"):
+                self._verify_import_source(self._tasks[parent_id])
             parent = self._tasks[parent_id]["session_id"] if parent_id else None
+            if parent_id and (self._tasks[parent_id].get("imported_source") or {}).get("kind") == "pi":
+                parent = self._tasks[parent_id]["imported_source"]["path"]
             first = tm.initial(task)
             self._start_live_runner(task, first["content"], kind="initial", parent=parent, message_id=first["id"])
         except Exception as error:
@@ -1085,10 +1154,16 @@ class PoolManager:
             if not valid_message(message):
                 raise HiveError("Message must contain text and be at most 256 KiB")
             harness = self._task_harness(task)
+            if task.get("imported_source"):
+                self._verify_import_source(task)
             # Every start of an agent passes here (first run, retry, continue, follow-up, review),
             # so this one check keeps a project on its own harnesses.
             self._require_available(harness, self._projects[task["project_id"]])
-            runner = LiveRunner(protocol=protocol_for(harness["type"]), command=harness["command"],
+            command = task["imported_source"]["executable"] if task.get("imported_source") else harness["command"]
+            protocol = protocol_for(harness["type"])
+            if task.get("imported_source") and harness["type"] == "pi":
+                protocol.resume_path = task["imported_source"]["path"]
+            runner = LiveRunner(protocol=protocol, command=command,
                                 args=self._effective_agent_args(task), session_id=task["session_id"],
                                 chdir=self._resolve_work_dir(task), env=child_process_env(), resume=resume,
                                 parent=parent, task_id=task["id"], harness=harness["type"],
@@ -1418,6 +1493,8 @@ class PoolManager:
     def _task_session_file(self, task):
         if not str(task.get("session_id") or "").strip():
             return None
+        if task.get("imported_source"):
+            return task["imported_source"].get("path")
         if not task.get("session_file"):
             harness = self._task_harness(task)
             task["session_file"] = adapter_for(harness["type"]).session_file(
@@ -1564,6 +1641,7 @@ def _persist_task(task):
         "template_id": task.get("template_id"),
         "parent_task_id": task.get("parent_task_id"),
         "created_by_task_id": task.get("created_by_task_id"),
+        "imported_source": task.get("imported_source"),
         "harness": task.get("harness"),
         "project_id": task["project_id"],
         "done": bool(task.get("done")),

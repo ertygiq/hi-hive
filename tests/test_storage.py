@@ -109,6 +109,43 @@ def test_omitted_templates_are_deleted(test_dir):
 # --- Task provenance and labels ---
 
 
+def test_imported_session_survives_task_deletion(test_dir, monkeypatch):
+    from hihive import session_import
+    pool = make_pool(test_dir)
+    project = first_project(pool)
+    monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+    monkeypatch.setattr("hihive.pool.shutil.which", lambda command: __import__("sys").executable)
+    source = os.path.join(test_dir, "source.jsonl")
+    original = b'original session contents\\n'
+    with open(source, "wb") as file:
+        file.write(original)
+    stat = os.stat(source)
+    monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+        "session_id": sid, "prompt": "question", "answer": "answer", "message_count": None,
+        "last_activity": None, "source": {"path": source, "device": stat.st_dev, "inode": stat.st_ino}})
+    existing = pool.add_task("already running")
+    pool._tasks[existing]["session_id"] = "session-id"
+    with pytest.raises(HiveError, match="already"):
+        pool.preview_session_import(project, "pi", "session-id")
+    pool.remove_task(existing)
+    task_id = pool.import_session(project, "pi", "session-id")
+    assert pool.task_detail(task_id)["imported_session"]
+    pool._verify_import_source(pool._tasks[task_id])
+    pool._harnesses[0]["args"] = ["--changed"]
+    with pytest.raises(HiveError, match="changed"):
+        pool._verify_import_source(pool._tasks[task_id])
+    pool._harnesses[0]["args"] = []
+    assert pool.retry_task(task_id) is False
+    with pytest.raises(HiveError, match="already"):
+        pool.import_session(project, "pi", "session-id")
+    pool._save_state()
+    restored = make_pool(test_dir)
+    assert restored.task_detail(task_id)["imported_session"]
+    assert restored.remove_task(task_id) is True
+    with open(source, "rb") as file:
+        assert file.read() == original
+
+
 def test_created_by_task_id_persists_is_exposed_and_does_not_cascade(test_dir):
     pool = make_pool(test_dir)
     creator = pool.add_task("creator")

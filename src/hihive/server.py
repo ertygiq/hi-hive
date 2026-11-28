@@ -320,6 +320,24 @@ def create_app(pool, token, manage_pool=True):
             return error(404, "Project not found")
         return JSONResponse({"ok": True})
 
+    def session_preview(request, body):
+        try:
+            result = pool.preview_session_import(body.get("project_id"), body.get("harness_id"), body.get("session_id"))
+        except HiveError as failure:
+            message = str(failure)
+            status = 409 if "ambiguous" in message or "changed" in message else 404 if "not found" in message else 400
+            return error(status, message)
+        return JSONResponse({key: value for key, value in result.items() if key != "source"})
+
+    def session_import_task(request, body):
+        try:
+            task_id = pool.import_session(body.get("project_id"), body.get("harness_id"), body.get("session_id"), body.get("label"))
+        except HiveError as failure:
+            message = str(failure)
+            status = 409 if any(word in message for word in ("ambiguous", "changed", "already imported")) else 404 if "not found" in message else 400
+            return error(status, message)
+        return JSONResponse({"id": task_id}, status_code=201)
+
     def add_task(request, body):
         project = project_for(request, body.get("project_id"))
         task_id = pool.add_task(prompt=body.get("prompt"), label=body.get("label"), harness=body.get("harness"),
@@ -491,6 +509,8 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/projects", run(create_project), methods=["POST"]),
         Route("/api/backup", run(backup), methods=["POST"]),
         Route("/api/projects/{id}", run(delete_project), methods=["DELETE"]),
+        Route("/api/session-import/preview", run(session_preview), methods=["POST"]),
+        Route("/api/session-import", run(session_import_task), methods=["POST"]),
         Route("/api/tasks", run(add_task, agents=True), methods=["POST"]),
         Route("/api/tasks/batch", run(add_batch, agents=True), methods=["POST"]),
         Route("/api/tasks/cancel_all", run(cancel_all, agents=True), methods=["POST"]),
