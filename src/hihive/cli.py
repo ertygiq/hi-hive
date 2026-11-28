@@ -47,6 +47,8 @@ Commands:
   start -p "prompt" [--label LABEL] [--harness NAME]
                                       Start a one-off task with a raw prompt (no template).
                                       Label defaults to the first 60 chars of the prompt.
+  import <session-id> --harness NAME [--label LABEL]
+                              Import an existing native harness session into Results.
   queue                       List queued and running tasks
   results [--limit N] [--all] [--no-pager]
                               List completed tasks (forks indented under their parent).
@@ -127,6 +129,7 @@ class HiHiveCLI:
             "templates": lambda: self.cmd_templates(),
             "harnesses": lambda: self.cmd_harnesses(),
             "start": lambda: self.cmd_start(argv),
+            "import": lambda: self.cmd_import(argv),
             "queue": lambda: self.cmd_queue(),
             "results": lambda: self.cmd_results(argv),
             "show": lambda: self.cmd_show(argv),
@@ -214,6 +217,20 @@ class HiHiveCLI:
         if harness:
             body["harness"] = harness
         puts(self.post("/api/tasks/batch", body)["ids"][0])
+
+    def cmd_import(self, args):
+        if self.agent_token:
+            self.die('Session import is available only to the user, not agent tokens.')
+        label = self.take_named_arg(args, '--label')
+        harness_name = self.take_named_arg(args, '--harness')
+        if len(args) != 1 or not harness_name:
+            self.die('Usage: hihive import <session-id> --harness NAME [--label LABEL]')
+        project = self.project()
+        harness = self.resolve_harness_name(harness_name, project['harnesses'])
+        result = self.post('/api/session-import', {'project_id': project['id'], 'harness_id': harness,
+                                                    'session_id': args[0], 'label': label})
+        puts(result['id'])
+        sys.stderr.write('Close this session in other terminals before sending a follow-up.\n')
 
     def cmd_queue(self):
         state = self.project_state()
