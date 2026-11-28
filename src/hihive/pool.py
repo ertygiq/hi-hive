@@ -337,15 +337,15 @@ class PoolManager:
             _, current = session_import._read(source["path"])
         except HiveError:
             if snapshot["interrupted"]:
-                raise HiveError("This session changed outside Hive, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.") from None
+                raise HiveError("This session changed while Hive was interrupted, so Hive will not continue it. Check the session, then delete this task and import it again.") from None
             raise
         current.update(executable)
         current.update(cwd=cwd, harness_id=snapshot["harness_id"], command=harness["command"], args=args,
                        kind=harness["type"])
         if current != source:
             if snapshot["interrupted"]:
-                raise HiveError("This session changed outside Hive, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.")
-            raise HiveError("This session changed outside Hive, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.")
+                raise HiveError("This session changed while Hive was interrupted, so Hive will not continue it. Check the session, then delete this task and import it again.")
+            raise HiveError("This session or its harness changed since Hive last checked it, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.")
 
     def import_confirmation_required(self, task_id):
         with self._lock:

@@ -137,15 +137,18 @@ def test_imported_session_survives_task_deletion(test_dir, monkeypatch, mock_nat
     pool._verify_import_source(pool._tasks[task_id])
     with open(source, "a") as file:
         file.write('{"type":"custom"}\n')
-    with pytest.raises(HiveError, match="changed outside Hive"):
+    with pytest.raises(HiveError, match="changed while Hive was interrupted"):
         pool._verify_import_source(pool._tasks[task_id])
     with open(source, "wb") as file:
         file.write(original)
     # Restore metadata only to continue exercising harness-configuration checks.
     pool._tasks[task_id]["imported_source"].update(session_import._read(source)[1])
+    pool._tasks[task_id]["import_interrupted"] = False
     pool._harnesses[0]["args"] = ["--changed"]
-    with pytest.raises(HiveError, match="changed"):
+    with pytest.raises(HiveError) as error:
         pool._verify_import_source(pool._tasks[task_id])
+    assert str(error.value) == ("This session or its harness changed since Hive last checked it, so Hive will not continue it. "
+                                "To keep working on it in Hive, delete this task and import the session again.")
     pool._harnesses[0]["args"] = []
     assert pool.retry_task(task_id) is False
     with pytest.raises(HiveError, match="already belongs"):
@@ -188,8 +191,8 @@ def test_interrupted_import_quarantines_only_changed_source(test_dir, monkeypatc
     if changed:
         with pytest.raises(HiveError) as error:
             pool._verify_import_source(task)
-        assert str(error.value) == ("This session changed outside Hive, so Hive will not continue it. "
-                                    "To keep working on it in Hive, delete this task and import the session again.")
+        assert str(error.value) == ("This session changed while Hive was interrupted, so Hive will not continue it. "
+                                    "Check the session, then delete this task and import it again.")
     else:
         pool._verify_import_source(task)
 

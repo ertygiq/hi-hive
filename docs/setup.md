@@ -22,6 +22,7 @@ Import requires a supported native harness and the full session ID.
 Hive may leave the initial prompt or answer empty when it cannot identify them safely.
 Follow-ups continue the original harness session, so do not use the same session in another process at the same time.
 Hive checks file ownership and permissions, but does not verify access control lists or protect against another process running as the same user.
+If the harness executable changes, delete the Hive task and import the session again before continuing.
 Retry is unavailable for imported sessions.
 Deleting an imported task from Hive never deletes or changes the original harness session file.
 
