@@ -940,6 +940,16 @@ button.icon-btn.chat-stop-btn { width: 20px; height: 20px; min-height: 20px; pad
   justify-content: flex-end;
   gap: 8px;
 }
+.import-footer { flex-wrap: wrap; }
+.import-footer-spacer { flex: 1; }
+.import-status { font-size: 12px; overflow-wrap: anywhere; }
+.import-status.is-error { color: var(--error); }
+.import-preview-label { margin-top: 10px; color: var(--text-muted); font-size: 11px; }
+.import-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+#import-session-id { font-family: ui-monospace, monospace; }
+@media (max-width: 600px) {
+  .import-mode-toggle { flex-basis: 100%; text-align: left; }
+}
 
 /* Form elements */
 label {

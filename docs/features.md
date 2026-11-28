@@ -71,6 +71,18 @@ Agent output is untrusted, for example when the agent reads web pages, so keep `
 Tags inside code blocks and inline code stay as text.
 A command that runs longer than 60 seconds is left running and counts as started.
 
+## Import a session
+
+In Add task, choose **Import a session**, select a native Pi or Claude Code harness, and enter the exact session ID.
+Review the preview and label before importing.
+The imported task appears in Results, and you can send follow-ups or fork it.
+Close the session in other terminals before sending a follow-up.
+Deleting the imported Hive task never deletes the original harness session.
+
+From the CLI, run `hihive import SESSION_ID --harness NAME` in the selected project.
+For the first follow-up or fork, close the session in other terminals and add `--confirm-session-ownership` to confirm that Hive will use it from now on.
+Session import is available only to the user, not to agent tokens.
+
 ## Task cost
 
 Settings has a "Show task cost" toggle, off by default.

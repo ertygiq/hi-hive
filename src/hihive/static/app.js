@@ -597,7 +597,7 @@ function openResultCardMenu(event, id, hasChildren, last = false) {
     [task.done ? 'Mark not done' : 'Mark done', () => toggleDone(id)],
     ['Fork…', () => openForkTask(id)],
     ...(['failed', 'cancelled'].includes(task.status) ? [['Continue', () => continueTask(id)]] : []),
-    ...(hasChildren ? [] : [['Retry', () => retryTask(id)]]),
+    ...(hasChildren || task.imported_session ? [] : [['Retry', () => retryTask(id)]]),
     ['Delete', () => deleteResultTask(id)]
   ];
   for (const [label, action] of items) {
@@ -945,7 +945,7 @@ function descendantReplyFacts(id, childrenByParent) {
 function renderResultCard(t, depth, childrenByParent) {
   const status = t.status === 'failed' ? ['✗', 'Failed'] : t.status === 'cancelled' ? ['⊘', 'Cancelled'] : null;
   const statusIcon = status ? `<span class="result-status status-${t.status}" title="${status[1]}" aria-label="${status[1]}">${status[0]}</span>` : '';
-  const duration = t.started_at && t.completed_at
+  const duration = !t.imported_session && t.started_at && t.completed_at
     ? formatDuration(new Date(t.started_at), new Date(t.completed_at))
     : '';
   const summary = (t.status === 'failed' || t.status === 'cancelled') && t.summary
@@ -958,7 +958,7 @@ function renderResultCard(t, depth, childrenByParent) {
   const hasChildren = children.length > 0;
   const isCollapsed = hasChildren && collapsedForks.has(t.id);
   const forkPrefix = depth > 0 ? '<span class="fork-tree-prefix">└─</span>' : '';
-  const actionCount = 3 + (hasChildren ? 0 : 1) + (['failed', 'cancelled'].includes(t.status) ? 1 : 0);
+  const actionCount = 3 + (hasChildren || t.imported_session ? 0 : 1) + (['failed', 'cancelled'].includes(t.status) ? 1 : 0);
   const indentStyle = `style="--fork-indent:${depth * 16}px;--action-space:${actionCount * 20 + (actionCount - 1) * 2 + 4}px"`;
   const forkAction = isCollapsed ? 'Show forks' : 'Hide forks';
   const forksLabel = hasChildren ? `<button class="fork-count" aria-expanded="${!isCollapsed}" title="${forkAction}" aria-label="${forkAction}" onclick="event.stopPropagation();toggleForkCollapse('${t.id}')">⑂ ${children.length} <span class="fork-chevron" aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span></button>` : '';
@@ -988,7 +988,7 @@ function renderResultCard(t, depth, childrenByParent) {
         <button class="icon-btn small card-action done-btn${t.done ? ' is-done' : ''}" onclick="event.stopPropagation();toggleDone('${t.id}')" title="${doneTitle}" aria-label="${doneTitle}">${doneIcon}</button>
         <button class="icon-btn small card-action" onclick="event.stopPropagation();openForkTask('${t.id}')" title="Fork" aria-label="Fork">⑂</button>
         ${['failed', 'cancelled'].includes(t.status) ? `<button class="icon-btn small card-action" onclick="event.stopPropagation();continueTask('${t.id}')" title="Continue" aria-label="Continue">▶︎</button>` : ''}
-        ${hasChildren ? '' : `<button class="icon-btn small card-action" onclick="event.stopPropagation();retryTask('${t.id}')" title="Retry" aria-label="Retry">↻︎</button>`}
+        ${hasChildren || t.imported_session ? '' : `<button class="icon-btn small card-action" onclick="event.stopPropagation();retryTask('${t.id}')" title="Retry" aria-label="Retry">↻︎</button>`}
         <button class="icon-btn small card-action" onclick="event.stopPropagation();deleteResultTask('${t.id}')" title="Delete" aria-label="Delete">✕</button>
         <button class="icon-btn small card-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="result-menu-${t.id}" title="Actions" aria-label="Actions" onclick="openResultCardMenu(event, '${t.id}', ${hasChildren})" onkeydown="resultMenuTriggerKey(event, '${t.id}', ${hasChildren})">⋯</button>
       </div>
@@ -1274,7 +1274,11 @@ function renderDetail(task) {
         </div>`;
         html += `<hr class="section-divider">`;
       }
-      if (!messages.some(m => m.role === 'assistant')) html += '<pre>No output yet...</pre>';
+      if (task.imported_session && !messages.some(m => m.role === 'assistant' && m.kind === 'initial' && (m.content || '').trim())) {
+        html += '<pre>(No readable answer)</pre>';
+      } else if (!task.imported_session && !messages.some(m => m.role === 'assistant')) {
+        html += '<pre>No output yet...</pre>';
+      }
       if (messages.length > 0) {
         html += messages.map(m => {
           const isPending = m.delivery === 'pending';
@@ -1300,9 +1304,11 @@ function renderDetail(task) {
       break;
     }
 
-    case 'prompt':
-      body.innerHTML = `<div class="prompt-text">${esc((task.messages || []).find(m => m.role === 'user' && m.kind === 'initial')?.content || '')}</div>`;
+    case 'prompt': {
+      const prompt = (task.messages || []).find(m => m.role === 'user' && m.kind === 'initial')?.content || '';
+      body.innerHTML = `<div class="prompt-text">${esc(task.imported_session && !prompt.trim() ? '(No readable prompt)' : prompt)}</div>`;
       break;
+    }
 
   }
 
@@ -1562,6 +1568,7 @@ async function cancelAllTasks() {
 let retryTaskId = null;
 
 async function retryTask(id) {
+  if (findTask(id)?.imported_session) return;
   if (countDescendants(id) > 0) {
     showMessage('A task with forks cannot be retried. Delete its forks first.', 'Cannot retry');
     return;
@@ -1588,9 +1595,20 @@ async function submitRetry() {
 
 async function deleteResultTask(id) {
   const childCount = countDescendants(id);
-  const message = childCount > 0
-    ? `This task has ${childCount} fork${childCount === 1 ? '' : 's'}. Deleting will delete the entire subtree. Continue?`
+  let message = childCount > 0
+    ? `This task has ${childCount} fork${childCount === 1 ? '' : 's'}. Deleting will delete the entire subtree.`
     : 'Delete this task result?';
+  const tasks = [...(state.queue || []), ...(state.workers || []), ...(state.results || [])];
+  const subtree = new Set([id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const task of tasks) {
+      if (subtree.has(task.parent_task_id) && !subtree.has(task.id)) { subtree.add(task.id); changed = true; }
+    }
+  }
+  if (tasks.some(task => subtree.has(task.id) && task.imported_session)) message += ' The original harness session stays.';
+  if (childCount > 0) message += ' Continue?';
   if (!await showConfirm(message, { cancelLabel: 'Keep', confirmLabel: 'Delete', danger: true })) return;
   await removeTask(id);
 }
@@ -1674,6 +1692,25 @@ async function stopWork(kind) {
 }
 
 let uncertainChatRequest = null;
+let importOwnershipPrompting = false;
+
+function markImportedOwnershipConfirmed(taskId) {
+  for (const task of [displayedConversation, ...boardTasks(state), ...boardTasks(fullState)]) {
+    if (task?.id === taskId) task.imported_session_confirmed = true;
+  }
+}
+
+async function confirmImportedOwnership(task, action) {
+  if (!task?.imported_session || task.imported_session_confirmed) return true;
+  if (importOwnershipPrompting) return false;
+  importOwnershipPrompting = true;
+  try {
+    return await showConfirm('Hive will keep using this session from now on. Close it in other terminals, and do not open it there while this task is in Hive.',
+      { title: 'Let Hive use this session', cancelLabel: 'Cancel', confirmLabel: action });
+  } finally {
+    importOwnershipPrompting = false;
+  }
+}
 
 function resizeChatInput(input = document.getElementById('chat-input')) {
   if (!input) return;
@@ -1696,8 +1733,16 @@ async function sendChat() {
   if (!message || !selectedTaskId || stoppingWork.has(selectedTaskId) || displayedConversation?.runner_state === 'closing') return;
 
   const taskId = selectedTaskId;
+  const task = displayedConversation?.id === taskId ? displayedConversation : findTask(taskId);
+  const needsConfirmation = Boolean(task?.imported_session && !task.imported_session_confirmed);
+  if (needsConfirmation && !await confirmImportedOwnership(task, 'Send')) {
+    if (selectedTaskId === taskId) input.focus();
+    return;
+  }
+  if (selectedTaskId !== taskId || input.value.trim() !== message || stoppingWork.has(taskId)) return;
   const request = uncertainChatRequest?.taskId === taskId && uncertainChatRequest.message === message
     ? uncertainChatRequest : { taskId, message, message_id: crypto.randomUUID() };
+  if (needsConfirmation) request.imported_session_confirmed = true;
   input.value = '';
   resizeChatInput(input);
   jumpToLatest();
@@ -1723,6 +1768,7 @@ async function sendChat() {
     resizeChatInput(input);
     return;
   }
+  if (needsConfirmation) markImportedOwnershipConfirmed(taskId);
   resizeChatInput(input);
   poll();
   setTimeout(poll, 1000);
@@ -1731,6 +1777,168 @@ async function sendChat() {
 }
 
 // --- Add Task ---
+let importMode = false;
+let importEpoch = 0;
+let importTimer = null;
+let importMatch = null;
+let importBusy = false;
+
+function setImportMode(enabled) {
+  importMode = enabled;
+  invalidateImportPreview();
+  document.getElementById('add-task-title').textContent = enabled ? 'Import a session' : 'Add task';
+  document.getElementById('add-new-fields').style.display = enabled ? 'none' : '';
+  document.getElementById('add-import-fields').style.display = enabled ? '' : 'none';
+  document.getElementById('add-task-submit').style.display = enabled ? 'none' : '';
+  document.getElementById('import-submit').style.display = enabled ? '' : 'none';
+  document.getElementById('import-mode-toggle').textContent = enabled ? 'Add a new task instead' : 'Import a session';
+}
+
+function toggleImportMode() {
+  if (importBusy) return;
+  setImportMode(!importMode);
+  document.getElementById(importMode ? 'import-session-id' : 'add-label').focus();
+}
+
+function invalidateImportPreview() {
+  importEpoch++;
+  clearTimeout(importTimer);
+  importMatch = null;
+  document.getElementById('import-preview').style.display = 'none';
+  document.getElementById('import-submit').disabled = true;
+  const status = document.getElementById('import-status');
+  status.textContent = '';
+  status.classList.remove('is-error');
+  document.getElementById('import-session-id').removeAttribute('aria-invalid');
+}
+
+function scheduleImportPreview() {
+  invalidateImportPreview();
+  if (document.getElementById('import-session-id').value.trim()) {
+    importTimer = setTimeout(lookupImportSession, 500);
+  }
+}
+
+async function lookupImportSession() {
+  invalidateImportPreview();
+  const input = document.getElementById('import-session-id');
+  const sessionId = input.value.trim();
+  const harnessId = document.getElementById('import-harness').value;
+  const projectId = currentProject()?.id;
+  if (!sessionId) return;
+  const status = document.getElementById('import-status');
+  if (/[/\\\\]/.test(sessionId)) {
+    input.setAttribute('aria-invalid', 'true');
+    status.textContent = 'Enter the exact session ID, not a file path.';
+    status.classList.add('is-error');
+    return;
+  }
+  const harness = (configCache?.harnesses || []).find(h => h.id === harnessId);
+  if (!harness?.session_import_supported) {
+    status.textContent = 'This harness does not support native session import.';
+    status.classList.add('is-error');
+    return;
+  }
+  const epoch = importEpoch;
+  status.textContent = 'Searching…';
+  try {
+    const res = await fetch('/api/session-import/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, harness_id: harnessId, session_id: sessionId })
+    });
+    const data = await res.json();
+    if (epoch !== importEpoch || !importMode || currentProject()?.id !== projectId) return;
+    if (!res.ok) {
+      input.setAttribute('aria-invalid', 'true');
+      status.textContent = data.error || 'Could not find this session.';
+      status.classList.add('is-error');
+      return;
+    }
+    if (typeof data.preview_token !== 'string' || !data.preview_token) {
+      status.textContent = 'Could not verify the session. Search again.';
+      status.classList.add('is-error');
+      return;
+    }
+    importMatch = { projectId, harnessId, sessionId, previewToken: data.preview_token };
+    const prompt = typeof data.prompt === 'string' ? data.prompt : '';
+    const answer = typeof data.answer === 'string' ? data.answer : '';
+    const compactPrompt = prompt.trim().replace(/\s+/g, ' ');
+    const truncated = compactPrompt.slice(0, 60);
+    const lastSpace = truncated.lastIndexOf(' ');
+    document.getElementById('import-label').value = (compactPrompt.length > 60 && compactPrompt[60] !== ' ' && lastSpace > 0
+      ? truncated.slice(0, lastSpace) : truncated.trimEnd()) || `Imported session ${sessionId.slice(0, 8)}`;
+    const excerpt = text => text.replace(/\n\s*\n+/g, '\n').trim();
+    document.getElementById('import-prompt').textContent = excerpt(prompt) || '(No readable prompt)';
+    document.getElementById('import-answer').textContent = excerpt(answer) || '(No readable answer)';
+    const metadata = [];
+    if (Number.isSafeInteger(data.message_count) && data.message_count >= 0) metadata.push(`${data.message_count} messages`);
+    if (data.last_activity) metadata.push(`Last active ${data.last_activity}`);
+    document.getElementById('import-metadata').textContent = metadata.join(' · ');
+    document.getElementById('import-preview').style.display = '';
+    document.getElementById('import-submit').disabled = false;
+    status.textContent = 'Session found.';
+  } catch (_) {
+    if (epoch === importEpoch && importMode) {
+      status.textContent = 'Could not search for the session. Try again.';
+      status.classList.add('is-error');
+    }
+  }
+}
+
+async function submitImportSession() {
+  if (!importMatch || importBusy) return;
+  if (currentProject()?.id !== importMatch.projectId) {
+    invalidateImportPreview();
+    const status = document.getElementById('import-status');
+    status.textContent = 'Project changed. Search for the session again.';
+    status.classList.add('is-error');
+    return;
+  }
+  const match = importMatch;
+  const epoch = importEpoch;
+  importBusy = true;
+  const button = document.getElementById('import-submit');
+  const fields = ['import-harness', 'import-session-id', 'import-label', 'import-mode-toggle', 'add-task-cancel', 'add-task-close']
+    .map(id => document.getElementById(id));
+  fields.forEach(field => { field.disabled = true; });
+  button.disabled = true;
+  document.getElementById('import-status').classList.remove('is-error');
+  document.getElementById('import-status').textContent = 'Importing…';
+  try {
+    const res = await fetch('/api/session-import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: match.projectId, harness_id: match.harnessId,
+        session_id: match.sessionId, preview_token: match.previewToken,
+        label: document.getElementById('import-label').value.trim() || null })
+    });
+    const data = await res.json();
+    if (epoch !== importEpoch || !importMode) return;
+    if (!res.ok) {
+      if (res.status === 409) invalidateImportPreview();
+      const status = document.getElementById('import-status');
+      status.textContent = data.error || 'Could not import the session.';
+      status.classList.add('is-error');
+      return;
+    }
+    closeModal('add-task-modal');
+    await poll();
+    if (currentProject()?.id === match.projectId) {
+      await selectTask(data.id);
+      document.getElementById('detail-title').focus();
+    }
+  } catch (_) {
+    if (epoch === importEpoch && importMode) {
+      const status = document.getElementById('import-status');
+      status.textContent = 'Connection lost. The session may already be imported. Check Results before trying again.';
+      status.classList.add('is-error');
+    }
+  } finally {
+    importBusy = false;
+    fields.forEach(field => { field.disabled = false; });
+    if (epoch === importEpoch && importMatch) button.disabled = false;
+  }
+}
+
 async function openAddTask() {
   await loadConfig();
   if ((configCache?.harnesses || []).length === 0) {
@@ -1740,6 +1948,15 @@ async function openAddTask() {
   document.getElementById('add-label').value = '';
   document.getElementById('add-prompt').value = '';
   populateHarnessSelect(document.getElementById('add-harness'));
+  const importHarness = document.getElementById('import-harness');
+  const project = currentProject();
+  const available = new Set(project?.available_harnesses || []);
+  const importable = (configCache?.harnesses || []).filter(h => available.has(h.id) && h.session_import_supported);
+  importHarness.innerHTML = importable.map(h => `<option value="${esc(h.id)}" ${h.id === project?.default_harness ? 'selected' : ''}>${harnessOptionLabel(h)}</option>`).join('');
+  document.getElementById('import-mode-toggle').style.display = importable.length ? '' : 'none';
+  document.getElementById('import-session-id').value = '';
+  document.getElementById('import-label').value = '';
+  setImportMode(false);
   openModal('add-task-modal');
   document.getElementById('add-prompt').focus();
 }
@@ -1778,8 +1995,16 @@ async function submitForkTask() {
   const prompt = promptEl.value.trim();
   if (!prompt) return flagInvalid(promptEl, 'Enter a prompt for the fork.');
   const label = document.getElementById('fork-label').value.trim();
-  const error = await postJson(`/api/tasks/${forkParentId}/fork`, { prompt, label: label || null });
+  const parentId = forkParentId;
+  const parent = findTask(parentId);
+  const needsConfirmation = Boolean(parent?.imported_session && !parent.imported_session_confirmed);
+  if (needsConfirmation && !await confirmImportedOwnership(parent, 'Fork')) return;
+  if (forkParentId !== parentId || promptEl.value.trim() !== prompt) return;
+  const body = { prompt, label: label || null };
+  if (needsConfirmation) body.imported_session_confirmed = true;
+  const error = await postJson(`/api/tasks/${parentId}/fork`, body);
   if (error) return showMessage(error, 'Fork failed');
+  if (needsConfirmation) markImportedOwnershipConfirmed(parentId);
   closeModal('fork-task-modal');
   forkParentId = null;
   poll();
@@ -2806,10 +3031,11 @@ function showMessage(message, title = 'Notice') {
 let confirmResolve = null;
 let confirmOpener = null;
 
-function showConfirm(message, { confirmLabel = 'Yes', cancelLabel = 'No', danger = false } = {}) {
+function showConfirm(message, { confirmLabel = 'Yes', cancelLabel = 'No', danger = false, title = 'Confirm' } = {}) {
   return new Promise(resolve => {
     confirmResolve = resolve;
     confirmOpener = document.activeElement;
+    document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-message').textContent = message;
     const accept = document.getElementById('confirm-accept-btn');
     const cancel = document.getElementById('confirm-cancel-btn');
@@ -2864,6 +3090,7 @@ function openModal(id) {
 
 // Close after the modal's work is done (saved or submitted).
 function closeModal(id) {
+  if (id === 'add-task-modal') invalidateImportPreview();
   if (id === 'settings-modal') {
     loginLinkEpoch++;
     loginLinkBusy = false;
@@ -2882,6 +3109,7 @@ function closeModal(id) {
 }
 
 async function requestCloseModal(id) {
+  if (id === 'add-task-modal' && importBusy) return;
   if (id === 'delete-project-modal') return closeDeleteProjectModal();
   const snapshot = modalSnapshots.get(id);
   if (snapshot !== undefined && snapshot !== modalState(id) &&

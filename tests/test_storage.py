@@ -109,6 +109,202 @@ def test_omitted_templates_are_deleted(test_dir):
 # --- Task provenance and labels ---
 
 
+def test_imported_session_survives_task_deletion(test_dir, monkeypatch, mock_native):
+    from hihive import session_import
+    pool = make_pool(test_dir)
+    project = first_project(pool)
+    monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+    monkeypatch.setattr("hihive.pool.shutil.which", lambda command: __import__("sys").executable)
+    source = os.path.join(test_dir, "source.jsonl")
+    original = b'{"type":"session"}\n'
+    with open(source, "wb") as file:
+        file.write(original)
+    monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+        "session_id": sid, "prompt": "question", "answer": "answer", "message_count": None,
+        "last_activity": None, "source": session_import._read(source)[1]})
+    existing = pool.add_task("already running")
+    pool._tasks[existing]["session_id"] = "session-id"
+    with pytest.raises(HiveError, match="already belongs"):
+        pool.preview_session_import(project, "pi", "session-id")
+    pool.remove_task(existing)
+    token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
+    task_id = pool.import_session(project, "pi", "session-id", preview_token=token)
+    assert pool.task_detail(task_id)["imported_session"]
+    pool._verify_import_source(pool._tasks[task_id])
+    runner = type("Runner", (), {"state": "exited"})()
+    pool._apply_runner_event(pool._tasks[task_id], runner, "exited", {})
+    assert pool._tasks[task_id]["import_interrupted"]
+    pool._verify_import_source(pool._tasks[task_id])
+    with open(source, "a") as file:
+        file.write('{"type":"custom"}\n')
+    with pytest.raises(HiveError, match="changed while Hive was interrupted"):
+        pool._verify_import_source(pool._tasks[task_id])
+    with open(source, "wb") as file:
+        file.write(original)
+    # Restore metadata only to continue exercising harness-configuration checks.
+    pool._tasks[task_id]["imported_source"].update(session_import._read(source)[1])
+    pool._tasks[task_id]["import_interrupted"] = False
+    pool._harnesses[0]["args"] = ["--changed"]
+    with pytest.raises(HiveError) as error:
+        pool._verify_import_source(pool._tasks[task_id])
+    assert str(error.value) == ("This session or its harness changed since Hive last checked it, so Hive will not continue it. "
+                                "To keep working on it in Hive, delete this task and import the session again.")
+    pool._harnesses[0]["args"] = []
+    assert pool.retry_task(task_id) is False
+    with pytest.raises(HiveError, match="already belongs"):
+        pool.import_session(project, "pi", "session-id", preview_token=token)
+    pool._save_state()
+    restored = make_pool(test_dir)
+    assert restored.task_detail(task_id)["imported_session"]
+    assert restored.remove_task(task_id) is True
+    with open(source, "rb") as file:
+        assert file.read() == original
+
+
+@pytest.mark.parametrize("reason", ["stop", "cancel", "transport_failure", "unsettled_exit"])
+@pytest.mark.parametrize("changed", [False, True])
+def test_interrupted_import_quarantines_only_changed_source(test_dir, monkeypatch, reason, changed, mock_native):
+    from hihive import session_import
+    pool = make_pool(test_dir)
+    project = first_project(pool)
+    monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+    monkeypatch.setattr("hihive.pool.shutil.which", lambda command: __import__("sys").executable)
+    source = os.path.join(test_dir, "session.jsonl")
+    with open(source, "w") as file:
+        file.write('{"type":"session"}\n')
+    monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+        "session_id": sid, "prompt": "", "answer": "", "message_count": None,
+        "last_activity": None, "source": session_import._read(source)[1]})
+    token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
+    task_id = pool.import_session(project, "pi", "session-id", preview_token=token)
+    task = pool._tasks[task_id]
+    runner = type("Runner", (), {"state": "exited"})()
+    if reason in ("stop", "cancel"):
+        task["cancel_requested"] = True
+        assert not pool._apply_runner_event(task, runner, "settled", {})
+    if reason == "transport_failure":
+        pool._apply_runner_event(task, runner, "error", "transport lost")
+    if changed:
+        with open(source, "a") as file:
+            file.write('{"type":"custom"}\n')
+    pool._apply_runner_event(task, runner, "exited", {})
+    if changed:
+        with pytest.raises(HiveError) as error:
+            pool._verify_import_source(task)
+        assert str(error.value) == ("This session changed while Hive was interrupted, so Hive will not continue it. "
+                                    "Check the session, then delete this task and import it again.")
+    else:
+        pool._verify_import_source(task)
+
+
+def test_import_token_binds_content_and_save_failure_rolls_back(test_dir, monkeypatch, mock_native):
+    from hihive import session_import
+    pool = make_pool(test_dir)
+    project = first_project(pool)
+    monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+    monkeypatch.setattr("hihive.pool.shutil.which", lambda command: __import__("sys").executable)
+    source = os.path.join(test_dir, "source.jsonl")
+    with open(source, "w") as file:
+        file.write('{"type":"session"}\n')
+    def read_source(cwd, args, sid):
+        assert not pool._lock._is_owned()
+        return {"session_id": sid, "prompt": "question", "answer": "answer", "message_count": None,
+                "last_activity": None, "source": session_import._read(source)[1]}
+    monkeypatch.setattr(session_import, "read_pi", read_source)
+    token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
+    with open(source, "a") as file:
+        file.write('{"type":"custom"}\n')
+    with pytest.raises(HiveError) as error:
+        pool.import_session(project, "pi", "session-id", preview_token=token)
+    assert str(error.value) == "This session changed. Search again."
+    token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
+    real_save = pool._save_state
+    monkeypatch.setattr(pool, "_save_state", lambda strict=False: (_ for _ in ()).throw(HiveError("save failed")))
+    with pytest.raises(HiveError, match="Could not save"):
+        pool.import_session(project, "pi", "session-id", preview_token=token)
+    assert not any(t.get("session_id") == "session-id" for t in pool._tasks.values())
+    monkeypatch.setattr(pool, "_save_state", real_save)
+    task_id = pool.import_session(project, "pi", "session-id", preview_token=token)
+    assert pool.task_detail(task_id)["imported_session"]
+    with open(source, "a") as file:
+        file.write('{"type":"message"}\n')
+    with pytest.raises(HiveError, match="changed"):
+        pool._verify_import_source(pool._tasks[task_id])
+
+
+def test_import_verification_runs_outside_pool_lock_and_rechecks_state(test_dir, monkeypatch, mock_native):
+    from hihive import session_import
+    pool = make_pool(test_dir)
+    project = first_project(pool)
+    monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+    monkeypatch.setattr("hihive.pool.shutil.which", lambda command: __import__("sys").executable)
+    source = os.path.join(test_dir, "session.jsonl")
+    with open(source, "w") as file:
+        file.write('{"type":"session"}\n')
+    monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+        "session_id": sid, "prompt": "question", "answer": "answer", "message_count": None,
+        "last_activity": None, "source": session_import._read(source)[1]})
+    token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
+    task_id = pool.import_session(project, "pi", "session-id", preview_token=token)
+    original = pool._verify_import_snapshot
+    def race(snapshot):
+        assert not pool._lock._is_owned()
+        original(snapshot)
+        with pool._lock:
+            pool._tasks[task_id]["imported_source"]["digest"] = "changed"
+    monkeypatch.setattr(pool, "_verify_import_snapshot", race)
+    with pytest.raises(HiveError, match="changed"):
+        pool.send_chat(task_id, "follow-up", imported_session_confirmed=True)
+    assert not pool._tasks[task_id].get("runner")
+
+
+@pytest.mark.parametrize("verification_fails", [False, True])
+def test_concurrent_imported_duplicate_returns_first_receipt(test_dir, monkeypatch, mock_native, verification_fails):
+    import threading
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+    from hihive import session_import
+    pool = make_pool(test_dir)
+    project = first_project(pool)
+    source = os.path.join(test_dir, "session.jsonl")
+    with open(source, "w") as file:
+        file.write('{"type":"session"}\n')
+    monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+        "session_id": sid, "prompt": "question", "answer": "answer", "message_count": None,
+        "last_activity": None, "source": session_import._read(source)[1]})
+    token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
+    task_id = pool.import_session(project, "pi", "session-id", preview_token=token)
+    message_id = str(uuid.uuid4())
+    waiting, release = threading.Event(), threading.Event()
+    original = pool._verify_import_snapshot
+    def verify(snapshot):
+        if threading.current_thread().name.startswith("duplicate"):
+            waiting.set()
+            assert release.wait(5)
+            if verification_fails:
+                raise HiveError("Source changed during verification")
+            return
+        original(snapshot)
+    monkeypatch.setattr(pool, "_verify_import_snapshot", verify)
+    submissions = []
+    def start(task, message, kind, resume, message_id):
+        submissions.append(message_id)
+        entry = tm.message("user", "follow_up", message, id=message_id, sequence=1, delivery="accepted", settled=False)
+        task["messages"].append(entry)
+        task["imported_source"]["digest"] = "changed"
+        task["import_refresh_needed"] = True
+        return entry
+    monkeypatch.setattr(pool, "_start_live_runner", start)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="duplicate") as executor:
+        duplicate = executor.submit(pool.send_chat, task_id, "hello", message_id, True)
+        assert waiting.wait(5)
+        first = pool.send_chat(task_id, "hello", message_id, True)
+        release.set()
+        second = duplicate.result(timeout=5)
+    assert first == second
+    assert submissions == [message_id]
+
+
 def test_created_by_task_id_persists_is_exposed_and_does_not_cascade(test_dir):
     pool = make_pool(test_dir)
     creator = pool.add_task("creator")

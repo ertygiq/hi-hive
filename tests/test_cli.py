@@ -105,6 +105,57 @@ class FakeCLI(HiHiveCLI):
         pass
 
 
+def test_import_uses_selected_project_and_exact_session_id(monkeypatch, capsys):
+    monkeypatch.delenv('HIVE_TOKEN', raising=False)
+    cli = HiHiveCLI()
+    cli.project = lambda: {'id':'project', 'harnesses':[{'id':'pi', 'name':'Pi'}]}
+    calls = []
+    cli.post = lambda path, body: calls.append((path, body)) or ({'preview_token':'token'} if path.endswith('/preview') else {'id':'task-id'})
+    cli.run(['import', 'session-id', '--harness', 'Pi', '--label', 'Label'])
+    assert calls == [('/api/session-import/preview', {'project_id':'project', 'harness_id':'pi', 'session_id':'session-id'}),
+                     ('/api/session-import', {'project_id':'project', 'harness_id':'pi', 'session_id':'session-id', 'preview_token':'token', 'label':'Label'})]
+    output = capsys.readouterr()
+    assert output.out.strip() == 'task-id'
+    assert 'Close this session in other terminals' in output.err
+
+
+def test_import_refuses_agent_tokens_before_network(monkeypatch, capsys):
+    monkeypatch.setenv('HIVE_TOKEN', 'agent-token')
+    cli = HiHiveCLI()
+    cli.get = lambda path: pytest.fail('agent import must not make a request')
+    with pytest.raises(Exit):
+        cli.run(['import', 'session-id', '--harness', 'Pi'])
+    assert 'only to the user' in capsys.readouterr().err
+
+
+def test_imported_followup_requires_explicit_user_confirmation(monkeypatch, capsys):
+    monkeypatch.delenv('HIVE_TOKEN', raising=False)
+    task = {'id':'task-id', 'imported_session':True, 'imported_session_confirmed':False, 'messages':[]}
+    cli = FakeCLI([task])
+    with pytest.raises(Exit):
+        cli.run(['followup', 'task-id', 'hello'])
+    assert cli.posts == []
+    assert '--confirm-session-ownership' in capsys.readouterr().err
+    cli.snapshots = [task]
+    cli.run(['followup', 'task-id', 'hello', '--confirm-session-ownership'])
+    assert cli.posts[-1][1] == {'message':'hello', 'imported_session_confirmed':True}
+
+
+def test_imported_fork_requires_explicit_user_confirmation(monkeypatch, capsys):
+    monkeypatch.delenv('HIVE_TOKEN', raising=False)
+    cli = HiHiveCLI()
+    cli.resolve_task_id = lambda prefix: 'task-id'
+    cli.lookup_task = lambda task_id: {'imported_session':True, 'imported_session_confirmed':False}
+    calls = []
+    cli.post = lambda path, body: calls.append((path, body)) or {'id':'fork-id'}
+    with pytest.raises(Exit):
+        cli.run(['fork', 'task-id', 'do work'])
+    assert calls == []
+    assert '--confirm-session-ownership' in capsys.readouterr().err
+    cli.run(['fork', 'task-id', 'do work', '--confirm-session-ownership'])
+    assert calls[0][1]['imported_session_confirmed'] is True
+
+
 @pytest.mark.parametrize("kind", ["initial", "follow_up"])
 @pytest.mark.parametrize("delivery", ["pending", "accepted", "delivered", "included"])
 def test_send_during_initial_or_follow_up_work_including_legacy_pending_messages(capsys, kind, delivery):

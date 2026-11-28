@@ -320,6 +320,25 @@ def create_app(pool, token, manage_pool=True):
             return error(404, "Project not found")
         return JSONResponse({"ok": True})
 
+    def session_preview(request, body):
+        try:
+            result = pool.preview_session_import(body.get("project_id"), body.get("harness_id"), body.get("session_id"))
+        except HiveError as failure:
+            message = str(failure)
+            status = 409 if any(word in message for word in ("ambiguous", "changed", "already belongs")) else 404 if "was found" in message else 400
+            return error(status, message)
+        return JSONResponse({key: value for key, value in result.items() if key != "source"})
+
+    def session_import_task(request, body):
+        try:
+            task_id = pool.import_session(body.get("project_id"), body.get("harness_id"), body.get("session_id"),
+                                          body.get("label"), body.get("preview_token"))
+        except HiveError as failure:
+            message = str(failure)
+            status = 409 if any(word in message for word in ("ambiguous", "changed", "already belongs")) else 404 if "was found" in message else 400
+            return error(status, message)
+        return JSONResponse({"id": task_id}, status_code=201)
+
     def add_task(request, body):
         project = project_for(request, body.get("project_id"))
         task_id = pool.add_task(prompt=body.get("prompt"), label=body.get("label"), harness=body.get("harness"),
@@ -343,12 +362,25 @@ def create_app(pool, token, manage_pool=True):
                               "try again shortly.")
         return JSONResponse({"ok": True})
 
+    def require_import_confirmation(request, task_id, body):
+        if pool.import_confirmation_required(task_id):
+            if request.scope.get("hive_project"):
+                raise HttpError(403, "A full user must confirm the imported session first")
+            if body.get("imported_session_confirmed") is not True:
+                raise HttpError(409, "Confirm the session is closed in other terminals first")
+
     def fork(request, body):
         prompt = str(body.get("prompt") or "").strip()
         if not prompt:
             return error(400, "Prompt required")
-        task_id = pool.fork_task(parent_id=task_id_for(request), prompt=prompt, label=body.get("label"),
-                                 created_by_task_id=creator_task_for(request))
+        parent_id = task_id_for(request)
+        require_import_confirmation(request, parent_id, body)
+        try:
+            task_id = pool.fork_task(parent_id=parent_id, prompt=prompt, label=body.get("label"),
+                                     created_by_task_id=creator_task_for(request),
+                                     imported_session_confirmed=body.get("imported_session_confirmed") is True)
+        except HiveError as failure:
+            return error(409, str(failure))
         if task_id == "missing_session":
             return error(400, "Parent task has no agent session id; fork is unavailable")
         if not task_id:
@@ -394,8 +426,10 @@ def create_app(pool, token, manage_pool=True):
 
     def chat(request, body):
         task_id = task_id_for(request)  # outside the try: a refused task must stay a 404, not become a 500
+        require_import_confirmation(request, task_id, body)
         try:
-            result = pool.send_chat(task_id, body.get("message"), message_id=body.get("message_id"))
+            result = pool.send_chat(task_id, body.get("message"), message_id=body.get("message_id"),
+                                    imported_session_confirmed=body.get("imported_session_confirmed") is True)
         except Exception as failure:
             status = 422 if isinstance(failure, (HiveError, ValueError)) else 500
             prompt = str(body.get("message") or "")
@@ -491,6 +525,8 @@ def create_app(pool, token, manage_pool=True):
         Route("/api/projects", run(create_project), methods=["POST"]),
         Route("/api/backup", run(backup), methods=["POST"]),
         Route("/api/projects/{id}", run(delete_project), methods=["DELETE"]),
+        Route("/api/session-import/preview", run(session_preview), methods=["POST"]),
+        Route("/api/session-import", run(session_import_task), methods=["POST"]),
         Route("/api/tasks", run(add_task, agents=True), methods=["POST"]),
         Route("/api/tasks/batch", run(add_batch, agents=True), methods=["POST"]),
         Route("/api/tasks/cancel_all", run(cancel_all, agents=True), methods=["POST"]),

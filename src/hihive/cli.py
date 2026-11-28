@@ -47,6 +47,8 @@ Commands:
   start -p "prompt" [--label LABEL] [--harness NAME]
                                       Start a one-off task with a raw prompt (no template).
                                       Label defaults to the first 60 chars of the prompt.
+  import <session-id> --harness NAME [--label LABEL]
+                              Import an existing native harness session into Results.
   queue                       List queued and running tasks
   results [--limit N] [--all] [--no-pager]
                               List completed tasks (forks indented under their parent).
@@ -61,12 +63,14 @@ Commands:
                               --no-header suppress the label/status header
   wait <id>                   Wait for task to complete
   label <id> "new label"      Change a task's label
-  followup <id> "message"          Send a message to the agent (steers the agent if it is already working)
+  followup <id> "message" [--confirm-session-ownership]
+                                   Send a message to the agent (steers the agent if it is already working)
   followup <id> "message" --wait   Send and wait for the conversation run to finish; print its latest answer
   followup <id> --cancel           Stop the active conversation run, including all pending messages
   cancel <id>                 Cancel a task
   retry <id> [--harness NAME] Retry a task (refused if the task has forks)
-  fork <id> "prompt" [--label LABEL]  Fork a finished task; resumes its session and branches with new prompt
+  fork <id> "prompt" [--label LABEL] [--confirm-session-ownership]
+                              Fork a finished task; resumes its session and branches with new prompt
   open                        Open the web UI and log this browser in
 
 Server commands:
@@ -127,6 +131,7 @@ class HiHiveCLI:
             "templates": lambda: self.cmd_templates(),
             "harnesses": lambda: self.cmd_harnesses(),
             "start": lambda: self.cmd_start(argv),
+            "import": lambda: self.cmd_import(argv),
             "queue": lambda: self.cmd_queue(),
             "results": lambda: self.cmd_results(argv),
             "show": lambda: self.cmd_show(argv),
@@ -214,6 +219,24 @@ class HiHiveCLI:
         if harness:
             body["harness"] = harness
         puts(self.post("/api/tasks/batch", body)["ids"][0])
+
+    def cmd_import(self, args):
+        if self.agent_token:
+            self.die('Session import is available only to the user, not agent tokens.')
+        label = self.take_named_arg(args, '--label')
+        harness_name = self.take_named_arg(args, '--harness')
+        if len(args) != 1 or not harness_name:
+            self.die('Usage: hihive import <session-id> --harness NAME [--label LABEL]')
+        project = self.project()
+        harness = self.resolve_harness_name(harness_name, project['harnesses'])
+        body = {'project_id': project['id'], 'harness_id': harness, 'session_id': args[0]}
+        preview = self.post('/api/session-import/preview', body)
+        token = preview.get('preview_token')
+        if not isinstance(token, str) or not token:
+            self.die('Could not verify the session. Search again.')
+        result = self.post('/api/session-import', {**body, 'preview_token': token, 'label': label})
+        puts(result['id'])
+        sys.stderr.write('Close this session in other terminals before sending a follow-up.\n')
 
     def cmd_queue(self):
         state = self.project_state()
@@ -356,6 +379,7 @@ class HiHiveCLI:
             return
 
         wait = _remove(args, "--wait")
+        confirmed = _remove(args, "--confirm-session-ownership")
         if len(args) < 2:
             self.die('Usage: hihive followup <id> "message" [--wait]')
         task_id = self.resolve_task_id(args.pop(0))
@@ -363,7 +387,11 @@ class HiHiveCLI:
         path = f"/api/tasks/{quote(task_id, safe='')}"
         task = self.get(path)
         prior_ids = {m.get("id") for m in task.get("messages") or []}
-        receipt = self.post(f"{path}/chat", {"message": message})["message"]
+        self.require_session_ownership(task, confirmed)
+        body = {"message": message}
+        if confirmed:
+            body['imported_session_confirmed'] = True
+        receipt = self.post(f"{path}/chat", body)["message"]
         if not wait:
             puts(f"Message accepted ({receipt['id']}). Shared output will appear in: "
                  f"hihive show {short_id(task_id)} --followup")
@@ -404,12 +432,26 @@ class HiHiveCLI:
         puts(f"Retried {short_id(task_id)}")
 
     def cmd_fork(self, args):
+        confirmed = _remove(args, "--confirm-session-ownership")
         label = self.take_named_arg(args, "--label")
         if len(args) < 2:
             self.die('Usage: hihive fork <id> "prompt" [--label LABEL]')
         task_id = self.resolve_task_id(args.pop(0))
-        result = self.post(f"/api/tasks/{quote(task_id, safe='')}/fork", {"prompt": " ".join(args), "label": label})
+        task = self.lookup_task(task_id)
+        self.require_session_ownership(task, confirmed)
+        body = {"prompt": " ".join(args), "label": label}
+        if confirmed:
+            body['imported_session_confirmed'] = True
+        result = self.post(f"/api/tasks/{quote(task_id, safe='')}/fork", body)
         puts(result["id"])
+
+    def require_session_ownership(self, task, confirmed):
+        if task and task.get('imported_session') and not task.get('imported_session_confirmed'):
+            if self.agent_token:
+                self.die('The user must confirm ownership of this imported session before agents can use it.')
+            if not confirmed:
+                self.die('Hive will keep using this session. Close it in other terminals and keep it closed while the task is in Hive. '
+                         'To confirm, repeat with --confirm-session-ownership.')
 
     def cmd_open(self):
         """Check health, then open the UI with a login link."""

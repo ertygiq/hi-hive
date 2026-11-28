@@ -69,6 +69,7 @@ class PiRpcProtocol(LiveProtocol):
         self._state_ready = False
         self._steering_ready = False
         self._follow_ready = False
+        self.resume_path = None
 
     def check_version(self, text):
         version = find_version(text)
@@ -77,6 +78,8 @@ class PiRpcProtocol(LiveProtocol):
 
     def argv(self, command, args, session_id, resume=False, parent=None):
         self.validate_args(args)
+        if resume and self.resume_path:
+            return [command, *args, "--mode", "rpc", "--session", self.resume_path]
         return [command, *args, "--mode", "rpc", "--session-id", session_id, *(["--fork", parent] if parent else [])]
 
     def boot(self, runner):

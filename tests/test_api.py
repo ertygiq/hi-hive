@@ -39,6 +39,46 @@ def api(test_dir):
     return Api(test_dir)
 
 
+def test_session_import_routes_refuse_agent_tokens(api):
+    project = api.task["project_id"]
+    runner = type("Runner", (), {"state": "idle"})()
+    token = api.pool._agent_tokens.issue(project, api.task_id, runner)
+    headers = {**TRUSTED, "Authorization": f"Bearer {token}"}
+    for path in ("/api/session-import/preview", "/api/session-import"):
+        result = api.client.post(path, json={"project_id": project, "harness_id": "pi", "session_id": "id"}, headers=headers)
+        assert result.status_code == 403
+
+
+def test_session_import_preview_and_create(api, monkeypatch, tmp_path, mock_native):
+    from hihive import session_import
+    monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+    monkeypatch.setattr("hihive.pool.shutil.which", lambda command: __import__("sys").executable)
+    path = tmp_path / "session.jsonl"
+    path.write_text('{"type":"session"}\n')
+    monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+        "session_id": sid, "prompt": "question", "answer": "answer", "message_count": None,
+        "last_activity": None, "source": session_import._read(path)[1]})
+    body = {"project_id": api.task["project_id"], "harness_id": "pi", "session_id": "session-id", "label": "My session"}
+    preview = api.client.post("/api/session-import/preview", json=body, headers=TRUSTED)
+    assert preview.status_code == 200
+    assert {k: v for k, v in preview.json().items() if k != "preview_token"} == {
+        "session_id": "session-id", "prompt": "question", "answer": "answer", "message_count": None, "last_activity": None}
+    body["preview_token"] = preview.json()["preview_token"]
+    result = api.client.post("/api/session-import", json=body, headers=TRUSTED)
+    assert result.status_code == 201
+    task = api.pool.task_detail(result.json()["id"])
+    assert task["imported_session"] and task["label"] == "My session"
+    assert task["started_at"] == task["completed_at"] and not task["imported_session_confirmed"]
+    url = f"/api/tasks/{task['id']}/chat"
+    assert api.client.post(url, json={"message": "follow-up"}, headers=TRUSTED).status_code == 409
+    runner = type("Runner", (), {"state": "idle"})()
+    token = api.pool._agent_tokens.issue(task["project_id"], api.task_id, runner)
+    agent_headers = {**TRUSTED, "Authorization": f"Bearer {token}"}
+    assert api.client.post(url, json={"message": "follow-up", "imported_session_confirmed": True}, headers=agent_headers).status_code == 403
+    assert api.client.post("/api/session-import", json=body, headers=TRUSTED).status_code == 409
+    assert path.read_text() == '{"type":"session"}\n'
+
+
 def test_done_is_independent_of_execution_status_and_unmarking_succeeds(api):
     for status in ("queued", "running", "reviewing", "completed", "failed", "cancelled"):
         api.task["status"] = status

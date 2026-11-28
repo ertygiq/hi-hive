@@ -154,10 +154,11 @@
 <div class="modal-overlay hidden" id="add-task-modal">
   <div class="modal">
     <div class="modal-header">
-      <h3>Add task</h3>
-      <button class="icon-btn" aria-label="Close" onclick="requestCloseModal('add-task-modal')">✕</button>
+      <h3 id="add-task-title">Add task</h3>
+      <button class="icon-btn" id="add-task-close" aria-label="Close" onclick="requestCloseModal('add-task-modal')">✕</button>
     </div>
     <div class="modal-body">
+      <div id="add-new-fields">
       <div class="form-row">
         <div class="form-group">
           <label>Label (optional)</label>
@@ -172,10 +173,35 @@
         <label>Prompt</label>
         <textarea class="code" id="add-prompt" rows="8" placeholder="Enter the full prompt..."></textarea>
       </div>
+      </div>
+      <div id="add-import-fields" style="display:none">
+        <div class="form-group">
+          <label for="import-harness">Harness</label>
+          <select id="import-harness" onchange="scheduleImportPreview()"></select>
+        </div>
+        <div class="form-group">
+          <label for="import-session-id">Session ID</label>
+          <input type="text" id="import-session-id" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 aria-describedby="import-status" oninput="scheduleImportPreview()"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();lookupImportSession()}">
+          <div id="import-status" class="muted import-status" role="status" aria-live="polite"></div>
+        </div>
+        <div id="import-preview" style="display:none">
+          <hr class="settings-divider">
+          <div class="form-group"><label for="import-label">Label</label><input type="text" id="import-label" onkeydown="if(event.key==='Enter'&&!document.getElementById('import-submit').disabled){event.preventDefault();submitImportSession()}"></div>
+          <div class="import-preview-label">First prompt</div><div class="import-excerpt" id="import-prompt"></div>
+          <div class="import-preview-label">Last answer</div><div class="import-excerpt" id="import-answer"></div>
+          <div class="muted import-status" id="import-metadata"></div>
+          <p class="muted import-status">Close this session in other terminals before sending a follow-up.</p>
+        </div>
+      </div>
     </div>
-    <div class="modal-footer">
-      <button onclick="requestCloseModal('add-task-modal')">Cancel</button>
-      <button class="primary" onclick="submitAddTask()">Add task</button>
+    <div class="modal-footer import-footer">
+      <button type="button" class="text-btn import-mode-toggle" id="import-mode-toggle" onclick="toggleImportMode()">Import a session</button>
+      <span class="import-footer-spacer"></span>
+      <button id="add-task-cancel" onclick="requestCloseModal('add-task-modal')">Cancel</button>
+      <button class="primary" id="add-task-submit" onclick="submitAddTask()">Add task</button>
+      <button class="primary" id="import-submit" onclick="submitImportSession()" style="display:none" disabled>Import</button>
     </div>
   </div>
 </div>
@@ -592,7 +618,7 @@
 
 <!-- Confirm Modal -->
 <div class="modal-overlay hidden" id="confirm-modal">
-  <div class="modal" style="width:380px">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" style="width:380px">
     <div class="modal-header">
       <h3 id="confirm-title">Confirm</h3>
       <button class="icon-btn" aria-label="Close" onclick="resolveConfirm(false)">✕</button>

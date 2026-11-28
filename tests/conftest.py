@@ -12,6 +12,19 @@ FIXTURE = str(TESTS / "fixtures" / "fake_harness.py")
 
 
 @pytest.fixture
+def mock_native(monkeypatch):
+    import sys
+    from hihive import session_import
+    path = os.path.realpath(sys.executable)
+    info = os.stat(path)
+    monkeypatch.setattr(session_import, "executable_identity_matches", lambda source: True)
+    monkeypatch.setattr(session_import, "native_executable", lambda harness: {
+        "executable": path, "executable_device": info.st_dev, "executable_inode": info.st_ino,
+        "executable_size": info.st_size, "executable_mtime_ns": info.st_mtime_ns,
+        "executable_ctime_ns": info.st_ctime_ns})
+
+
+@pytest.fixture
 def test_dir():
     """A scratch directory under the ignored .test-tmp folder."""
     base = ROOT / ".test-tmp"

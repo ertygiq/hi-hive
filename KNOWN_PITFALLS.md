@@ -7,6 +7,7 @@
 - **Isolate child environments.** Variables set by Hive's own runtime (formerly Ruby/Bundler, now uv/virtualenv) leaked into agents and broke tools they launched.
   Remove them in `child_process_env` before starting agents or output actions.
 - **Clear inherited Pi session environment variables.** When Hive inherits `PI_SESSION_ID` and `PI_SESSION_FILE` from a parent Pi process, remove them before launching new agents so they don't inherit the parent Pi session's identity.
+- **Never use Pi session-opening commands for read-only import discovery.** `pi --session` can modify a session by recording model settings, and `pi --session-id` creates a new session when the requested ID is missing. Discover imports by reading bounded session metadata, then resume only the exact validated file and fail closed if it changes or disappears.
 - **Track agent exit separately from output-pipe closure.** A tool-started SOCKS proxy once kept the pipe open after the agent exited, leaving a follow-up pending forever.
   Check process exit independently, then briefly drain remaining output and close the pipe.
 - **Test Docker wrappers, not just bare agents.** Wrappers previously lost stdin or required a terminal that Hive didn't provide.
