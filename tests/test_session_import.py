@@ -232,6 +232,12 @@ def test_claude_ambiguous_branch_returns_empty_text(tmp_path, monkeypatch):
     assert result["prompt"] == result["answer"] == ""
 
 
+def test_invalid_claude_session_id_message(tmp_path):
+    with pytest.raises(HiveError) as error:
+        session_import.read_claude(str(tmp_path), "not-an-id")
+    assert str(error.value) == "This is not a valid Claude session ID."
+
+
 def test_claude_discovery_budget_is_shared_across_project_directories(tmp_path, monkeypatch):
     root = tmp_path / "claude" / "projects"
     for index in range(3):

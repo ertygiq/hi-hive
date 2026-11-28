@@ -352,7 +352,7 @@ def read_pi(cwd, args, session_id):
 
 def read_claude(cwd, session_id):
     if not isinstance(session_id, str) or not CLAUDE_ID.fullmatch(session_id):
-        raise HiveError("Invalid Claude session ID")
+        raise HiveError("This is not a valid Claude session ID.")
     root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
     canonical = os.path.realpath(cwd)
     encoded = re.sub(r"[^a-zA-Z0-9]", "-", canonical)

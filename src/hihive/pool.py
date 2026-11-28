@@ -293,7 +293,7 @@ class PoolManager:
             if (not isinstance(preview_token, str) or not hmac.compare_digest(preview_token, preview["preview_token"])
                     or not session_import.source_identity_matches(source)
                     or not session_import.executable_identity_matches(source)):
-                raise HiveError("Session changed; preview again")
+                raise HiveError("This session changed. Search again.")
             source = preview["source"]
             created = now()
             task_id = str(uuid.uuid4())
@@ -337,15 +337,15 @@ class PoolManager:
             _, current = session_import._read(source["path"])
         except HiveError:
             if snapshot["interrupted"]:
-                raise HiveError("The session changed during interrupted work. Delete this Hive task and import the session again after reviewing it.") from None
+                raise HiveError("This session changed outside Hive, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.") from None
             raise
         current.update(executable)
         current.update(cwd=cwd, harness_id=snapshot["harness_id"], command=harness["command"], args=args,
                        kind=harness["type"])
         if current != source:
             if snapshot["interrupted"]:
-                raise HiveError("The session changed during interrupted work. Delete this Hive task and import the session again after reviewing it.")
-            raise HiveError("Imported session source or harness changed; cannot resume safely")
+                raise HiveError("This session changed outside Hive, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.")
+            raise HiveError("This session changed outside Hive, so Hive will not continue it. To keep working on it in Hive, delete this task and import the session again.")
 
     def import_confirmation_required(self, task_id):
         with self._lock:

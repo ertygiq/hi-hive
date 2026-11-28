@@ -137,7 +137,7 @@ def test_imported_session_survives_task_deletion(test_dir, monkeypatch, mock_nat
     pool._verify_import_source(pool._tasks[task_id])
     with open(source, "a") as file:
         file.write('{"type":"custom"}\n')
-    with pytest.raises(HiveError, match="interrupted work"):
+    with pytest.raises(HiveError, match="changed outside Hive"):
         pool._verify_import_source(pool._tasks[task_id])
     with open(source, "wb") as file:
         file.write(original)
@@ -186,8 +186,10 @@ def test_interrupted_import_quarantines_only_changed_source(test_dir, monkeypatc
             file.write('{"type":"custom"}\n')
     pool._apply_runner_event(task, runner, "exited", {})
     if changed:
-        with pytest.raises(HiveError, match="changed during interrupted work"):
+        with pytest.raises(HiveError) as error:
             pool._verify_import_source(task)
+        assert str(error.value) == ("This session changed outside Hive, so Hive will not continue it. "
+                                    "To keep working on it in Hive, delete this task and import the session again.")
     else:
         pool._verify_import_source(task)
 
@@ -209,8 +211,9 @@ def test_import_token_binds_content_and_save_failure_rolls_back(test_dir, monkey
     token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
     with open(source, "a") as file:
         file.write('{"type":"custom"}\n')
-    with pytest.raises(HiveError, match="preview again"):
+    with pytest.raises(HiveError) as error:
         pool.import_session(project, "pi", "session-id", preview_token=token)
+    assert str(error.value) == "This session changed. Search again."
     token = pool.preview_session_import(project, "pi", "session-id")["preview_token"]
     real_save = pool._save_state
     monkeypatch.setattr(pool, "_save_state", lambda strict=False: (_ for _ in ()).throw(HiveError("save failed")))
