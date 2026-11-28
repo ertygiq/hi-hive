@@ -42,7 +42,7 @@ test('session import previews untrusted text and imports into selected project',
   context.fetch = async (url, options) => {
     requests.push([url, JSON.parse(options.body)]);
     return {ok:true, json:async () => url.endsWith('/preview')
-      ? {prompt:'<script>text</script>', answer:'', message_count:3, last_activity:'2026-01-01'} : {id:'new-task'}};
+      ? {prompt:'<script>text</script>', answer:'', message_count:3, last_activity:'2026-01-01', preview_token:'token'} : {id:'new-task'}};
   };
   await vm.runInContext('lookupImportSession()', context);
   assert.equal(document.getElementById('import-prompt').textContent, '<script>text</script>');
@@ -56,7 +56,7 @@ test('session import previews untrusted text and imports into selected project',
   assert.equal(selected, 'new-task');
   assert.deepEqual(requests, [
     ['/api/session-import/preview', {project_id:'p', harness_id:'h', session_id:'exact-id'}],
-    ['/api/session-import', {project_id:'p', harness_id:'h', session_id:'exact-id', label:'My session'}]
+    ['/api/session-import', {project_id:'p', harness_id:'h', session_id:'exact-id', preview_token:'token', label:'My session'}]
   ]);
 });
 
@@ -91,7 +91,7 @@ test('session import uses a word boundary for labels and compacts only preview b
   document.getElementById('import-harness').value = 'h';
   document.getElementById('import-session-id').value = 'exact-id';
   const prompt = 'A long sentence that reaches the limit before another extraordinary word\n\n\nNext line';
-  context.fetch = async () => ({ok:true, json:async () => ({prompt, answer:'First\n\n\nLast'})});
+  context.fetch = async () => ({ok:true, json:async () => ({prompt, answer:'First\n\n\nLast', preview_token:'token'})});
   await vm.runInContext('lookupImportSession()', context);
   const label = document.getElementById('import-label').value;
   assert.ok(label.length <= 60);
@@ -118,7 +118,7 @@ test('session import blocks closing during submission and warns on uncertain del
   vm.runInContext("configCache = {projects:[{id:'p'}], harnesses:[{id:'h', session_import_supported:true}]}; currentProjectId = 'p'; setImportMode(true)", context);
   document.getElementById('import-harness').value = 'h';
   document.getElementById('import-session-id').value = 'exact-id';
-  context.fetch = async () => ({ok:true, json:async () => ({prompt:'hello', answer:'world'})});
+  context.fetch = async () => ({ok:true, json:async () => ({prompt:'hello', answer:'world', preview_token:'token'})});
   await vm.runInContext('lookupImportSession()', context);
   let reject;
   context.fetch = () => new Promise((_, fail) => { reject = fail; });
@@ -151,6 +151,28 @@ test('session import shows lookup errors inline and keeps the session ID', async
   assert.match(document.getElementById('import-status').textContent, /Could not search/);
 });
 
+test('imported task omits duration and shows missing imported text in detail', () => {
+  const { context, document } = client();
+  context.task = {id:'task', label:'Imported', status:'completed', imported_session:true,
+    started_at:'2020-01-01T00:00:00Z', completed_at:'2020-01-01T00:01:15Z',
+    messages:[{role:'user',kind:'initial',content:''}]};
+  const card = vm.runInContext('renderResultCard(task, 0, new Map())', context);
+  assert.doesNotMatch(card, /1m 15s/);
+  vm.runInContext("currentDetailTab = 'prompt'; renderDetail(task)", context);
+  assert.match(document.getElementById('detail-body').innerHTML, /\(No readable prompt\)/);
+  vm.runInContext("currentDetailTab = 'output'; renderDetail(task)", context);
+  assert.match(document.getElementById('detail-body').innerHTML, /\(No readable answer\)/);
+  assert.doesNotMatch(document.getElementById('detail-body').innerHTML, /No output yet/);
+  context.task.messages.push({role:'assistant',kind:'follow_up',content:'Later answer'});
+  vm.runInContext('renderDetail(task)', context);
+  assert.match(document.getElementById('detail-body').innerHTML, /\(No readable answer\)[^]*Later answer/);
+  context.task.messages.push({role:'assistant',kind:'initial',content:'Imported answer'});
+  vm.runInContext('renderDetail(task)', context);
+  assert.doesNotMatch(document.getElementById('detail-body').innerHTML, /\(No readable answer\)/);
+  context.task.imported_session = false;
+  assert.match(vm.runInContext('renderResultCard(task, 0, new Map())', context), /1m 15s/);
+});
+
 test('imported result hides retry and warns before deleting the Hive task', async () => {
   const { context } = client();
   context.task = {id:'imported', label:'Imported', status:'completed', imported_session:true};
@@ -160,6 +182,42 @@ test('imported result hides retry and warns before deleting the Hive task', asyn
   context.showConfirm = async text => { message = text; return false; };
   await vm.runInContext("deleteResultTask('imported')", context);
   assert.match(message, /original harness session stays/);
+});
+
+test('imported follow-up requires first ownership confirmation and preserves cancelled draft', async () => {
+  const { context, document } = client();
+  context.task = {id:'task', status:'completed', imported_session:true, imported_session_confirmed:false};
+  vm.runInContext('state.results = [task]; displayedConversation = task', context);
+  const input = document.getElementById('chat-input'); input.value = 'Hello';
+  let requests = 0, posted, options;
+  context.showConfirm = async (_message, opts) => { options = opts; return false; };
+  context.fetch = async (_url, request) => { requests++; posted = JSON.parse(request.body); return {ok:true, status:202}; };
+  await vm.runInContext('sendChat()', context);
+  assert.equal(requests, 0); assert.equal(input.value, 'Hello');
+  assert.equal(options.title, 'Let Hive use this session'); assert.equal(options.confirmLabel, 'Send');
+  context.showConfirm = async () => true;
+  await vm.runInContext('sendChat()', context);
+  assert.equal(requests, 1); assert.equal(posted.imported_session_confirmed, true);
+  context.task.imported_session_confirmed = true; input.value = 'Again';
+  context.showConfirm = async () => assert.fail('confirmed task should not prompt');
+  await vm.runInContext('sendChat()', context);
+  assert.equal(requests, 2); assert.equal(posted.imported_session_confirmed, undefined);
+});
+
+test('imported fork requires first ownership confirmation', async () => {
+  const { context, document } = client();
+  context.task = {id:'task', status:'completed', imported_session:true, imported_session_confirmed:false};
+  vm.runInContext("state.results = [task]; forkParentId = 'task'", context);
+  document.getElementById('fork-prompt').value = 'Fork prompt';
+  let sent, options;
+  context.showConfirm = async (_message, opts) => { options = opts; return false; };
+  context.postJson = async (path, body) => { sent = [path, body]; return null; };
+  await vm.runInContext('submitForkTask()', context);
+  assert.equal(sent, undefined); assert.equal(document.getElementById('fork-prompt').value, 'Fork prompt');
+  assert.equal(options.confirmLabel, 'Fork');
+  context.showConfirm = async () => true;
+  await vm.runInContext('submitForkTask()', context);
+  assert.equal(sent[0], '/api/tasks/task/fork'); assert.equal(sent[1].imported_session_confirmed, true);
 });
 
 test('paused banner Resume appears only for an open phone overlay without changing its height', () => {

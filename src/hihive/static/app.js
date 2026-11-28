@@ -945,7 +945,7 @@ function descendantReplyFacts(id, childrenByParent) {
 function renderResultCard(t, depth, childrenByParent) {
   const status = t.status === 'failed' ? ['✗', 'Failed'] : t.status === 'cancelled' ? ['⊘', 'Cancelled'] : null;
   const statusIcon = status ? `<span class="result-status status-${t.status}" title="${status[1]}" aria-label="${status[1]}">${status[0]}</span>` : '';
-  const duration = t.started_at && t.completed_at
+  const duration = !t.imported_session && t.started_at && t.completed_at
     ? formatDuration(new Date(t.started_at), new Date(t.completed_at))
     : '';
   const summary = (t.status === 'failed' || t.status === 'cancelled') && t.summary
@@ -1274,7 +1274,11 @@ function renderDetail(task) {
         </div>`;
         html += `<hr class="section-divider">`;
       }
-      if (!messages.some(m => m.role === 'assistant')) html += '<pre>No output yet...</pre>';
+      if (task.imported_session && !messages.some(m => m.role === 'assistant' && m.kind === 'initial' && (m.content || '').trim())) {
+        html += '<pre>(No readable answer)</pre>';
+      } else if (!task.imported_session && !messages.some(m => m.role === 'assistant')) {
+        html += '<pre>No output yet...</pre>';
+      }
       if (messages.length > 0) {
         html += messages.map(m => {
           const isPending = m.delivery === 'pending';
@@ -1300,9 +1304,11 @@ function renderDetail(task) {
       break;
     }
 
-    case 'prompt':
-      body.innerHTML = `<div class="prompt-text">${esc((task.messages || []).find(m => m.role === 'user' && m.kind === 'initial')?.content || '')}</div>`;
+    case 'prompt': {
+      const prompt = (task.messages || []).find(m => m.role === 'user' && m.kind === 'initial')?.content || '';
+      body.innerHTML = `<div class="prompt-text">${esc(task.imported_session && !prompt.trim() ? '(No readable prompt)' : prompt)}</div>`;
       break;
+    }
 
   }
 
@@ -1686,6 +1692,25 @@ async function stopWork(kind) {
 }
 
 let uncertainChatRequest = null;
+let importOwnershipPrompting = false;
+
+function markImportedOwnershipConfirmed(taskId) {
+  for (const task of [displayedConversation, ...boardTasks(state), ...boardTasks(fullState)]) {
+    if (task?.id === taskId) task.imported_session_confirmed = true;
+  }
+}
+
+async function confirmImportedOwnership(task, action) {
+  if (!task?.imported_session || task.imported_session_confirmed) return true;
+  if (importOwnershipPrompting) return false;
+  importOwnershipPrompting = true;
+  try {
+    return await showConfirm('Hive will keep using this session from now on. Close it in other terminals, and do not open it there while this task is in Hive.',
+      { title: 'Let Hive use this session', cancelLabel: 'Cancel', confirmLabel: action });
+  } finally {
+    importOwnershipPrompting = false;
+  }
+}
 
 function resizeChatInput(input = document.getElementById('chat-input')) {
   if (!input) return;
@@ -1708,8 +1733,16 @@ async function sendChat() {
   if (!message || !selectedTaskId || stoppingWork.has(selectedTaskId) || displayedConversation?.runner_state === 'closing') return;
 
   const taskId = selectedTaskId;
+  const task = displayedConversation?.id === taskId ? displayedConversation : findTask(taskId);
+  const needsConfirmation = Boolean(task?.imported_session && !task.imported_session_confirmed);
+  if (needsConfirmation && !await confirmImportedOwnership(task, 'Send')) {
+    if (selectedTaskId === taskId) input.focus();
+    return;
+  }
+  if (selectedTaskId !== taskId || input.value.trim() !== message || stoppingWork.has(taskId)) return;
   const request = uncertainChatRequest?.taskId === taskId && uncertainChatRequest.message === message
     ? uncertainChatRequest : { taskId, message, message_id: crypto.randomUUID() };
+  if (needsConfirmation) request.imported_session_confirmed = true;
   input.value = '';
   resizeChatInput(input);
   jumpToLatest();
@@ -1735,6 +1768,7 @@ async function sendChat() {
     resizeChatInput(input);
     return;
   }
+  if (needsConfirmation) markImportedOwnershipConfirmed(taskId);
   resizeChatInput(input);
   poll();
   setTimeout(poll, 1000);
@@ -1820,7 +1854,12 @@ async function lookupImportSession() {
       status.classList.add('is-error');
       return;
     }
-    importMatch = { projectId, harnessId, sessionId };
+    if (typeof data.preview_token !== 'string' || !data.preview_token) {
+      status.textContent = 'Could not verify the session. Search again.';
+      status.classList.add('is-error');
+      return;
+    }
+    importMatch = { projectId, harnessId, sessionId, previewToken: data.preview_token };
     const prompt = typeof data.prompt === 'string' ? data.prompt : '';
     const answer = typeof data.answer === 'string' ? data.answer : '';
     const compactPrompt = prompt.trim().replace(/\s+/g, ' ');
@@ -1869,11 +1908,13 @@ async function submitImportSession() {
     const res = await fetch('/api/session-import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project_id: match.projectId, harness_id: match.harnessId,
-        session_id: match.sessionId, label: document.getElementById('import-label').value.trim() || null })
+        session_id: match.sessionId, preview_token: match.previewToken,
+        label: document.getElementById('import-label').value.trim() || null })
     });
     const data = await res.json();
     if (epoch !== importEpoch || !importMode) return;
     if (!res.ok) {
+      if (res.status === 409) invalidateImportPreview();
       const status = document.getElementById('import-status');
       status.textContent = data.error || 'Could not import the session.';
       status.classList.add('is-error');
@@ -1954,8 +1995,16 @@ async function submitForkTask() {
   const prompt = promptEl.value.trim();
   if (!prompt) return flagInvalid(promptEl, 'Enter a prompt for the fork.');
   const label = document.getElementById('fork-label').value.trim();
-  const error = await postJson(`/api/tasks/${forkParentId}/fork`, { prompt, label: label || null });
+  const parentId = forkParentId;
+  const parent = findTask(parentId);
+  const needsConfirmation = Boolean(parent?.imported_session && !parent.imported_session_confirmed);
+  if (needsConfirmation && !await confirmImportedOwnership(parent, 'Fork')) return;
+  if (forkParentId !== parentId || promptEl.value.trim() !== prompt) return;
+  const body = { prompt, label: label || null };
+  if (needsConfirmation) body.imported_session_confirmed = true;
+  const error = await postJson(`/api/tasks/${parentId}/fork`, body);
   if (error) return showMessage(error, 'Fork failed');
+  if (needsConfirmation) markImportedOwnershipConfirmed(parentId);
   closeModal('fork-task-modal');
   forkParentId = null;
   poll();
@@ -2982,10 +3031,11 @@ function showMessage(message, title = 'Notice') {
 let confirmResolve = null;
 let confirmOpener = null;
 
-function showConfirm(message, { confirmLabel = 'Yes', cancelLabel = 'No', danger = false } = {}) {
+function showConfirm(message, { confirmLabel = 'Yes', cancelLabel = 'No', danger = false, title = 'Confirm' } = {}) {
   return new Promise(resolve => {
     confirmResolve = resolve;
     confirmOpener = document.activeElement;
+    document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-message').textContent = message;
     const accept = document.getElementById('confirm-accept-btn');
     const cancel = document.getElementById('confirm-cancel-btn');

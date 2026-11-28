@@ -80,6 +80,7 @@ Close the session in other terminals before sending a follow-up.
 Deleting the imported Hive task never deletes the original harness session.
 
 From the CLI, run `hihive import SESSION_ID --harness NAME` in the selected project.
+For the first follow-up or fork, close the session in other terminals and add `--confirm-session-ownership` to confirm that Hive will use it from now on.
 Session import is available only to the user, not to agent tokens.
 
 ## Task cost
