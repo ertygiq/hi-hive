@@ -26,6 +26,9 @@ if "--version" in sys.argv:
 root = option("--fake-root")
 scenario = option("--fake-case")
 session = option("--session-id") or option("--resume")
+if not session and option("--session"):
+    with open(option("--session")) as file:
+        session = json.loads(file.readline())["id"]
 
 
 def path(name):

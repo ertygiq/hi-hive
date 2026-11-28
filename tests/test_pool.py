@@ -199,6 +199,157 @@ def p(test_dir):
     pool.pool.stop()
 
 
+@pytest.mark.parametrize("kind", ["pi", "claude-code"])
+def test_imported_followup_and_fork_resume_and_refuse_changed_source(test_dir, monkeypatch, kind, mock_native):
+    from hihive import session_import
+    fixture = Pool(test_dir)
+    try:
+        fixture.settle()
+        fixture.write_config(kind)
+        fixture.restart(start=True)
+        pool = fixture.pool
+        monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+        session_id = "12345678-1234-1234-1234-123456789abc"
+        source = fixture.path("import-source.jsonl")
+        with open(source, "w") as file:
+            file.write(json.dumps({"type": "session", "id": session_id}) + "\n")
+        def read_source(*_args):
+            return {"session_id": session_id, "prompt": "original", "answer": "answer",
+                    "message_count": None, "last_activity": None, "source": session_import._read(source)[1]}
+        monkeypatch.setattr(session_import, "read_pi" if kind == "pi" else "read_claude", read_source)
+        project = next(iter(pool._projects))
+        token = pool.preview_session_import(project, "pi", session_id)["preview_token"]
+        imported = pool.import_session(project, "pi", session_id, preview_token=token)
+        with pytest.raises(HiveError, match="Confirm"):
+            pool.send_chat(imported, "follow-up")
+        assert not pool.task_detail(imported)["imported_session_confirmed"]
+        receipt = pool.send_chat(imported, "follow-up", imported_session_confirmed=True)
+        fixture.wait(lambda: pool.task_detail(imported)["status"] == "completed")
+        if kind == "claude-code":
+            pool._tasks[imported]["runner"].idle_timeout = 0
+        fixture.wait(lambda: pool.task_detail(imported)["runner_state"] == "exited"
+                     and not pool._tasks[imported].get("import_refresh_needed")
+                     and not pool._tasks[imported].get("import_refresh_pending"))
+        assert pool.task_detail(imported)["imported_session_confirmed"]
+        with open(fixture.persist) as file:
+            assert json.load(file)["tasks"][imported]["imported_session_confirmed"]
+        prompts = [entry for entry in fixture.inputs() if entry.get("message") == "follow-up"
+                   or isinstance(entry.get("message"), dict) and entry["message"].get("content") == "follow-up"]
+        assert len(prompts) == 1
+        child = pool.fork_task(imported, "fork prompt")
+        fixture.wait(lambda: pool.task_detail(child)["status"] == "completed")
+        assert pool.task_detail(child)["parent_task_id"] == imported
+        with open(source, "a") as file:
+            file.write('{"type":"custom"}\n')
+        changed = open(source, "rb").read()
+        pool._tasks[imported]["import_refresh_needed"] = True
+        duplicate = pool.send_chat(imported, "follow-up", message_id=receipt["id"])
+        assert duplicate["id"] == receipt["id"]
+        pool._tasks[imported].pop("import_refresh_needed")
+        duplicate = pool.send_chat(imported, "follow-up", message_id=receipt["id"])
+        assert duplicate["id"] == receipt["id"]
+        assert sum(entry.get("message") == "follow-up" or
+                   isinstance(entry.get("message"), dict) and entry["message"].get("content") == "follow-up"
+                   for entry in fixture.inputs()) == 1
+        with pytest.raises(HiveError, match="changed"):
+            pool.send_chat(imported, "must not send")
+        assert open(source, "rb").read() == changed
+        with pytest.raises(HiveError, match="changed"):
+            pool.fork_task(imported, "must not fork")
+        assert open(source, "rb").read() == changed
+        os.unlink(source)
+        with pytest.raises(HiveError):
+            pool.send_chat(imported, "missing source")
+        assert not os.path.exists(source)
+        with open(source, "w") as file:
+            file.write(json.dumps({"type": "session", "id": session_id}) + "\n")
+        replaced = open(source, "rb").read()
+        with pytest.raises(HiveError, match="changed"):
+            pool.fork_task(imported, "replaced source")
+        assert open(source, "rb").read() == replaced
+    finally:
+        fixture.pool.stop()
+
+
+def test_imported_refresh_failure_quarantines_without_blessing_source(test_dir, monkeypatch, mock_native):
+    import threading
+    from hihive import session_import
+    fixture = Pool(test_dir)
+    try:
+        fixture.settle()
+        os.remove(fixture.path("release"))
+        pool = fixture.pool
+        monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+        session_id = "12345678-1234-1234-1234-123456789abc"
+        source = fixture.path("import-source.jsonl")
+        with open(source, "w") as file:
+            file.write(json.dumps({"type": "session", "id": session_id}) + "\n")
+        monkeypatch.setattr(session_import, "read_pi", lambda cwd, args, sid: {
+            "session_id": sid, "prompt": "original", "answer": "answer", "message_count": None,
+            "last_activity": None, "source": session_import._read(source)[1]})
+        project = next(iter(pool._projects))
+        token = pool.preview_session_import(project, "pi", session_id)["preview_token"]
+        imported = pool.import_session(project, "pi", session_id, preview_token=token)
+        old = dict(pool._tasks[imported]["imported_source"])
+        pool.send_chat(imported, "follow-up", imported_session_confirmed=True)
+        actual_read = session_import._read
+        def failing_read(path):
+            if threading.current_thread().name == "pool-monitor" and str(path) == source:
+                raise HiveError("cannot read")
+            return actual_read(path)
+        monkeypatch.setattr(session_import, "_read", failing_read)
+        touch(fixture.dir, "release")
+        fixture.wait(lambda: pool._tasks[imported].get("import_interrupted"))
+        assert pool._tasks[imported]["imported_source"] == old
+    finally:
+        fixture.pool.stop()
+
+
+def test_imported_claude_preserves_background_and_same_runner_followup(test_dir, monkeypatch, mock_native):
+    from hihive import session_import
+    fixture = Pool(test_dir)
+    try:
+        fixture.settle()
+        fixture.write_config("claude-code", scenario="background-activity")
+        fixture.restart(start=True)
+        pool = fixture.pool
+        monkeypatch.setattr(session_import, "native_harness", lambda harness: True)
+        session_id = "12345678-1234-1234-1234-123456789abc"
+        source = fixture.path("import-source.jsonl")
+        with open(source, "w") as file:
+            file.write(json.dumps({"type": "session", "id": session_id}) + "\n")
+        monkeypatch.setattr(session_import, "read_claude", lambda cwd, sid: {
+            "session_id": sid, "prompt": "original", "answer": "answer", "message_count": None,
+            "last_activity": None, "source": session_import._read(source)[1]})
+        project = next(iter(pool._projects))
+        token = pool.preview_session_import(project, "pi", session_id)["preview_token"]
+        imported = pool.import_session(project, "pi", session_id, preview_token=token)
+        pool.send_chat(imported, "first follow-up", imported_session_confirmed=True)
+        fixture.wait(lambda: pool.task_detail(imported)["background_activity"]["task_count"] == 2)
+        runner = pool._tasks[imported]["runner"]
+        assert runner.state == "idle"
+        with pytest.raises(HiveError, match="still running"):
+            pool.fork_task(imported, "fork")
+        receipt = pool.send_chat(imported, "same process")
+        assert isinstance(receipt, dict)
+        assert pool._tasks[imported]["runner"] is runner
+        touch(fixture.dir, "background-finished")
+        touch(fixture.dir, "background-reply")
+        fixture.wait(lambda: any(m.get("content") == "Background finished" for m in pool.task_detail(imported)["messages"]))
+        original_submit = runner.submit
+        def close_before_submit(*args, **kwargs):
+            runner.close("test close race")
+            return original_submit(*args, **kwargs)
+        monkeypatch.setattr(runner, "submit", close_before_submit)
+        with pytest.raises(HiveError, match="closing"):
+            pool.send_chat(imported, "race")
+        assert pool._tasks[imported]["runner"] is runner
+    finally:
+        touch(fixture.dir, "background-finished")
+        touch(fixture.dir, "background-reply")
+        fixture.pool.stop()
+
+
 def test_agent_receives_its_full_task_id_not_an_inherited_value(test_dir, monkeypatch):
     monkeypatch.setenv("HIVE_TASK_ID", "wrong-inherited-id")
     pool = Pool(test_dir)

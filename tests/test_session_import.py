@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -73,8 +74,83 @@ def test_pi_rejects_bad_parent_and_mismatched_cwd(tmp_path, monkeypatch):
         session_import.read_pi(str(cwd), [], "id")
     header["cwd"] = str(tmp_path)
     save(file, [header])
-    with pytest.raises(HiveError, match="not found"):
+    with pytest.raises(HiveError, match="No session with this ID was found in this project\\."):
         session_import.read_pi(str(cwd), [], "id")
+
+
+def test_native_executable_rejects_symlink_swap_during_validation(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.write_bytes(b"\\x7fELFfirst")
+    second.write_bytes(b"\\x7fELFsecond")
+    first.chmod(0o755)
+    second.chmod(0o755)
+    command = tmp_path / "claude"
+    command.symlink_to(first)
+    monkeypatch.setattr(session_import.shutil, "which", lambda name: str(command))
+    real_read = os.read
+    def swap(fd, count):
+        data = real_read(fd, count)
+        if data == b"\\x7fELF":
+            command.unlink()
+            command.symlink_to(second)
+        return data
+    monkeypatch.setattr(os, "read", swap)
+    assert session_import.native_executable({"type": "claude-code", "command": str(command)}) is None
+
+
+def test_trusted_root_package_metadata_does_not_weaken_transcript_ownership(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    path = tmp_path / "package.json"
+    path.write_text('{}\n')
+    monkeypatch.setattr(session_import, "_directory", lambda directory: os.open(directory, os.O_RDONLY | os.O_DIRECTORY))
+    original_fstat = os.fstat
+    def root_owned(fd):
+        info = original_fstat(fd)
+        return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_dev=info.st_dev, st_ino=info.st_ino,
+                               st_size=info.st_size, st_mtime_ns=info.st_mtime_ns, st_ctime_ns=info.st_ctime_ns)
+    monkeypatch.setattr(os, "fstat", root_owned)
+    if os.getuid() == 0:
+        pytest.skip("Requires a non-root test user")
+    assert session_import._safe_bytes(path, allow_root=True)[0] == b'{}\n'
+    with pytest.raises(HiveError, match="ownership"):
+        session_import._safe_bytes(path)
+
+
+def test_reader_refuses_fifo_symlink_and_unsafe_ancestor(tmp_path):
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    fifo = safe / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(HiveError):
+        session_import._read(fifo)
+    target = safe / "target"
+    target.write_text('{}\n')
+    link = tmp_path / "link"
+    link.symlink_to(safe, target_is_directory=True)
+    with pytest.raises(HiveError):
+        session_import._read(link / "target")
+    safe.chmod(0o775)
+    with pytest.raises(HiveError, match="permissions"):
+        session_import._read(target)
+
+
+def test_reader_rejects_file_swapped_to_symlink_at_open(tmp_path, monkeypatch):
+    parent = tmp_path / "safe"
+    parent.mkdir()
+    source = parent / "session.jsonl"
+    source.write_text('{}\n')
+    target = parent / "other"
+    target.write_text('{}\n')
+    original_open = os.open
+    def swap(path, flags, *args, **kwargs):
+        if path == source.name and kwargs.get("dir_fd") is not None:
+            source.unlink()
+            source.symlink_to(target)
+        return original_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", swap)
+    with pytest.raises(HiveError):
+        session_import._read(source)
 
 
 def test_bounded_reader_rejects_truncation_and_large_line(tmp_path, monkeypatch):
@@ -122,6 +198,23 @@ def test_claude_image_only_first_user_does_not_promote_later_prompt(tmp_path, mo
     assert session_import.read_claude(str(cwd), sid)["prompt"] == ""
 
 
+def test_claude_angle_bracket_user_messages_are_real(tmp_path, monkeypatch):
+    cwd = tmp_path / "p"
+    cwd.mkdir()
+    root = tmp_path / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
+    sid = "12345678-1234-1234-1234-123456789abc"
+    folder = root / "projects" / __import__("re").sub(r"[^a-zA-Z0-9]", "-", str(cwd))
+    save(folder / f"{sid}.jsonl", [
+        {"type": "user", "uuid": "a", "parentUuid": None, "cwd": str(cwd), "message": {"role": "user", "content": "<task>Fix bug</task>"}},
+        {"type": "assistant", "uuid": "b", "parentUuid": "a", "cwd": str(cwd), "message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": "old answer"}]}},
+        {"type": "user", "uuid": "c", "parentUuid": "b", "cwd": str(cwd), "message": {"role": "user", "content": "<task>More work</task>"}},
+    ])
+    result = session_import.read_claude(str(cwd), sid)
+    assert result["prompt"] == "<task>Fix bug</task>"
+    assert result["answer"] == ""
+
+
 def test_claude_ambiguous_branch_returns_empty_text(tmp_path, monkeypatch):
     cwd = tmp_path / "p"
     cwd.mkdir()
@@ -137,6 +230,19 @@ def test_claude_ambiguous_branch_returns_empty_text(tmp_path, monkeypatch):
     ])
     result = session_import.read_claude(str(cwd), sid)
     assert result["prompt"] == result["answer"] == ""
+
+
+def test_claude_discovery_budget_is_shared_across_project_directories(tmp_path, monkeypatch):
+    root = tmp_path / "claude" / "projects"
+    for index in range(3):
+        folder = root / f"project-{index}"
+        folder.mkdir(parents=True)
+        (folder / "one").write_text("")
+        (folder / "two").write_text("")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root.parent))
+    monkeypatch.setattr(session_import, "MAX_DISCOVERY_ENTRIES", 5)
+    with pytest.raises(HiveError, match="Too many"):
+        session_import.read_claude(str(tmp_path), "12345678-1234-1234-1234-123456789abc")
 
 
 def test_claude_native_project_and_complete_answer(tmp_path, monkeypatch):

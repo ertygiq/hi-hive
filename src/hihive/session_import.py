@@ -1,9 +1,11 @@
 """Read native harness sessions conservatively, without changing their files."""
 
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from . import HiveError
@@ -11,58 +13,213 @@ from . import HiveError
 MAX_BYTES = 32 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
 MAX_ENTRIES = 100_000
+MAX_DISCOVERY_ENTRIES = 10_000
 SESSION_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 CLAUDE_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
-def native_harness(harness):
-    """Accept only recognizable local Pi or Claude executables, not wrappers."""
+def native_executable(harness):
+    """Return the identity of the exact verified local executable, or None."""
     kind = harness.get("type")
     command = str(harness.get("command") or "")
     resolved = shutil.which(command)
     if not resolved:
-        return False
+        return None
     path = os.path.realpath(resolved)
-    if kind == "pi":
-        if "/node_modules/" not in path:
-            return False
-        for directory in Path(path).parents:
-            if directory.name != "pi-coding-agent":
-                continue
-            try:
-                package = json.loads((directory / "package.json").read_text())
-                executable = package.get("bin", {}).get("pi")
-                return (package.get("name") in ("@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent")
-                        and isinstance(executable, str) and os.path.realpath(directory / executable) == path)
-            except (OSError, ValueError, AttributeError):
-                return False
-        return False
-    if kind == "claude-code":
+    try:
+        directory = _directory(Path(path).parent)
         try:
-            with open(path, "rb") as f:
-                magic = f.read(4)
-            return os.path.basename(command) == "claude" and magic in (
-                b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe")
-        except OSError:
-            return False
-    return False
+            fd = os.open(Path(path).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+                    return None
+                magic = os.read(fd, 4)
+                after = os.fstat(fd)
+                current = os.stat(Path(path).name, dir_fd=directory, follow_symlinks=False)
+                identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or identity != (
+                        current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns):
+                    return None
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    except (HiveError, OSError):
+        return None
+    valid = False
+    if kind == "pi" and "/node_modules/" in path:
+        for directory in Path(path).parents:
+            if directory.name == "pi-coding-agent":
+                try:
+                    package = json.loads(_safe_bytes(directory / "package.json", 1024 * 1024, allow_root=True)[0])
+                    executable = package.get("bin", {}).get("pi")
+                    valid = (package.get("name") in ("@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent")
+                             and isinstance(executable, str) and os.path.realpath(directory / executable) == path)
+                except (HiveError, OSError, ValueError, AttributeError):
+                    pass
+                break
+    elif kind == "claude-code":
+        valid = os.path.basename(command) == "claude" and magic in (
+            b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe")
+    if not valid or shutil.which(command) != resolved or os.path.realpath(resolved) != path:
+        return None
+    return {"executable": path, "executable_device": info.st_dev, "executable_inode": info.st_ino,
+            "executable_size": info.st_size, "executable_mtime_ns": info.st_mtime_ns,
+            "executable_ctime_ns": info.st_ctime_ns}
+
+
+def native_harness(harness):
+    return native_executable(harness) is not None
+
+
+def _directory(path):
+    """Open a directory by walking trusted ancestors without following links."""
+    if not all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")):
+        raise HiveError("Safe session file access is unavailable")
+    path = os.path.abspath(os.fspath(path))
+    # macOS exposes these root-owned aliases to /private. Do not resolve other links.
+    if os.uname().sysname == "Darwin":
+        for alias in ("/tmp", "/var"):
+            target = "/private" + alias
+            if path == alias or path.startswith(alias + "/"):
+                link = os.lstat(alias)
+                if link.st_uid != 0 or not stat.S_ISLNK(link.st_mode) or os.readlink(alias) != target.lstrip("/"):
+                    raise HiveError("Untrusted system directory alias")
+                path = target + path[len(alias):]
+                break
+    parts = [part for part in path.split(os.sep) if part]
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        root_info = os.fstat(fd)
+        if root_info.st_uid != 0 or root_info.st_mode & 0o022:
+            raise HiveError("Session directory permissions are unsafe")
+        previous_sticky = False
+        for i, part in enumerate(parts):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            sticky_ancestor = (i < len(parts) - 1 and info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX))
+            if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022 and (not sticky_ancestor or previous_sticky)):
+                raise HiveError("Session directory permissions are unsafe")
+            previous_sticky = sticky_ancestor
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _entries(directory, limit=10_000, budget=None):
+    try:
+        fd = _directory(directory)
+        try:
+            names = []
+            with os.scandir(fd) as iterator:
+                for entry in iterator:
+                    if len(names) >= limit or (budget is not None and budget[0] <= 0):
+                        raise HiveError("Too many session entries to inspect safely")
+                    if budget is not None:
+                        budget[0] -= 1
+                    names.append(entry.name)
+            return names
+        finally:
+            os.close(fd)
+    except OSError:
+        raise HiveError("Session directory is unavailable or unsafe") from None
+
+
+def _header(path):
+    try:
+        directory = _directory(Path(path).parent)
+        try:
+            fd = os.open(Path(path).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                    raise HiveError("Session file ownership or permissions are unsafe")
+                with os.fdopen(fd, "rb", closefd=False) as file:
+                    return json.loads(file.readline(65537))
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    except (OSError, ValueError):
+        raise HiveError("Session header is unavailable or unsafe") from None
+
+
+def executable_identity_matches(source):
+    path = source["executable"]
+    try:
+        directory = _directory(Path(path).parent)
+        try:
+            fd = os.open(Path(path).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                return (stat.S_ISREG(info.st_mode) and info.st_uid in (0, os.getuid()) and not info.st_mode & 0o022
+                        and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) ==
+                        (source["executable_device"], source["executable_inode"], source["executable_size"],
+                         source["executable_mtime_ns"], source["executable_ctime_ns"]))
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    except (OSError, HiveError, KeyError):
+        return False
+
+
+def source_identity_matches(source):
+    path = source["path"]
+    try:
+        directory = _directory(Path(path).parent)
+        try:
+            fd = os.open(Path(path).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                info = os.fstat(fd)
+                return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022
+                        and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) ==
+                        (source["device"], source["inode"], source["size"], source["mtime_ns"], source["ctime_ns"]))
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    except (OSError, HiveError, KeyError):
+        return False
+
+
+def _safe_bytes(path, limit=MAX_BYTES, allow_root=False):
+    try:
+        directory = _directory(Path(path).parent)
+        try:
+            fd = os.open(Path(path).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                before = os.fstat(fd)
+                owners = (os.getuid(), 0) if allow_root else (os.getuid(),)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid not in owners or before.st_mode & 0o022:
+                    raise HiveError("Session file ownership or permissions are unsafe")
+                if not 0 < before.st_size <= limit:
+                    raise HiveError("Session file is empty or too large")
+                with os.fdopen(fd, "rb", closefd=False) as file:
+                    data = file.read(limit + 1)
+                after = os.fstat(fd)
+                current = os.stat(Path(path).name, dir_fd=directory, follow_symlinks=False)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    except OSError:
+        raise HiveError("Session file is unavailable or unsafe") from None
+    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or identity != (
+            current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns):
+        raise HiveError("Session changed while reading; try again")
+    if len(data) > limit:
+        raise HiveError("Session file is too large")
+    return data, before
 
 
 def _read(path):
-    try:
-        with open(path, "rb") as f:
-            before = os.fstat(f.fileno())
-            if not 0 < before.st_size <= MAX_BYTES:
-                raise HiveError("Session file is empty or too large")
-            data = f.read(MAX_BYTES + 1)
-            after = os.fstat(f.fileno())
-        current = os.stat(path)
-    except OSError:
-        raise HiveError("Session file is unavailable") from None
-    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) or identity != (
-            current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
-        raise HiveError("Session changed while reading; try again")
+    data, before = _safe_bytes(path)
     if len(data) > MAX_BYTES or not data.endswith(b"\n"):
         raise HiveError("Session file is incomplete or too large")
     lines = data.splitlines()
@@ -74,7 +231,9 @@ def _read(path):
         raise HiveError("Session file has invalid JSON") from None
     if any(not isinstance(entry, dict) for entry in entries):
         raise HiveError("Session file has invalid entries")
-    return entries, {"path": str(path), "device": before.st_dev, "inode": before.st_ino}
+    return entries, {"path": str(path), "device": before.st_dev, "inode": before.st_ino,
+                     "size": before.st_size, "mtime_ns": before.st_mtime_ns, "ctime_ns": before.st_ctime_ns,
+                     "digest": hashlib.sha256(data).hexdigest()}
 
 
 def _text(content):
@@ -118,9 +277,9 @@ def _pi_dir(cwd, args):
         agent = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent")
         setting_value = None
         for settings in (agent / "settings.json", Path(cwd) / ".pi" / "settings.json"):
-            if settings.is_file():
+            if os.path.lexists(settings):
                 try:
-                    config = json.loads(settings.read_text())
+                    config = json.loads(_safe_bytes(settings, 1024 * 1024)[0])
                     if not isinstance(config, dict):
                         raise ValueError()
                     if "sessionDir" in config:
@@ -143,25 +302,14 @@ def read_pi(cwd, args, session_id):
            or arg.startswith(("--session=", "--session-id=", "--fork=", "--session-dir=")) for arg in args):
         raise HiveError("Pi harness arguments do not support session import")
     if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
-        raise HiveError("Invalid Pi session ID")
+        raise HiveError("This is not a valid Pi session ID.")
     directory = _pi_dir(cwd, args)
-    try:
-        candidates = list(directory.glob("*.jsonl"))
-    except OSError:
-        raise HiveError("Cannot inspect Pi sessions") from None
-    if len(candidates) > 10_000:
-        raise HiveError("Too many Pi sessions to inspect safely")
+    candidates = (directory / name for name in _entries(directory) if name.endswith(".jsonl"))
     matches = []
     for path in candidates:
-        if path.is_symlink() or not path.is_file():
-            continue
         try:
-            with path.open("rb") as file:
-                first = file.readline(65537)
-            if len(first) > 65536:
-                continue
-            header = json.loads(first)
-        except (OSError, ValueError):
+            header = _header(path)
+        except HiveError:
             continue
         if not isinstance(header, dict) or header.get("type") != "session" or header.get("id") != session_id:
             continue
@@ -172,7 +320,7 @@ def read_pi(cwd, args, session_id):
             continue
         matches.append((entries, identity))
     if not matches:
-        raise HiveError("Session not found for this project")
+        raise HiveError("No session with this ID was found in this project.")
     if len(matches) > 1:
         raise HiveError("Session is ambiguous")
     entries, identity = matches[0]
@@ -214,14 +362,22 @@ def read_claude(cwd, session_id):
     if directory.is_symlink():
         raise HiveError("Claude session directory is a symbolic link")
     path = directory / f"{session_id}.jsonl"
-    try:
-        matches = [candidate for candidate in root.glob(f"*/{session_id}.jsonl") if candidate.is_file()]
-    except OSError:
-        raise HiveError("Cannot inspect Claude sessions") from None
+    matches = []
+    budget = [MAX_DISCOVERY_ENTRIES]
+    for name in _entries(root, budget=budget):
+        folder = root / name
+        try:
+            if f"{session_id}.jsonl" in _entries(folder, budget=budget):
+                matches.append(folder)
+        except HiveError as error:
+            if "Too many session entries" in str(error):
+                raise
+            # A non-directory or inaccessible unrelated entry is not a session root.
+            continue
     if len(matches) > 1:
         raise HiveError("Session is ambiguous")
-    if path.is_symlink() or not path.is_file():
-        raise HiveError("Session not found for this project")
+    if not matches or matches[0] != directory:
+        raise HiveError("No session with this ID was found in this project.")
     entries, identity = _read(path)
     cwds = [e.get("cwd") for e in entries if isinstance(e.get("cwd"), str)]
     if not cwds or any(os.path.realpath(value) != canonical for value in cwds):
@@ -250,7 +406,9 @@ def read_claude(cwd, session_id):
             if entry.get("type") == "user":
                 if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
                     continue
-                if text.lstrip().startswith(("<", "[Request interrupted")):
+                if text.lstrip().startswith(("<local-command-stdout>", "<session-start-hook>", "<tick>",
+                                             "<goal>", "<command-name>", "<ide_opened_file>",
+                                             "<ide_selection>", "[Request interrupted")):
                     continue
                 if not first_user_seen:
                     first_user_seen = True

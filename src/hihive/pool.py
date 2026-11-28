@@ -1,5 +1,8 @@
 """Task pool: queue, scheduling, persistence, and the runners' event handling."""
 
+import copy
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -118,6 +121,7 @@ class PoolManager:
     def __init__(self, config_file, persist_file):
         self.config_file, self.persist_file = str(config_file), str(persist_file)
         self._tasks = {}
+        self._import_secret = os.urandom(32)
         self._task_order = []
         self._max_parallel = None
         # Read from config.json only to create the first project.
@@ -242,34 +246,54 @@ class PoolManager:
             self._bump_version()
             return task_id
 
+    def _import_snapshot(self, project_id, harness_id, session_id):
+        project = self._project_for_new_task(project_id)
+        harness = self._find_harness(harness_id)
+        self._require_available(harness, project)
+        if any(t.get("session_id") == session_id for t in self._tasks.values()):
+            raise HiveError("This session already belongs to a task in Hive.")
+        return copy.deepcopy(project), copy.deepcopy(harness)
+
+    def _import_token(self, project_id, harness_id, session_id, source):
+        payload = json.dumps([project_id, harness_id, session_id, source], sort_keys=True).encode()
+        return hmac.new(self._import_secret, payload, hashlib.sha256).hexdigest()
+
     def preview_session_import(self, project_id, harness_id, session_id):
         with self._lock:
-            project = self._project_for_new_task(project_id)
-            harness = self._find_harness(harness_id)
-            self._require_available(harness, project)
-            if not session_import.native_harness(harness):
-                raise HiveError("Session import requires a supported native local harness")
-            cwd = os.path.realpath(os.path.expanduser(project["work_dir"]))
-            if not os.path.isdir(cwd):
-                raise HiveError("Project working directory is unavailable")
-            args = list(harness.get("args") or [])
-            if any(t.get("session_id") == session_id for t in self._tasks.values()):
-                raise HiveError("Session is already imported or owned by a Hive task")
-            if harness["type"] == "pi":
-                result = session_import.read_pi(cwd, args, session_id)
-            else:
-                result = session_import.read_claude(cwd, session_id)
-            executable = os.path.realpath(shutil.which(harness["command"]))
-            executable_stat = os.stat(executable)
-            result["source"].update(cwd=cwd, harness_id=harness_id, executable=executable,
-                                    executable_device=executable_stat.st_dev, executable_inode=executable_stat.st_ino,
-                                    command=harness["command"], args=args, kind=harness["type"])
-            return result
-
-    def import_session(self, project_id, harness_id, session_id, label=None):
+            project, harness = self._import_snapshot(project_id, harness_id, session_id)
+        executable = session_import.native_executable(harness)
+        if not executable:
+            raise HiveError("Session import requires a supported native local harness")
+        cwd = os.path.realpath(os.path.expanduser(project["work_dir"]))
+        if not os.path.isdir(cwd):
+            raise HiveError("Project working directory is unavailable")
+        args = list(harness.get("args") or [])
+        result = (session_import.read_pi(cwd, args, session_id) if harness["type"] == "pi"
+                  else session_import.read_claude(cwd, session_id))
+        result["source"].update(executable)
+        result["source"].update(cwd=cwd, harness_id=harness_id,
+                                command=harness["command"], args=args, kind=harness["type"])
         with self._lock:
-            project_id = self._project_for_new_task(project_id)["id"]
-            preview = self.preview_session_import(project_id, harness_id, session_id)
+            if self._import_snapshot(project_id, harness_id, session_id) != (project, harness):
+                raise HiveError("Project or harness changed; preview again")
+            result["preview_token"] = self._import_token(project["id"], harness_id, session_id, result["source"])
+        return result
+
+    def import_session(self, project_id, harness_id, session_id, label=None, preview_token=None):
+        preview = self.preview_session_import(project_id, harness_id, session_id)
+        with self._lock:
+            project = self._project_for_new_task(project_id)
+            project_id = project["id"]
+            project, harness = self._import_snapshot(project_id, harness_id, session_id)
+            source = preview["source"]
+            if (os.path.realpath(os.path.expanduser(project["work_dir"])) != source["cwd"]
+                    or harness.get("command") != source["command"] or harness.get("type") != source["kind"]
+                    or list(harness.get("args") or []) != source["args"]):
+                raise HiveError("Project or harness changed; preview again")
+            if (not isinstance(preview_token, str) or not hmac.compare_digest(preview_token, preview["preview_token"])
+                    or not session_import.source_identity_matches(source)
+                    or not session_import.executable_identity_matches(source)):
+                raise HiveError("Session changed; preview again")
             source = preview["source"]
             created = now()
             task_id = str(uuid.uuid4())
@@ -277,32 +301,56 @@ class PoolManager:
             if preview["answer"]:
                 messages.append(tm.message("assistant", "initial", preview["answer"], timestamp=iso_micro(created)))
             task = self._build_task(task_id, messages=messages, label=_clean_label(label) or _derive_label(preview["prompt"]) or "Imported session",
-                                    created_at=created, completed_at=created, status="completed",
+                                    created_at=created, started_at=created, completed_at=created, status="completed",
                                     harness=harness_id, project_id=project_id, session_id=session_id)
             task["imported_source"] = source
             self._tasks[task_id] = task
             self._task_order.append(task_id)
-            self._bump_version()
+            self.version += 1
+            try:
+                self._save_state(strict=True)
+            except Exception:
+                self._tasks.pop(task_id, None)
+                self._task_order.remove(task_id)
+                self.version += 1
+                raise HiveError("Could not save imported task; try again") from None
             return task_id
 
+    def _import_verification_snapshot(self, task):
+        return {"source": copy.deepcopy(task["imported_source"]), "harness": copy.deepcopy(self._task_harness(task)),
+                "cwd": os.path.realpath(os.path.expanduser(self._projects[task["project_id"]]["work_dir"])),
+                "harness_id": _task_harness_id(task), "interrupted": bool(task.get("import_interrupted")),
+                "session_id": task.get("session_id")}
+
     def _verify_import_source(self, task):
-        source = task["imported_source"]
-        harness = self._task_harness(task)
-        cwd = os.path.realpath(os.path.expanduser(self._projects[task["project_id"]]["work_dir"]))
+        self._verify_import_snapshot(self._import_verification_snapshot(task))
+
+    def _verify_import_snapshot(self, snapshot):
+        source = snapshot["source"]
+        harness = snapshot["harness"]
+        cwd = snapshot["cwd"]
         args = list(harness.get("args") or [])
-        if not session_import.native_harness(harness):
+        executable = session_import.native_executable(harness)
+        if not executable:
             raise HiveError("Session import requires a supported native local harness")
-        if harness["type"] == "pi":
-            current = session_import.read_pi(cwd, args, task["session_id"])["source"]
-        else:
-            current = session_import.read_claude(cwd, task["session_id"])["source"]
-        executable = os.path.realpath(shutil.which(harness["command"]))
-        executable_stat = os.stat(executable)
-        current.update(cwd=cwd, harness_id=_task_harness_id(task), command=harness["command"], args=args,
-                       kind=harness["type"], executable=executable, executable_device=executable_stat.st_dev,
-                       executable_inode=executable_stat.st_ino)
+        try:
+            _, current = session_import._read(source["path"])
+        except HiveError:
+            if snapshot["interrupted"]:
+                raise HiveError("The session changed during interrupted work. Delete this Hive task and import the session again after reviewing it.") from None
+            raise
+        current.update(executable)
+        current.update(cwd=cwd, harness_id=snapshot["harness_id"], command=harness["command"], args=args,
+                       kind=harness["type"])
         if current != source:
+            if snapshot["interrupted"]:
+                raise HiveError("The session changed during interrupted work. Delete this Hive task and import the session again after reviewing it.")
             raise HiveError("Imported session source or harness changed; cannot resume safely")
+
+    def import_confirmation_required(self, task_id):
+        with self._lock:
+            task = self._tasks.get(task_id)
+            return bool(task and task.get("imported_source") and not task.get("imported_session_confirmed"))
 
     def set_task_label(self, task_id, label):
         cleaned = _clean_label(label)
@@ -316,14 +364,35 @@ class PoolManager:
             self._bump_version()
             return cleaned
 
-    def fork_task(self, parent_id, prompt, label=None, created_by_task_id=None):
+    def fork_task(self, parent_id, prompt, label=None, created_by_task_id=None, imported_session_confirmed=False):
         """New task ID, None if the parent cannot fork, or "missing_session"."""
         with self._lock:
+            self._poll_live_runners()
             parent = self._tasks.get(parent_id)
+            snapshot = self._import_verification_snapshot(parent) if parent and parent.get("imported_source") else None
+            if snapshot and (parent.get("import_refresh_needed") or parent.get("import_refresh_pending")
+                             or (parent.get("runner") and parent["runner"].state != "exited")):
+                raise HiveError("The imported session is still running or closing; try again")
+        if snapshot:
+            self._verify_import_snapshot(snapshot)
+        with self._lock:
+            self._poll_live_runners()
+            parent = self._tasks.get(parent_id)
+            if snapshot and (not parent or self._import_verification_snapshot(parent) != snapshot
+                             or not session_import.source_identity_matches(snapshot["source"])
+                             or not session_import.executable_identity_matches(snapshot["source"])):
+                raise HiveError("The imported session changed; try again")
             if not parent or parent["status"] not in FINISHED:
                 return None
             if not str(parent.get("session_id") or "").strip():
                 return "missing_session"
+            if parent.get("imported_source"):
+                if parent.get("import_refresh_needed") or parent.get("import_refresh_pending") or (parent.get("runner") and parent["runner"].state != "exited"):
+                    raise HiveError("The imported session is still closing; try again")
+                if not parent.get("imported_session_confirmed") and imported_session_confirmed is not True:
+                    raise HiveError("Confirm the session is closed in other terminals first")
+                if not snapshot:
+                    raise HiveError("The imported session changed; try again")
             task_id = str(uuid.uuid4())
             harness_id = _task_harness_id(parent)
             self._require_available(self._find_harness(harness_id), self._projects[parent["project_id"]])
@@ -334,7 +403,19 @@ class PoolManager:
                                     session_id=self._initial_session_id(harness_id))
             self._tasks[task_id] = task
             self._task_order.append(task_id)
-            self._bump_version()
+            if parent.get("imported_source") and not parent.get("imported_session_confirmed"):
+                parent["imported_session_confirmed"] = True
+                self.version += 1
+                try:
+                    self._save_state(strict=True)
+                except Exception:
+                    parent["imported_session_confirmed"] = False
+                    self._tasks.pop(task_id, None)
+                    self._task_order.remove(task_id)
+                    self.version += 1
+                    raise
+            else:
+                self._bump_version()
             return task_id
 
     def add_tasks_batch(self, inputs, template_id, harness=None, created_by_task_id=None):
@@ -762,26 +843,67 @@ class PoolManager:
 
     # --- Chat ---
 
-    def send_chat(self, task_id, message, message_id=None):
+    @staticmethod
+    def _known_chat_receipt(task, message, message_id):
+        if not task or message_id is None:
+            return None
+        if not (isinstance(message_id, str) and MESSAGE_ID.fullmatch(message_id)):
+            raise HiveError("Invalid message ID")
+        previous = next((m for m in task["messages"] if m["id"] == message_id), None)
+        if previous:
+            if not (previous["role"] == "user" and previous["content"] == message):
+                raise HiveError("Message ID already used for different text")
+            return _message_receipt(previous)
+        previous = next((m for m in task.get("message_receipts") or [] if m["id"] == message_id), None)
+        if previous:
+            if not (isinstance(message, str) and previous["content_sha256"] == tm.content_hash(message)):
+                raise HiveError("Message ID already used for different text")
+            return {k: previous.get(k) for k in ("id", "sequence", "status", "settled")}
+        return None
+
+    def send_chat(self, task_id, message, message_id=None, imported_session_confirmed=False):
         """Receipt dict, None if chat is impossible, or a reason string."""
         with self._lock:
+            self._poll_live_runners()
+            existing = self._tasks.get(task_id)
+            receipt = self._known_chat_receipt(existing, message, message_id)
+            if receipt is not None:
+                return receipt
+            if existing and existing.get("import_refresh_needed"):
+                return "runner_closing"
+            runner = existing.get("runner") if existing else None
+            if existing and existing.get("import_refresh_pending") and (not runner or runner.state == "exited"):
+                return "runner_closing"
+            snapshot = (self._import_verification_snapshot(existing)
+                        if existing and existing.get("imported_source") and (not runner or runner.state == "exited") else None)
+        if snapshot:
+            try:
+                self._verify_import_snapshot(snapshot)
+            except Exception:
+                with self._lock:
+                    receipt = self._known_chat_receipt(self._tasks.get(task_id), message, message_id)
+                    if receipt is not None:
+                        return receipt
+                raise
+        with self._lock:
             task = self._tasks.get(task_id)
+            receipt = self._known_chat_receipt(task, message, message_id)
+            if receipt is not None:
+                return receipt
+            if snapshot and (not task or self._import_verification_snapshot(task) != snapshot):
+                raise HiveError("The imported session changed; try again")
             if not task:
                 return None
             self._poll_live_runners()
-            if message_id is not None:
-                if not (isinstance(message_id, str) and MESSAGE_ID.fullmatch(message_id)):
-                    raise HiveError("Invalid message ID")
-                previous = next((m for m in task["messages"] if m["id"] == message_id), None)
-                if previous:
-                    if not (previous["role"] == "user" and previous["content"] == message):
-                        raise HiveError("Message ID already used for different text")
-                    return _message_receipt(previous)
-                previous = next((m for m in task.get("message_receipts") or [] if m["id"] == message_id), None)
-                if previous:
-                    if not (isinstance(message, str) and previous["content_sha256"] == tm.content_hash(message)):
-                        raise HiveError("Message ID already used for different text")
-                    return {k: previous.get(k) for k in ("id", "sequence", "status", "settled")}
+            if task.get("import_refresh_needed") or (task.get("import_refresh_pending")
+                    and (not task.get("runner") or task["runner"].state == "exited")):
+                return "runner_closing"
+            if snapshot and (self._import_verification_snapshot(task) != snapshot
+                             or not session_import.source_identity_matches(snapshot["source"])
+                             or not session_import.executable_identity_matches(snapshot["source"])):
+                raise HiveError("The imported session changed; try again")
+            if task.get("imported_source") and not task.get("imported_session_confirmed") and imported_session_confirmed is not True:
+                raise HiveError("Confirm the session is closed in other terminals first")
             if task["status"] not in ("running", "reviewing", "completed", "failed"):
                 return None
             if not str(task.get("session_id") or "").strip():
@@ -802,6 +924,8 @@ class PoolManager:
                     task["runner_kind"] = "chat"
                 kind = "follow_up" if runner_state == "idle" else "steering"
                 receipt = self._record_live_input(task, runner, message, message_id or str(uuid.uuid4()), kind)
+                if task.get("imported_source"):
+                    task.pop("import_refresh_pending", None)
                 task["status"] = "reviewing" if task.get("runner_kind") == "review" else "running"
                 task["completed_at"] = None
                 task["failure_details"] = None
@@ -809,7 +933,18 @@ class PoolManager:
                 return _message_receipt(receipt)
             if tm.outstanding(task):
                 return "unresolved_inputs"
-            receipt = self._start_live_runner(task, message, kind="chat", resume=True, message_id=message_id)
+            if task.get("imported_source") and not snapshot:
+                return "runner_closing"
+            confirming = bool(task.get("imported_source") and not task.get("imported_session_confirmed"))
+            if confirming:
+                task["imported_session_confirmed"] = True
+            try:
+                receipt = self._start_live_runner(task, message, kind="chat", resume=True, message_id=message_id)
+            except Exception:
+                if confirming:
+                    task["imported_session_confirmed"] = False
+                    self._save_state()
+                raise
             return _message_receipt(receipt)
 
     def cancel_chat(self, task_id, msg_id=None):
@@ -886,9 +1021,10 @@ class PoolManager:
             self._last_saved_version = self.version
             self._last_save_time = time.monotonic()
         except OSError as error:
-            print(f"[persist] save error: {error}", file=sys.stderr)
             if strict:
-                raise HiveError(f"Cannot persist input safely: {error}") from error
+                print(f"[persist] save error: {type(error).__name__}", file=sys.stderr)
+                raise HiveError("Cannot persist input safely") from None
+            print(f"[persist] save error: {error}", file=sys.stderr)
 
     def _load_config(self):
         if not os.path.exists(self.config_file):
@@ -984,6 +1120,8 @@ class PoolManager:
                 created_by_task_id=stored.get("created_by_task_id"),
                 harness=stored.get("harness"), project_id=stored["project_id"])
             task["imported_source"] = stored.get("imported_source")
+            task["imported_session_confirmed"] = bool(stored.get("imported_session_confirmed"))
+            task["import_interrupted"] = bool(stored.get("import_interrupted") or (task["imported_source"] and stored.get("status") in ACTIVE))
             task["result_placement"] = stored.get("result_placement")
             task["done"] = bool(stored.get("done"))
             task["message_receipts"] = stored.get("message_receipts") or []
@@ -1084,6 +1222,7 @@ class PoolManager:
             "parent_task_id": task.get("parent_task_id"),
             "created_by_task_id": task.get("created_by_task_id"),
             "imported_session": bool(task.get("imported_source")),
+            "imported_session_confirmed": bool(task.get("imported_session_confirmed")),
             "harness": _task_harness_id(task),
             # Derived from the harness transcript, held in memory only.
             "cost": task.get("cost"),
@@ -1111,29 +1250,88 @@ class PoolManager:
 
     def _monitor_loop(self):
         while self._running:
+            check = None
+            refresh = None
             with self._lock:
                 self._poll_live_runners()
                 self._refresh_running_costs()
+                candidate = next((t for t in self._tasks.values() if t.get("import_refresh_needed")), None)
+                if candidate:
+                    refresh = (candidate["id"], copy.deepcopy(candidate["imported_source"]), candidate.get("runner"))
                 if not self._paused:
-                    self._fill_pool()
+                    queued = next((self._tasks[i] for i in self._task_order if self._tasks[i]["status"] == "queued"), None)
+                    parent = self._tasks.get(queued.get("parent_task_id")) if queued else None
+                    if parent and parent.get("imported_source"):
+                        check = (queued["id"], parent["id"], self._import_verification_snapshot(parent))
+            refreshed = None
+            if refresh:
+                try:
+                    _, refreshed = session_import._read(refresh[1]["path"])
+                except HiveError:
+                    pass
+            checked = {}
+            if check:
+                try:
+                    self._verify_import_snapshot(check[2])
+                    checked[check[0]] = (check[1], check[2], None)
+                except Exception as error:
+                    checked[check[0]] = (check[1], check[2], str(error))
+            with self._lock:
+                if refresh:
+                    task = self._tasks.get(refresh[0])
+                    if (task and task.get("import_refresh_needed") and task.get("imported_source") == refresh[1]
+                            and task.get("runner") is refresh[2] and refresh[2] and refresh[2].state == "exited"):
+                        source = task["imported_source"]
+                        valid = (refreshed and (refreshed["device"], refreshed["inode"]) == (source["device"], source["inode"])
+                                 and session_import.source_identity_matches(refreshed))
+                        if valid:
+                            source.update(refreshed)
+                            task["import_interrupted"] = False
+                            try:
+                                self._save_state(strict=True)
+                            except HiveError:
+                                task["imported_source"] = refresh[1]
+                                task["import_interrupted"] = True
+                        else:
+                            task["import_interrupted"] = True
+                        task.pop("import_refresh_needed", None)
+                        self._bump_version()
+                if not self._paused:
+                    self._fill_pool(checked)
                 self._update_sleep_preventer()
                 self._maybe_save()
             time.sleep(0.3)
 
-    def _fill_pool(self):
+    def _fill_pool(self, checked=None):
+        checked = checked or {}
         active = sum(1 for task_id in self._task_order if self._tasks[task_id]["status"] in ACTIVE)
         while active < (self._max_parallel or 1):
             queued = next((i for i in self._task_order if self._tasks[i]["status"] == "queued"), None)
             if not queued:
                 break
-            self._spawn_task(self._tasks[queued])
+            task = self._tasks[queued]
+            parent = self._tasks.get(task.get("parent_task_id"))
+            if parent and parent.get("imported_source"):
+                verified = checked.get(queued)
+                if not verified:
+                    break
+                parent_id, snapshot, error = verified
+                if (parent["id"] != parent_id or self._import_verification_snapshot(parent) != snapshot
+                        or not session_import.source_identity_matches(snapshot["source"])
+                        or not session_import.executable_identity_matches(snapshot["source"])
+                        or parent.get("import_refresh_needed") or parent.get("import_refresh_pending")
+                        or (parent.get("runner") and parent["runner"].state != "exited")):
+                    error = "The imported session changed or is still running; try again"
+                if error:
+                    task.update(status="failed", completed_at=now(), failure_details=error)
+                    self._bump_version()
+                    continue
+            self._spawn_task(task)
             active += 1
 
     def _spawn_task(self, task):
         try:
             parent_id = task.get("parent_task_id")
-            if parent_id and self._tasks[parent_id].get("imported_source"):
-                self._verify_import_source(self._tasks[parent_id])
             parent = self._tasks[parent_id]["session_id"] if parent_id else None
             if parent_id and (self._tasks[parent_id].get("imported_source") or {}).get("kind") == "pi":
                 parent = self._tasks[parent_id]["imported_source"]["path"]
@@ -1154,8 +1352,6 @@ class PoolManager:
             if not valid_message(message):
                 raise HiveError("Message must contain text and be at most 256 KiB")
             harness = self._task_harness(task)
-            if task.get("imported_source"):
-                self._verify_import_source(task)
             # Every start of an agent passes here (first run, retry, continue, follow-up, review),
             # so this one check keeps a project on its own harnesses.
             self._require_available(harness, self._projects[task["project_id"]])
@@ -1298,10 +1494,21 @@ class PoolManager:
             task["status"] = "failed" if error else "completed"
             task["failure_details"] = error
             task["completed_at"] = now()
+            if task.get("imported_source"):
+                # Claude may still be running background work after its reply.
+                if error:
+                    task.pop("import_refresh_pending", None)
+                    task["import_interrupted"] = True
+                else:
+                    task["import_refresh_pending"] = True
+                if self._task_harness(task)["type"] == "pi":
+                    runner.close("Imported session work settled")
             self._refresh_task_cost(task)
             if task.get("runner_kind") in ("initial", "review") and not error:
                 self._next_review(task, runner)
         elif kind == "error":
+            if task.get("imported_source"):
+                task.pop("import_refresh_pending", None)
             if task.get("cancel_requested"):
                 task["messages"].append(tm.message("system", "notice", f"Runner cleanup error: {data}",
                                                    timestamp=iso_micro()))
@@ -1313,6 +1520,11 @@ class PoolManager:
             task["completed_at"] = now()
         elif kind == "exited":
             task["stopping_work"] = False
+            if task.get("imported_source"):
+                if task.pop("import_refresh_pending", False) and data.get("reason") in (None, "Imported session work settled"):
+                    task["import_refresh_needed"] = True
+                else:
+                    task["import_interrupted"] = True
             if task.get("pending_review") and not task.get("cancel_requested"):
                 review_id = task.pop("pending_review")
                 review = next((m for m in task["messages"] if m["id"] == review_id), None)
@@ -1642,6 +1854,8 @@ def _persist_task(task):
         "parent_task_id": task.get("parent_task_id"),
         "created_by_task_id": task.get("created_by_task_id"),
         "imported_source": task.get("imported_source"),
+        "imported_session_confirmed": bool(task.get("imported_session_confirmed")),
+        "import_interrupted": bool(task.get("import_interrupted")),
         "harness": task.get("harness"),
         "project_id": task["project_id"],
         "done": bool(task.get("done")),
